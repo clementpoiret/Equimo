@@ -5,6 +5,26 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 
+def make_2tuple(x):
+    """Convert input into a 2-tuple.
+
+    Args:
+        x: Input value, either an integer or a 2-tuple
+
+    Returns:
+        tuple: If input is integer, returns (x,x). If input is 2-tuple, returns it unchanged.
+
+    Raises:
+        AssertionError: If input is tuple but not length 2, or if input is not int or tuple
+    """
+    if isinstance(x, tuple):
+        assert len(x) == 2
+        return x
+
+    assert isinstance(x, int)
+    return (x, x)
+
+
 def to_list(obj, n):
     """Convert an object to a list of length n by repeating it or validating existing list.
 
