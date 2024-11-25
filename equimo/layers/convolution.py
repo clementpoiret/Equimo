@@ -5,9 +5,10 @@ import jax
 import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
-from rf1.layers.dropout import DropPathAdd
-from rf1.layers.norm import LayerScale
-from rf1.utils import nearest_power_of_2_divisor
+
+from equimo.layers.dropout import DropPathAdd
+from equimo.layers.norm import LayerScale
+from equimo.utils import nearest_power_of_2_divisor
 
 
 class ConvBlock(eqx.Module):
