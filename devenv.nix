@@ -1,13 +1,15 @@
-{ pkgs, lib, config, inputs, ... }:
+{ pkgs, lib, ... }:
 let
   buildInputs = with pkgs; [
     stdenv.cc.cc
     libuv
     zlib
   ];
-in 
+in
 {
-  env = { LD_LIBRARY_PATH = "${with pkgs; lib.makeLibraryPath buildInputs}"; };
+  env = {
+    LD_LIBRARY_PATH = "${with pkgs; lib.makeLibraryPath buildInputs}";
+  };
 
   languages.python = {
     enable = true;
@@ -17,10 +19,7 @@ in
     };
   };
 
-  scripts.hello.exec = "uv run python hello.py";
-
   enterShell = ''
     . .devenv/state/venv/bin/activate
-    hello
   '';
 }

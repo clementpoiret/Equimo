@@ -1,9 +1,12 @@
 [project]
-name = "nix-python-devenv"
+name = "Equimo"
 version = "0.1.0"
-description = "Example project with working C bindings!"
+description = "Implementation of popular vision models in Jax"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "numpy>=2.1.2",
+  "einops>=0.8.0",
+  "equinox>=0.11.5",
+  "jax>=0.4.25",
+  "jaxlib>=0.4.25",
 ]
