@@ -1,0 +1,9 @@
+[project]
+name = "nix-python-devenv"
+version = "0.1.0"
+description = "Example project with working C bindings!"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.1.2",
+]
