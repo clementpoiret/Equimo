@@ -1407,6 +1407,8 @@ class PartialFormerBlock(eqx.Module):
 class LinearAngularAttention(eqx.Module):
     """Linear Angular Attention with optional sparsity.
 
+    This is the base attention module to be included in a ViT to replicate
+    Castling-ViT[1].
     Implements an efficient attention variant that:
     - Uses normalized vectors for computing attention
     - Applies optional sparsity regularization
@@ -1419,6 +1421,9 @@ class LinearAngularAttention(eqx.Module):
         head_dim: Dimension per attention head
         sparse_reg: Whether to use sparsity regularization
         sparsity_threshold: Threshold for sparse attention
+
+    References:
+        [1]: You, et al., 2024. https://arxiv.org/abs/2211.10526
     """
 
     dim: int = eqx.field(static=True)
