@@ -27,7 +27,7 @@ class LayerSharingWithCT(LayerSharing):
         self,
         x: Array,
         ct: Array,
-        *args,
+        # *args,
         enable_dropout: bool,
         key: PRNGKeyArray,
         **kwargs,
@@ -46,7 +46,8 @@ class LayerSharingWithCT(LayerSharing):
         if self.repeat == 1:
             return self.f(
                 x,
-                *args,
+                ct,
+                # *args,
                 enable_dropout=enable_dropout,
                 key=key,
                 **kwargs,
@@ -76,7 +77,7 @@ class LayerSharingWithCT(LayerSharing):
 
             x, ct = self.f(
                 x,
-                ct=ct,
+                ct,
                 enable_dropout=enable_dropout,
                 key=key,
                 **kwargs,
@@ -302,14 +303,9 @@ class BlockChunk(eqx.Module):
             for blk, key_block in zip(self.blocks, keys):
                 x, ct = jax.vmap(
                     blk,
-                    in_axes=(
-                        0,
-                        None,
-                        None,
-                        None,
-                    ),
+                    in_axes=(0, None, None, None),
                     out_axes=(0, None),
-                )(x, ct, enable_dropout=enable_dropout, key=key_block)
+                )(x, ct, enable_dropout, key_block)
             x = self.window_reverse(x, self.window_size, h, w)
         else:
             for blk, key_block in zip(self.blocks, keys):
