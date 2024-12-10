@@ -126,16 +126,27 @@ class Mlla(eqx.Module):
             for i, depth in enumerate(depths)
         ]
 
+        self.norm = eqx.nn.LayerNorm(self.num_features)
         self.head = (
-            eqx.nn.Sequential(
-                [
-                    eqx.nn.LayerNorm(self.num_features),
-                    eqx.nn.Linear(self.num_features, num_classes, key=key_head),
-                ]
-            )
+            eqx.nn.Linear(self.num_features, num_classes, key=key_head)
             if num_classes > 0
             else eqx.nn.Identity()
         )
+
+    def features(
+        self,
+        x: Float[Array, "..."],
+        enable_dropout: bool,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "..."]:
+        key_pd, *keys = jr.split(key, 1 + len(self.blocks))
+
+        x = self.patch_embed(x)
+        x = self.pos_drop(x, inference=not enable_dropout, key=key_pd)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, enable_dropout=enable_dropout, key=keys[i])
+
+        return x
 
     def __call__(
         self,
@@ -154,12 +165,8 @@ class Mlla(eqx.Module):
             Output tensor (class logits if num_classes > 0,
             otherwise feature representations)
         """
-        key_pd, *keys = jr.split(key, 1 + len(self.blocks))
-
-        x = self.patch_embed(x)
-        x = self.pos_drop(x, inference=not enable_dropout, key=key_pd)
-        for i, blk in enumerate(self.blocks):
-            x = blk(x, enable_dropout=enable_dropout, key=keys[i])
+        x = self.features(x, enable_dropout=enable_dropout, key=key)
+        x = jax.vmap(self.norm)(x)
         x = reduce(x, "s d -> d", "mean")
         x = self.head(x)
 

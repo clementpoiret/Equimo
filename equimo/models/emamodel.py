@@ -32,6 +32,22 @@ class EmaModel:
         self.decay = decay
         self.ema_params = None
 
+    def features(self, *args, **kwargs):
+        """
+        Get the underlying model's features.
+
+        This method relies on the implementation of the `features()` function
+        of the underlying model.
+
+        Args:
+            *args: Positional arguments to pass to the underlying model.
+            **kwargs: Keyword arguments to pass to the underlying model.
+
+        Returns:
+            The output of the underlying model.
+        """
+        return self.model.features(*args, **kwargs)
+
     def __call__(self, *args, **kwargs):
         """
         Call the underlying model.

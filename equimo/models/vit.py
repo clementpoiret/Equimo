@@ -279,7 +279,11 @@ class VisionTransformer(eqx.Module):
         ]
 
         self.norm = norm_layer(dim)
-        self.head = eqx.nn.Linear(dim, num_classes, key=key_head)
+        self.head = (
+            eqx.nn.Linear(dim, num_classes, key=key_head)
+            if num_classes > 0
+            else eqx.nn.Identity()
+        )
 
     def resample_pos_embed(
         self,

@@ -336,16 +336,26 @@ class SHViT(eqx.Module):
             for i, depth in enumerate(depths)
         ]
 
+        self.norm = eqx.nn.LayerNorm(dims[-1])
         self.head = (
-            eqx.nn.Sequential(
-                [
-                    eqx.nn.LayerNorm(dims[-1]),
-                    eqx.nn.Linear(dims[-1], num_classes, key=key_head),
-                ]
-            )
+            eqx.nn.Linear(dims[-1], num_classes, key=key_head)
             if num_classes > 0
             else eqx.nn.Identity()
         )
+
+    def features(
+        self,
+        x: Float[Array, "..."],
+        enable_dropout: bool,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "..."]:
+        keys = jr.split(key, len(self.blocks))
+
+        x = self.patch_embed(x)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, enable_dropout=enable_dropout, key=keys[i])
+
+        return x
 
     def __call__(
         self,
@@ -363,14 +373,9 @@ class SHViT(eqx.Module):
         Returns:
             Classification logits for each class
         """
-        keys = jr.split(key, len(self.blocks))
-
-        x = self.patch_embed(x)
-        for i, blk in enumerate(self.blocks):
-            x = blk(x, enable_dropout=enable_dropout, key=keys[i])
-
+        x = self.features(x, enable_dropout=enable_dropout, key=key)
+        x = jax.vmap(self.norm)(x)
         x = reduce(x, "c h w -> c", "mean")
-
         x = self.head(x)
 
         return x

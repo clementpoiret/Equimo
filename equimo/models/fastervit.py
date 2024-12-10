@@ -431,7 +431,11 @@ class FasterViT(eqx.Module):
 
         num_features = int(dim * 2 ** (len(depths) - 1))
         self.norm = norm_layer(num_features)
-        self.head = eqx.nn.Linear(num_features, num_classes, key=key_head)
+        self.head = (
+            eqx.nn.Linear(num_features, num_classes, key=key_head)
+            if num_classes > 0
+            else eqx.nn.Identity()
+        )
 
     def features(
         self,
@@ -455,6 +459,8 @@ class FasterViT(eqx.Module):
         for blk, key_block in zip(self.blocks, block_subkeys):
             x = blk(x, enable_dropout=enable_dropout, key=key_block)
 
+        x = rearrange(x, "c h w -> (h w) c")
+
         return x
 
     def __call__(
@@ -474,7 +480,6 @@ class FasterViT(eqx.Module):
             Classification logits for each class
         """
         x = self.features(x, enable_dropout, key)
-        x = rearrange(x, "c h w -> (h w) c")
         x = jax.vmap(self.norm)(x)
         x = pool_sd(
             x,

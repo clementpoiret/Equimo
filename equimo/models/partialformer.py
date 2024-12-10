@@ -349,13 +349,18 @@ class PartialFormer(eqx.Module):
         ]
 
         self.norm = norm_layer(self.num_features)
-        self.head = eqx.nn.Linear(self.num_features, num_classes, key=key_head)
+        self.head = (
+            eqx.nn.Linear(self.num_features, num_classes, key=key_head)
+            if num_classes > 0
+            else eqx.nn.Identity()
+        )
 
     def features(
         self,
         x: Float[Array, "channels height width"],
         enable_dropout: bool,
         key: PRNGKeyArray,
+        return_qa: bool = False,
     ) -> Float[Array, "seqlen dim"]:
         """Extract features from input image using partial attention.
 
@@ -380,7 +385,9 @@ class PartialFormer(eqx.Module):
                 key=key_block,
             )
 
-        return x, qa
+        if return_qa:
+            return x, qa
+        return x
 
     def __call__(
         self,
@@ -398,7 +405,7 @@ class PartialFormer(eqx.Module):
         Returns:
             Classification logits for each class
         """
-        x, qa = self.features(x, enable_dropout, key)
+        x = self.features(x, enable_dropout, key)
         x = jax.vmap(self.norm)(x)
         x = reduce(x, "n c -> c", "mean")
 
