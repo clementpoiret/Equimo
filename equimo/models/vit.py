@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 from einops import rearrange
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from equimo.layers.attention import Attention, AttentionBlock
 from equimo.layers.dropout import Dropout
@@ -148,12 +148,14 @@ class VisionTransformer(eqx.Module):
     pos_embed: jnp.ndarray
     cls_token: jnp.ndarray | None
     reg_tokens: jnp.ndarray | None
+    mask_token: jnp.ndarray | None
     blocks: List[eqx.Module]
     pos_drop: Dropout
     norm: eqx.Module
     head: eqx.Module
 
     dim: int = eqx.field(static=True)
+    embed_size: int = eqx.field(static=True)
     num_patches: int = eqx.field(static=True)
     global_pool: str = eqx.field(static=True)
     num_reg_tokens: int = eqx.field(static=True)
@@ -175,6 +177,7 @@ class VisionTransformer(eqx.Module):
         depths: List[int],
         *,
         key: PRNGKeyArray,
+        use_mask_token: bool = False,
         repeat: int = 1,
         dynamic_img_size: bool = False,
         dynamic_img_pad: bool = False,
@@ -217,6 +220,7 @@ class VisionTransformer(eqx.Module):
         self.no_embed_class = no_embed_class
         self.pos_embed_reg_tokens = pos_embed_reg_tokens
         self.global_pool = global_pool
+        self.embed_size = img_size // patch_size
 
         self.patch_embed = PatchEmbedding(
             in_channels,
@@ -231,6 +235,8 @@ class VisionTransformer(eqx.Module):
         self.num_patches = self.patch_embed.num_patches
         self.cls_token = jr.normal(key_cls, (1, dim))
         self.reg_tokens = jr.normal(key_reg, (reg_tokens, dim))
+
+        self.mask_token = jnp.zeros((1, dim)) if use_mask_token else None
 
         if no_embed_class:
             self.embed_len = self.num_patches
@@ -390,6 +396,7 @@ class VisionTransformer(eqx.Module):
         x: Float[Array, "channels height width"],
         enable_dropout: bool,
         key: PRNGKeyArray,
+        mask: Optional[Int[Array, "embed_h embed_w"]] = None,
     ) -> Float[Array, "seqlen dim"]:
         """Extract features from input image.
 
@@ -397,6 +404,7 @@ class VisionTransformer(eqx.Module):
             x: Input image tensor
             enable_dropout: Whether to enable dropout during inference
             key: PRNG key for random operations
+            mask: optional binary mask of the size of the input after patch embedding
 
         Returns:
             Processed feature tensor
@@ -404,6 +412,16 @@ class VisionTransformer(eqx.Module):
         key_posdrop, *block_subkeys = jr.split(key, len(self.blocks) + 1)
         x = self.patch_embed(x)
         x = self.pos_drop(x, inference=not enable_dropout, key=key_posdrop)
+
+        if mask is not None:
+            assert (
+                self.mask_token is not None
+            ), "To use masked forward, init the model with `use_mask_token=True`."
+            x = jnp.where(
+                rearrange(mask, "h w -> (h w) 1"), x, self.mask_token.astype(x.dtype)
+            )
+        # TODO: Decompose in multiple fns
+        x = self._pos_embed(x, h=self.embed_size, w=self.embed_size)
 
         for blk, key_block in zip(self.blocks, block_subkeys):
             x = blk(x, enable_dropout=enable_dropout, key=key_block)
@@ -430,13 +448,7 @@ class VisionTransformer(eqx.Module):
                 - x_norm_patchtokens: Normalized patch tokens
                 - x_prenorm: Pre-normalized features
         """
-        key_posdrop, *block_subkeys = jr.split(key, len(self.blocks) + 1)
-        x = self.patch_embed(x)
-        x = self.pos_drop(x, inference=not enable_dropout, key=key_posdrop)
-
-        for blk, key_block in zip(self.blocks, block_subkeys):
-            x = blk(x, enable_dropout=enable_dropout, key=key_block)
-
+        x = self.features(x, enable_dropout=enable_dropout, key=key)
         x_norm = jax.vmap(self.norm)(x)
 
         return {
