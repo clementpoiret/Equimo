@@ -189,6 +189,7 @@ class Vssd(eqx.Module):
         4. Classification head
         """
         x = self.features(x, enable_dropout=enable_dropout, key=key)
+        x = jax.vmap(self.norm)(x)
         x = reduce(x, "s d -> d", "mean")
         x = self.head(x)
 
