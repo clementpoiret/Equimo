@@ -37,31 +37,33 @@ class EmaModel:
         Get the underlying model's features.
 
         This method relies on the implementation of the `features()` function
-        of the underlying model.
+        of the underlying model. The output is wrapped in stop_gradient to ensure
+        no gradients flow through the EMA model.
 
         Args:
             *args: Positional arguments to pass to the underlying model.
             **kwargs: Keyword arguments to pass to the underlying model.
 
         Returns:
-            The output of the underlying model.
+            The output of the underlying model, with gradients stopped.
         """
-        return self.model.features(*args, **kwargs)
+        return jax.lax.stop_gradient(self.model.features(*args, **kwargs))
 
     def __call__(self, *args, **kwargs):
         """
         Call the underlying model.
 
         This method allows the EMA model to be used as a drop-in replacement for the original model.
+        The output is wrapped in stop_gradient to ensure no gradients flow through the EMA model.
 
         Args:
             *args: Positional arguments to pass to the underlying model.
             **kwargs: Keyword arguments to pass to the underlying model.
 
         Returns:
-            The output of the underlying model.
+            The output of the underlying model, with gradients stopped.
         """
-        return self.model(*args, **kwargs)
+        return jax.lax.stop_gradient(self.model(*args, **kwargs))
 
     def initialize_ema(self, params):
         """
