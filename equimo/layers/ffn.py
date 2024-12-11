@@ -9,6 +9,134 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from equimo.layers.dropout import Dropout
 
 
+class WeightNormLinear(eqx.Module):
+    """Linear layer with weight normalization.
+
+    Implements weight normalization as described in "Weight Normalization: A Simple
+    Reparameterization to Accelerate Training of Deep Neural Networks". The weights
+    are parameterized as w = g * (v/||v||), where g is a scalar and v is a vector.
+
+    Attributes:
+        weight_v: The weight vector v to be normalized
+        weight_g: The scalar multiplier g for controlling the output scale
+
+    References:
+        [1] https://arxiv.org/abs/1602.07868
+    """
+
+    weight_v: jnp.ndarray
+    weight_g: jnp.ndarray
+
+    def __init__(self, in_features: int, out_features: int, key: PRNGKeyArray):
+        self.weight_v = eqx.nn.Linear(
+            in_features, out_features, use_bias=False, key=key
+        ).weight
+        self.weight_g = jnp.ones((out_features, 1))
+
+    def __call__(self, x):
+        """Apply weight normalized linear transformation.
+
+        Args:
+            x: Input tensor
+
+        Returns:
+            Transformed tensor using normalized weights
+        """
+        v_norm = jnp.linalg.norm(self.weight_v, ord=2, axis=1, keepdims=True)
+        normalized_v = self.weight_v / v_norm
+        weight = self.weight_g * normalized_v
+
+        out = x @ weight.T
+        return out
+
+
+class DINOHead(eqx.Module):
+    """Multi-layer Perceptron (MLP) head used to train DINOv2 models.
+
+    Implements the projection head architecture from DINOv2 self-supervised learning.
+    Features multiple fully connected layers with activation, followed by L2
+    normalization and a weight-normalized final layer.
+
+    The architecture follows:
+    input -> fc1 -> act -> fc2 -> act -> fc3 -> act -> L2norm -> weight_norm_linear
+
+    Attributes:
+        fc1: First linear layer projecting to hidden dimension
+        fc2: Second linear layer maintaining hidden dimension
+        fc3: Third linear layer projecting to bottleneck dimension
+        last: Final weight-normalized linear layer
+        act_layer: Activation function used between layers
+
+    References:
+        [1] https://arxiv.org/abs/2304.07193
+    """
+
+    fc1: eqx.nn.Linear
+    fc2: eqx.nn.Linear
+    fc3: eqx.nn.Linear
+    last: WeightNormLinear
+    act_layer: Callable
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        *,
+        hidden_dim=2048,
+        bottleneck_dim=256,
+        key: PRNGKeyArray,
+        act_layer: Callable = jax.nn.gelu,
+        bias: bool = True,
+        **kwargs,
+    ):
+        """Initialize the DINOv2 projection head.
+
+        Args:
+            in_features: Number of input features
+            out_features: Number of output features
+            hidden_dim: Dimension of hidden layers (default: 2048)
+            bottleneck_dim: Dimension of bottleneck layer (default: 256)
+            key: PRNG key for initialization
+            act_layer: Activation function (default: gelu)
+            **kwargs: Additional arguments
+        """
+        key_fc1, key_fc2, key_fc3, key_last = jr.split(key, 3)
+
+        self.act_layer = act_layer
+
+        self.fc1 = eqx.nn.Linear(in_features, hidden_dim, key=key_fc1)
+        self.fc2 = eqx.nn.Linear(hidden_dim, hidden_dim, key=key_fc2)
+        self.fc3 = eqx.nn.Linear(hidden_dim, bottleneck_dim, key=key_fc3)
+        self.last = WeightNormLinear(bottleneck_dim, out_features, key=key_last)
+
+    def __call__(
+        self,
+        x: Float[Array, "seqlen dim"],
+        enable_dropout: bool,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "seqlen dim"]:
+        """Process input through the DINOv2 projection head.
+
+        Args:
+            x: Input feature tensor
+            enable_dropout: Whether to enable dropout (unused in original implementation)
+            key: PRNG key for random operations
+
+        Returns:
+            Projected and normalized features
+        """
+        eps = jnp.where(x.dtype == jnp.float16, 1e-6, 1e-12)
+        x = self.act_layer(jax.vmap(self.fc1)(x))
+        x = self.act_layer(jax.vmap(self.fc2)(x))
+        x = self.act_layer(jax.vmap(self.fc3)(x))
+
+        x = x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + eps)
+
+        x = self.last(x)
+
+        return x
+
+
 class Mlp(eqx.Module):
     """Multi-layer Perceptron (MLP) module with dropout.
 
