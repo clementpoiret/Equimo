@@ -86,7 +86,6 @@ class DINOHead(eqx.Module):
         bottleneck_dim=256,
         key: PRNGKeyArray,
         act_layer: Callable = jax.nn.gelu,
-        bias: bool = True,
         **kwargs,
     ):
         """Initialize the DINOv2 projection head.
