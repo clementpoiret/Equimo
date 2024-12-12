@@ -99,7 +99,7 @@ class DINOHead(eqx.Module):
             act_layer: Activation function (default: gelu)
             **kwargs: Additional arguments
         """
-        key_fc1, key_fc2, key_fc3, key_last = jr.split(key, 3)
+        key_fc1, key_fc2, key_fc3, key_last = jr.split(key, 4)
 
         self.act_layer = act_layer
 
