@@ -323,11 +323,12 @@ class VisionTransformer(eqx.Module):
             old_size = hw, hw
 
         prefix_embed = (
-            pos_embed[: self.num_prefix_tokens] if self.num_prefix_tokens else None
+            pos_embed[: self.num_embedded_prefix_tokens]
+            if self.num_embedded_prefix_tokens
+            else None
         )
-        pos_embed = pos_embed[self.num_prefix_tokens :]
+        pos_embed = pos_embed[self.num_embedded_prefix_tokens :].astype("float32")
 
-        pos_embed = pos_embed.astype("float32")
         pos_embed = rearrange(
             pos_embed, "(h w) d -> h w d", h=old_size[0], w=old_size[1]
         )
@@ -363,7 +364,7 @@ class VisionTransformer(eqx.Module):
             pos_embed = self.resample_pos_embed(
                 self.pos_embed, new_size=(H, W), antialias=self.antialias
             )
-            x = rearrange("c h w -> (h w) c")
+            x = rearrange(x, "c h w -> (h w) c")
         else:
             pos_embed = self.pos_embed
 
@@ -411,15 +412,19 @@ class VisionTransformer(eqx.Module):
         """
         key_posdrop, *block_subkeys = jr.split(key, len(self.blocks) + 1)
         x = self.patch_embed(x)
-        x = self.pos_drop(x, inference=not enable_dropout, key=key_posdrop)
 
         if mask is not None:
             assert (
                 self.mask_token is not None
             ), "To use masked forward, init the model with `use_mask_token=True`."
-            x = jnp.where(
-                rearrange(mask, "h w -> (h w) 1"), x, self.mask_token.astype(x.dtype)
-            )
+            if self.dynamic_img_size:
+                mask = rearrange(mask, "h w -> 1 h w")
+                value = rearrange(self.mask_token, "1 c -> c 1 1")
+            else:
+                mask = rearrange(mask, "h w -> (h w) 1")
+                value = self.mask_token
+            x = jnp.where(mask, x, value.astype(x.dtype))
+
         # TODO: Decompose in multiple fns
         x = self._pos_embed(x, h=self.embed_size, w=self.embed_size)
 
