@@ -1,4 +1,3 @@
-from .emamodel import EmaModel
 from .fastervit import FasterViT
 from .mlla import Mlla
 from .partialformer import PartialFormer
