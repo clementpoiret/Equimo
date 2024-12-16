@@ -124,7 +124,7 @@ class DINOHead(eqx.Module):
         Returns:
             Projected and normalized features
         """
-        eps = jnp.where(x.dtype == jnp.float16, 1e-6, 1e-12)
+        eps = 1e-6 if x.dtype == jnp.float16 else 1e-12
         x = self.act_layer(jax.vmap(self.fc1)(x))
         x = self.act_layer(jax.vmap(self.fc2)(x))
         x = self.act_layer(jax.vmap(self.fc3)(x))
