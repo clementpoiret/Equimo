@@ -71,11 +71,12 @@ class DINOHead(eqx.Module):
         [1] https://arxiv.org/abs/2304.07193
     """
 
+    act_layer: Callable = eqx.field(static=True)
+
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     fc3: eqx.nn.Linear
     last: WeightNormLinear
-    act_layer: Callable
 
     def __init__(
         self,
@@ -151,11 +152,12 @@ class Mlp(eqx.Module):
         act_layer: Activation function
     """
 
+    act_layer: Callable = eqx.field(static=True)
+
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     drop1: Dropout
     drop2: Dropout
-    act_layer: Callable
 
     def __init__(
         self,
