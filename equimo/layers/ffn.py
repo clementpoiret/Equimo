@@ -147,6 +147,7 @@ class Mlp(eqx.Module):
     Attributes:
         fc1: First linear layer
         fc2: Second linear layer
+        norm: Optional norm between fc1 and fc2
         drop1: Dropout after first layer
         drop2: Dropout after second layer
         act_layer: Activation function
@@ -156,6 +157,7 @@ class Mlp(eqx.Module):
 
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
+    norm: eqx.Module
     drop1: Dropout
     drop2: Dropout
 
@@ -167,6 +169,7 @@ class Mlp(eqx.Module):
         out_features: int | None = None,
         hidden_features: int | None = None,
         act_layer: Callable = jax.nn.gelu,
+        norm_layer: Callable | None = None,
         dropout_rate: float = 0.0,
         bias: bool = True,
         **kwargs,
@@ -179,6 +182,7 @@ class Mlp(eqx.Module):
             out_features: Number of output features (default: same as in_features)
             hidden_features: Number of hidden features (default: same as in_features)
             act_layer: Activation function (default: gelu)
+            norm_layer: Optional norm layer to apply between denses (default: None)
             dropout_rate: Dropout probability (default: 0.0)
             bias: Whether to include bias in linear layers (default: True)
             **kwargs: Additional arguments
@@ -193,6 +197,7 @@ class Mlp(eqx.Module):
         self.fc1 = eqx.nn.Linear(
             in_features, hidden_features, use_bias=bias, key=key_fc1
         )
+        self.norm = norm_layer(hidden_features) if norm_layer else eqx.nn.Identity()
         self.fc2 = eqx.nn.Linear(
             hidden_features, out_features, use_bias=bias, key=key_fc2
         )
@@ -209,7 +214,7 @@ class Mlp(eqx.Module):
         key_dr1, key_dr2 = jr.split(key, 2)
 
         x = self.drop1(
-            self.act_layer(jax.vmap(self.fc1)(x)),
+            jax.vmap(self.norm)(self.act_layer(jax.vmap(self.fc1)(x))),
             inference=not enable_dropout,
             key=key_dr1,
         )

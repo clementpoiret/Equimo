@@ -212,14 +212,16 @@ class AttentionBlock(eqx.Module):
     - Dropout paths
 
     Attributes:
-        norm1: First layer normalization
-        norm2: Second layer normalization
+        prenorm: First layer normalization (before attention)
+        postnorm: Second layer normalization (optional, after attention)
+        norm: Third layer normalization (after residual)
         ls1: First layer scale (optional)
         ls2: Second layer scale (optional)
     """
 
-    norm1: eqx.Module
-    norm2: eqx.Module
+    prenorm: eqx.Module
+    postnorm: eqx.Module
+    norm: eqx.Module
     ls1: LayerScale
     ls2: LayerScale
     attn: eqx.Module
@@ -244,7 +246,9 @@ class AttentionBlock(eqx.Module):
         attn_layer: eqx.Module = Attention,
         ffn_layer: eqx.Module = Mlp,
         ffn_bias: bool = True,
+        ffn_norm: bool = False,
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        post_attention_norm: bool = False,
         init_values: float | None = None,
         **kwargs,
     ):
@@ -261,8 +265,9 @@ class AttentionBlock(eqx.Module):
         else:
             dr1 = dr2 = float(drop_path)
 
-        self.norm1 = norm_layer(dim)
-        self.norm2 = norm_layer(dim)
+        self.prenorm = norm_layer(dim)
+        self.postnorm = norm_layer(dim) if post_attention_norm else eqx.nn.Identity()
+        self.norm = norm_layer(dim)
 
         if init_values:
             self.ls1 = LayerScale(dim, init_values=init_values)
@@ -286,6 +291,7 @@ class AttentionBlock(eqx.Module):
             in_features=dim,
             hidden_features=int(dim * mlp_ratio),
             act_layer=act_layer,
+            norm_layer=norm_layer if ffn_norm else None,
             dropout_rate=proj_drop,
             bias=ffn_bias,
             key=key_mlp,
@@ -305,10 +311,12 @@ class AttentionBlock(eqx.Module):
         x = self.drop_path1(
             x,
             self.ls1(
-                self.attn(
-                    jax.vmap(self.norm1)(x),
-                    enable_dropout,
-                    key=key_attn,
+                self.vmap(self.postnorm)(
+                    self.attn(
+                        jax.vmap(self.prenorm)(x),
+                        enable_dropout,
+                        key=key_attn,
+                    )
                 )
             ),
             inference=not enable_dropout,
@@ -318,7 +326,7 @@ class AttentionBlock(eqx.Module):
             x,
             self.ls2(
                 self.mlp(
-                    jax.vmap(self.norm2)(x),
+                    jax.vmap(self.norm)(x),
                     enable_dropout,
                     key=key_mlp,
                 )
