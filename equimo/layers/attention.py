@@ -311,7 +311,7 @@ class AttentionBlock(eqx.Module):
         x = self.drop_path1(
             x,
             self.ls1(
-                self.vmap(self.postnorm)(
+                jax.vmap(self.postnorm)(
                     self.attn(
                         jax.vmap(self.prenorm)(x),
                         enable_dropout,
