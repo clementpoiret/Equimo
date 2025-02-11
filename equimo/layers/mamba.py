@@ -1,5 +1,5 @@
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax

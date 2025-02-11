@@ -1,4 +1,4 @@
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
