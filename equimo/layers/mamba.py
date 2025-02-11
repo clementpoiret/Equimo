@@ -1,5 +1,5 @@
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -124,8 +124,8 @@ class Mamba2Mixer(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         A = -jnp.exp(self.A_log)
         zxbcdt = jax.vmap(self.in_proj)(x)

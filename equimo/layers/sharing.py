@@ -1,5 +1,5 @@
 import math
-from typing import List
+from typing import List, Optional
 
 import equinox as eqx
 import jax
@@ -111,15 +111,15 @@ class LayerSharing(eqx.Module):
         self,
         x: Array,
         *args,
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
         **kwargs,
     ):
         if self.repeat == 1:
             return self.f(
                 x,
                 *args,
-                enable_dropout=enable_dropout,
+                inference=inference,
                 key=key,
                 **kwargs,
             )
@@ -135,7 +135,7 @@ class LayerSharing(eqx.Module):
                 lora_x = x
             lora_output = self.dropouts[i](
                 jax.vmap(self.loras[i])(lora_x),
-                inference=not enable_dropout,
+                inference=inference,
                 key=keys[i],
             )
             if reshape:
@@ -150,7 +150,7 @@ class LayerSharing(eqx.Module):
                 self.f(
                     x,
                     *args,
-                    enable_dropout=enable_dropout,
+                    inference=inference,
                     key=key,
                     **kwargs,
                 )

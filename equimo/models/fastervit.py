@@ -28,8 +28,8 @@ class LayerSharingWithCT(LayerSharing):
         x: Array,
         ct: Array,
         # *args,
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
         **kwargs,
     ):
         """Apply layer sharing with carrier token support.
@@ -37,7 +37,7 @@ class LayerSharingWithCT(LayerSharing):
         Args:
             x: Input tensor
             ct: carrier token tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
@@ -48,7 +48,7 @@ class LayerSharingWithCT(LayerSharing):
                 x,
                 ct,
                 # *args,
-                enable_dropout=enable_dropout,
+                inference=inference,
                 key=key,
                 **kwargs,
             )
@@ -64,7 +64,7 @@ class LayerSharingWithCT(LayerSharing):
                 lora_x = x
             lora_output = self.dropouts[i](
                 jax.vmap(self.loras[i])(lora_x),
-                inference=not enable_dropout,
+                inference=inference,
                 key=keys[i],
             )
             if reshape:
@@ -78,7 +78,7 @@ class LayerSharingWithCT(LayerSharing):
             x, ct = self.f(
                 x,
                 ct,
-                enable_dropout=enable_dropout,
+                inference=inference,
                 key=key,
                 **kwargs,
             )
@@ -291,8 +291,8 @@ class BlockChunk(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         keys = jr.split(key, len(self.blocks))
         ct = self.global_tokenizer(x) if self.do_gt else None
@@ -305,14 +305,14 @@ class BlockChunk(eqx.Module):
                     blk,
                     in_axes=(0, None, None, None),
                     out_axes=(0, None),
-                )(x, ct, enable_dropout, key_block)
+                )(x, ct, inference=inference, key=key_block)
             x = self.window_reverse(x, self.window_size, h, w)
         else:
             for blk, key_block in zip(self.blocks, keys):
-                x = blk(x, enable_dropout=enable_dropout, key=key_block)
+                x = blk(x, inference=inference, key=key_block)
 
         if self.downsampler_contains_dropout:
-            x = self.downsample(x, enable_dropout, key)
+            x = self.downsample(x, inference=inference, key=key)
         else:
             x = self.downsample(x)
 
@@ -440,14 +440,14 @@ class FasterViT(eqx.Module):
     def features(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         """Extract features from input image.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
@@ -457,7 +457,7 @@ class FasterViT(eqx.Module):
         x = self.patch_embed(x)
 
         for blk, key_block in zip(self.blocks, block_subkeys):
-            x = blk(x, enable_dropout=enable_dropout, key=key_block)
+            x = blk(x, inference=inference, key=key_block)
 
         x = rearrange(x, "c h w -> (h w) c")
 
@@ -466,20 +466,20 @@ class FasterViT(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "num_classes"]:
         """Process input image through the full network.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
             Classification logits for each class
         """
-        x = self.features(x, enable_dropout, key)
+        x = self.features(x, inference=inference, key=key)
         x = jax.vmap(self.norm)(x)
         x = pool_sd(
             x,

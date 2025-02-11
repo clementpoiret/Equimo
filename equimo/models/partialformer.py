@@ -1,4 +1,4 @@
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -9,7 +9,6 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.attention import PartialFormerBlock
 from equimo.layers.convolution import Stem
-from equimo.layers.dropout import Dropout
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import PatchMerging
 from equimo.layers.posemb import PosCNN
@@ -30,15 +29,15 @@ class LayerSharingWithQA(LayerSharing):
         x: Array,
         qa: Array,
         *args,
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
         **kwargs,
     ):
         if self.repeat == 1:
             return self.f(
                 x,
                 *args,
-                enable_dropout=enable_dropout,
+                inference=inference,
                 key=key,
                 **kwargs,
             )
@@ -54,7 +53,7 @@ class LayerSharingWithQA(LayerSharing):
                 lora_x = x
             lora_output = self.dropouts[i](
                 jax.vmap(self.loras[i])(lora_x),
-                inference=not enable_dropout,
+                inference=inference,
                 key=keys[i],
             )
             if reshape:
@@ -68,7 +67,7 @@ class LayerSharingWithQA(LayerSharing):
             x, qa = self.f(
                 x,
                 qa=qa,
-                enable_dropout=enable_dropout,
+                inference=inference,
                 key=key,
                 **kwargs,
             )
@@ -182,8 +181,8 @@ class BlockChunk(eqx.Module):
         x: Float[Array, "seqlen dim"],
         qa: Float[Array, "1 dim"],
         *,
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
         **kwargs,
     ) -> Tuple[Float[Array, "..."], Float[Array, "..."]]:
         """Process input features and query attention token.
@@ -191,7 +190,7 @@ class BlockChunk(eqx.Module):
         Args:
             x: Input feature tensor
             qa: Query attention token
-            enable_dropout: Whether to enable dropout
+            inference: Whether to enable dropout
             key: PRNG key for random operations
 
         Returns:
@@ -202,17 +201,15 @@ class BlockChunk(eqx.Module):
         x = self.posemb(x)
 
         for blk, key_block in zip(self.blocks, keys):
-            x, qa = blk(
-                x, qa=qa, enable_dropout=enable_dropout, key=key_block, **kwargs
-            )
+            x, qa = blk(x, qa=qa, inference=inference, key=key_block, **kwargs)
 
         if self.downsampler_contains_dropout:
-            x = self.downsample(x, enable_dropout, key)
+            x = self.downsample(x, inference=inference, key=key)
         else:
             x = self.downsample(x)
         qa = self.qa_drop(
             jax.vmap(self.qa_proj)(qa),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_qadrop,
         )
 
@@ -249,7 +246,7 @@ class PartialFormer(eqx.Module):
 
     qa_token: jnp.ndarray
     patch_embed: Stem
-    pos_drop: Dropout
+    pos_drop: eqx.nn.Dropout
     blocks: List[eqx.Module]
     norm: eqx.Module
     head: eqx.Module
@@ -300,7 +297,7 @@ class PartialFormer(eqx.Module):
             key=key_stem,
         )
 
-        self.pos_drop = Dropout(pos_drop_rate)
+        self.pos_drop = eqx.nn.Dropout(pos_drop_rate)
 
         if drop_path_uniform:
             dpr = [drop_path_rate] * depth
@@ -358,15 +355,15 @@ class PartialFormer(eqx.Module):
     def features(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
         return_qa: bool = False,
     ) -> Float[Array, "seqlen dim"]:
         """Extract features from input image using partial attention.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
@@ -374,14 +371,14 @@ class PartialFormer(eqx.Module):
         """
         key_posdrop, *block_subkeys = jr.split(key, len(self.blocks) + 1)
         x = self.patch_embed(x)
-        x = self.pos_drop(x, inference=not enable_dropout, key=key_posdrop)
+        x = self.pos_drop(x, inference=inference, key=key_posdrop)
 
         qa = self.qa_token
         for blk, key_block in zip(self.blocks, block_subkeys):
             x, qa = blk(
                 x,
                 qa=qa,
-                enable_dropout=enable_dropout,
+                inference=inference,
                 key=key_block,
             )
 
@@ -392,20 +389,20 @@ class PartialFormer(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "num_classes"]:
         """Process input image through the full network.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
             Classification logits for each class
         """
-        x = self.features(x, enable_dropout, key)
+        x = self.features(x, inference=inference, key=key)
         x = jax.vmap(self.norm)(x)
         x = reduce(x, "n c -> c", "mean")
 
