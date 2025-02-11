@@ -1,3 +1,5 @@
+from typing import Optional
+
 import equinox as eqx
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -38,9 +40,9 @@ class Residual(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "..."],
-        enable_dropout: bool,
         key: PRNGKeyArray,
         pass_args: bool = False,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         """Forward pass of the residual block.
 
@@ -56,13 +58,13 @@ class Residual(eqx.Module):
             with the residual connection through drop path
         """
         if pass_args:
-            x2 = self.module(x, enable_dropout=enable_dropout, key=key)
+            x2 = self.module(x, inference=inference, key=key)
         else:
             x2 = self.module(x)
 
         return self.drop_path(
             x,
             x2,
-            inference=not enable_dropout,
+            inference=inference,
             key=key,
         )

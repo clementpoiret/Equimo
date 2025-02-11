@@ -1,12 +1,10 @@
-from typing import Callable
+from typing import Callable, Optional
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
-
-from equimo.layers.dropout import Dropout
 
 
 class WeightNormLinear(eqx.Module):
@@ -112,14 +110,14 @@ class DINOHead(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         """Process input through the DINOv2 projection head.
 
         Args:
             x: Input feature tensor
-            enable_dropout: Whether to enable dropout (unused in original implementation)
+            inference: Whether to enable dropout (unused in original implementation)
             key: PRNG key for random operations
 
         Returns:
@@ -158,8 +156,8 @@ class Mlp(eqx.Module):
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     norm: eqx.Module
-    drop1: Dropout
-    drop2: Dropout
+    drop1: eqx.nn.Dropout
+    drop2: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -202,25 +200,25 @@ class Mlp(eqx.Module):
             hidden_features, out_features, use_bias=bias, key=key_fc2
         )
 
-        self.drop1 = Dropout(dropout_rate)
-        self.drop2 = Dropout(dropout_rate)
+        self.drop1 = eqx.nn.Dropout(dropout_rate)
+        self.drop2 = eqx.nn.Dropout(dropout_rate)
 
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_dr1, key_dr2 = jr.split(key, 2)
 
         x = self.drop1(
             jax.vmap(self.norm)(self.act_layer(jax.vmap(self.fc1)(x))),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr1,
         )
         x = self.drop2(
             jax.vmap(self.fc2)(x),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr2,
         )
 
@@ -253,8 +251,8 @@ class SwiGlu(eqx.Module):
 
     w12: eqx.nn.Linear
     w3: eqx.nn.Linear
-    drop1: Dropout
-    drop2: Dropout
+    drop1: eqx.nn.Dropout
+    drop2: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -290,14 +288,14 @@ class SwiGlu(eqx.Module):
             hidden_features // 2, out_features, use_bias=bias, key=key_fc2
         )
 
-        self.drop1 = Dropout(dropout_rate)
-        self.drop2 = Dropout(dropout_rate)
+        self.drop1 = eqx.nn.Dropout(dropout_rate)
+        self.drop2 = eqx.nn.Dropout(dropout_rate)
 
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_dr1, key_dr2 = jr.split(key, 2)
 
@@ -305,13 +303,13 @@ class SwiGlu(eqx.Module):
         x1, x2 = jnp.split(x12, 2, axis=-1)
         x = self.drop1(
             jax.nn.silu(x1) * x2,
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr1,
         )
 
         x = self.drop2(
             jax.vmap(self.w3)(x),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr2,
         )
 

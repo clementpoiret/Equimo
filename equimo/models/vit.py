@@ -9,7 +9,6 @@ from einops import rearrange
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from equimo.layers.attention import Attention, AttentionBlock
-from equimo.layers.dropout import Dropout
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import PatchEmbedding
 from equimo.layers.posemb import PosCNN
@@ -96,8 +95,8 @@ class BlockChunk(eqx.Module):
         self,
         x: Float[Array, "..."],
         *,
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
         **kwargs,
     ) -> Float[Array, "..."]:
         keys = jr.split(key, len(self.blocks))
@@ -105,10 +104,10 @@ class BlockChunk(eqx.Module):
         x = self.posemb(x)
 
         for blk, key_block in zip(self.blocks, keys):
-            x = blk(x, enable_dropout=enable_dropout, key=key_block, **kwargs)
+            x = blk(x, inference=inference, key=key_block, **kwargs)
 
         if self.downsampler_contains_dropout:
-            x = self.downsample(x, enable_dropout, key)
+            x = self.downsample(x, inference=inference, key=key)
         else:
             x = self.downsample(x)
 
@@ -150,7 +149,7 @@ class VisionTransformer(eqx.Module):
     reg_tokens: jnp.ndarray | None
     mask_token: jnp.ndarray | None
     blocks: List[eqx.Module]
-    pos_drop: Dropout
+    pos_drop: eqx.nn.Dropout
     norm: eqx.Module
     head: eqx.Module
 
@@ -248,7 +247,7 @@ class VisionTransformer(eqx.Module):
             self.embed_len = self.num_patches + 1
 
         self.pos_embed = jr.normal(key_posemb, (self.embed_len, dim))
-        self.pos_drop = Dropout(pos_drop_rate)
+        self.pos_drop = eqx.nn.Dropout(pos_drop_rate)
 
         if drop_path_uniform:
             dpr = [drop_path_rate] * depth
@@ -395,15 +394,15 @@ class VisionTransformer(eqx.Module):
     def features(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
         mask: Optional[Int[Array, "embed_h embed_w"]] = None,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         """Extract features from input image.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
             mask: optional binary mask of the size of the input after patch embedding
 
@@ -414,9 +413,9 @@ class VisionTransformer(eqx.Module):
         x = self.patch_embed(x)
 
         if mask is not None:
-            assert (
-                self.mask_token is not None
-            ), "To use masked forward, init the model with `use_mask_token=True`."
+            assert self.mask_token is not None, (
+                "To use masked forward, init the model with `use_mask_token=True`."
+            )
             if self.dynamic_img_size:
                 mask = rearrange(mask, "h w -> 1 h w")
                 value = rearrange(self.mask_token, "1 c -> c 1 1")
@@ -429,21 +428,21 @@ class VisionTransformer(eqx.Module):
         x = self._pos_embed(x, h=self.embed_size, w=self.embed_size)
 
         for blk, key_block in zip(self.blocks, block_subkeys):
-            x = blk(x, enable_dropout=enable_dropout, key=key_block)
+            x = blk(x, inference=inference, key=key_block)
 
         return x
 
     def forward_features(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
+        inference: bool,
         key: PRNGKeyArray,
     ) -> dict:
         """Process features and return intermediate representations.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
@@ -453,7 +452,7 @@ class VisionTransformer(eqx.Module):
                 - x_norm_patchtokens: Normalized patch tokens
                 - x_prenorm: Pre-normalized features
         """
-        x = self.features(x, enable_dropout=enable_dropout, key=key)
+        x = self.features(x, inference=inference, key=key)
         x_norm = jax.vmap(self.norm)(x)
 
         return {
@@ -466,20 +465,20 @@ class VisionTransformer(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool = False,
         key: PRNGKeyArray = jr.PRNGKey(42),
+        inference: Optional[bool] = None,
     ) -> Float[Array, "num_classes"]:
         """Process input image through the full network.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
             Classification logits
         """
-        x = self.features(x, enable_dropout, key)
+        x = self.features(x, inference=inference, key=key)
         x = jax.vmap(self.norm)(x)
         x = pool_sd(
             x,

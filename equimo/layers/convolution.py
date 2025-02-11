@@ -118,15 +118,15 @@ class ConvBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         _, h, w = x.shape
         x2 = self.act(self.norm1(self.conv1(x)))
         x2 = self.norm2(self.conv2(x2))
         x2 = self.depermute(jax.vmap(jax.vmap(self.ls1))(self.permute(x2)))
 
-        return self.drop_path1(x, x2, inference=not enable_dropout, key=key)
+        return self.drop_path1(x, x2, inference=inference, key=key)
 
 
 class SingleConvBlock(eqx.Module):

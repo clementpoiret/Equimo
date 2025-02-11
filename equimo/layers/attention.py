@@ -7,7 +7,7 @@ import jax.random as jr
 from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.dropout import Dropout, DropPathAdd
+from equimo.layers.dropout import DropPathAdd
 from equimo.layers.ffn import Mlp
 from equimo.layers.mamba import Mamba2Mixer
 from equimo.layers.norm import LayerScale
@@ -35,8 +35,8 @@ class Attention(eqx.Module):
     proj: eqx.nn.Linear
     q_norm: eqx.Module
     k_norm: eqx.Module
-    attn_drop: Dropout
-    proj_drop: Dropout
+    attn_drop: eqx.nn.Dropout
+    proj_drop: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -65,14 +65,14 @@ class Attention(eqx.Module):
         self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
         self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
 
-        self.attn_drop = Dropout(attn_drop)
-        self.proj_drop = Dropout(proj_drop)
+        self.attn_drop = eqx.nn.Dropout(attn_drop)
+        self.proj_drop = eqx.nn.Dropout(proj_drop)
 
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key1, key2 = jr.split(key, 2)
 
@@ -90,12 +90,12 @@ class Attention(eqx.Module):
 
         attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
         attn = jax.nn.softmax(attn, axis=-1)
-        attn = self.attn_drop(attn, inference=not enable_dropout, key=key1)
+        attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hvd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
-        x = self.proj_drop(x, inference=not enable_dropout, key=key2)
+        x = self.proj_drop(x, inference=inference, key=key2)
 
         return x
 
@@ -122,8 +122,8 @@ class WindowedAttention(eqx.Module):
     proj: eqx.nn.Linear
     q_norm: eqx.Module
     k_norm: eqx.Module
-    attn_drop: Dropout
-    proj_drop: Dropout
+    attn_drop: eqx.nn.Dropout
+    proj_drop: eqx.nn.Dropout
     pos_emb_funct: PosEmbMLPSwinv2D
 
     def __init__(
@@ -164,14 +164,14 @@ class WindowedAttention(eqx.Module):
         self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
         self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
 
-        self.attn_drop = Dropout(attn_drop)
-        self.proj_drop = Dropout(proj_drop)
+        self.attn_drop = eqx.nn.Dropout(attn_drop)
+        self.proj_drop = eqx.nn.Dropout(proj_drop)
 
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key1, key2 = jr.split(key, 2)
 
@@ -190,12 +190,12 @@ class WindowedAttention(eqx.Module):
         attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
         attn = self.pos_emb_funct(attn, self.resolution**2)
         attn = jax.nn.softmax(attn, axis=-1)
-        attn = self.attn_drop(attn, inference=not enable_dropout, key=key1)
+        attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hvd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
-        x = self.proj_drop(x, inference=not enable_dropout, key=key2)
+        x = self.proj_drop(x, inference=inference, key=key2)
 
         return x
 
@@ -209,7 +209,7 @@ class AttentionBlock(eqx.Module):
     - MLP feed-forward network
     - Residual connections
     - Optional layer scaling
-    - Dropout paths
+    - eqx.nn.Dropout paths
 
     Attributes:
         prenorm: First layer normalization (before attention)
@@ -303,8 +303,8 @@ class AttentionBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_attn, key_mlp, key_dr1, key_dr2 = jr.split(key, 4)
 
@@ -314,12 +314,12 @@ class AttentionBlock(eqx.Module):
                 jax.vmap(self.postnorm)(
                     self.attn(
                         jax.vmap(self.prenorm)(x),
-                        enable_dropout,
+                        inference=inference,
                         key=key_attn,
                     )
                 )
             ),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
@@ -327,11 +327,11 @@ class AttentionBlock(eqx.Module):
             self.ls2(
                 self.mlp(
                     jax.vmap(self.norm)(x),
-                    enable_dropout,
+                    inference=inference,
                     key=key_mlp,
                 )
             ),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr2,
         )
 
@@ -543,8 +543,8 @@ class HATBlock(eqx.Module):
         self,
         x: Float[Array, "seqlen dim"],
         carrier_tokens: Float[Array, "..."],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_attn, key_hattn, key_dr1, key_hdr1, key_dr2, key_hdr2, key_mlp, key_hmlp = (
             jr.split(key, 8)
@@ -576,11 +576,11 @@ class HATBlock(eqx.Module):
                 self.hat_ls1(
                     self.hat_attn(
                         jax.vmap(self.hat_norm1)(ct),
-                        enable_dropout,
-                        key_hattn,
+                        inference=inference,
+                        key=key_hattn,
                     )
                 ),
-                inference=not enable_dropout,
+                inference=inference,
                 key=key_hdr1,
             )
             ct = self.hat_drop_path(
@@ -588,11 +588,11 @@ class HATBlock(eqx.Module):
                 self.hat_ls2(
                     self.hat_mlp(
                         jax.vmap(self.hat_norm2)(ct),
-                        enable_dropout,
-                        key_hmlp,
+                        inference=inference,
+                        key=key_hmlp,
                     )
                 ),
-                inference=not enable_dropout,
+                inference=inference,
                 key=key_hdr2,
             )
 
@@ -612,11 +612,11 @@ class HATBlock(eqx.Module):
             self.ls1(
                 self.attn(
                     jax.vmap(self.norm1)(x),
-                    enable_dropout,
-                    key_attn,
+                    inference=inference,
+                    key=key_attn,
                 )
             ),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
@@ -624,11 +624,11 @@ class HATBlock(eqx.Module):
             self.ls2(
                 self.mlp(
                     jax.vmap(self.norm2)(x),
-                    enable_dropout,
-                    key_mlp,
+                    inference=inference,
+                    key=key_mlp,
                 )
             ),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr2,
         )
 
@@ -728,7 +728,7 @@ class SHSA(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        enable_dropout: Optional[bool] = None,
+        inference: Optional[bool] = None,
         key: Optional[PRNGKeyArray] = None,
     ) -> Float[Array, "channels height width"]:
         C, H, W = x.shape
@@ -797,7 +797,7 @@ class LinearAttention(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: Optional[bool] = None,
+        inference: Optional[bool] = None,
         key: Optional[PRNGKeyArray] = None,
     ) -> Float[Array, "seqlen dim"]:
         n, c = x.shape
@@ -982,7 +982,7 @@ class MllaBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: Optional[bool] = None,
+        inference: Optional[bool] = None,
         key: Optional[PRNGKeyArray] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_attn, key_dr1, key_dr2, key_mlp = jr.split(key, 4)
@@ -1001,12 +1001,12 @@ class MllaBlock(eqx.Module):
             x1 = rearrange(jax.vmap(self.in_proj)(x1), "(h w) c -> c h w", h=h, w=w)
             x1 = self.act(rearrange(self.dwc(x1), "c h w -> (h w) c"))
 
-        x1 = self.attn(x1, enable_dropout, key_attn)
+        x1 = self.attn(x1, inference=inference, key=key_attn)
 
         if self.use_dwc:
             x1 = jax.vmap(self.out_proj)(x * act_res)
 
-        x = self.drop_path1(x, x1, inference=not enable_dropout, key=key_dr1)
+        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
 
         x += rearrange(
             self.cpe2(rearrange(x, "(h w) c -> c h w", h=h, w=w)),
@@ -1015,8 +1015,8 @@ class MllaBlock(eqx.Module):
 
         return self.drop_path2(
             x,
-            self.mlp(jax.vmap(self.norm2)(x), enable_dropout, key_mlp),
-            inference=not enable_dropout,
+            self.mlp(jax.vmap(self.norm2)(x), inference=inference, key=key_mlp),
+            inference=inference,
             key=key_dr2,
         )
 
@@ -1028,7 +1028,7 @@ class MMSA(eqx.Module):
     - Multi-head structure
     - Attention score projection for multi-scale interaction
     - Normalized query/key processing
-    - Dropout regularization
+    - eqx.nn.Dropout regularization
 
     Attributes:
         dim: Total dimension of input/output
@@ -1046,8 +1046,8 @@ class MMSA(eqx.Module):
     attn_proj2: eqx.nn.Linear
     q_norm: eqx.Module
     k_norm: eqx.Module
-    attn_drop: Dropout
-    proj_drop: Dropout
+    attn_drop: eqx.nn.Dropout
+    proj_drop: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -1087,14 +1087,14 @@ class MMSA(eqx.Module):
         self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
         self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
 
-        self.attn_drop = Dropout(attn_drop)
-        self.proj_drop = Dropout(proj_drop)
+        self.attn_drop = eqx.nn.Dropout(attn_drop)
+        self.proj_drop = eqx.nn.Dropout(proj_drop)
 
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key1, key2 = jr.split(key, 2)
 
@@ -1119,12 +1119,12 @@ class MMSA(eqx.Module):
             jax.vmap(jax.vmap(self.attn_proj2))(attn),
             "q k h -> h q k",
         )
-        attn = self.attn_drop(attn, inference=not enable_dropout, key=key1)
+        attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hvd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
-        x = self.proj_drop(x, inference=not enable_dropout, key=key2)
+        x = self.proj_drop(x, inference=inference, key=key2)
 
         return x
 
@@ -1154,8 +1154,8 @@ class SQA(eqx.Module):
     proj_norm: eqx.Module
     q_norm: eqx.Module
     k_norm: eqx.Module
-    attn_drop: Dropout
-    proj_drop: Dropout
+    attn_drop: eqx.nn.Dropout
+    proj_drop: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -1191,15 +1191,15 @@ class SQA(eqx.Module):
         self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
         self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
 
-        self.attn_drop = Dropout(attn_drop)
-        self.proj_drop = Dropout(proj_drop)
+        self.attn_drop = eqx.nn.Dropout(attn_drop)
+        self.proj_drop = eqx.nn.Dropout(proj_drop)
 
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
         q: Float[Array, "1 dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen_x dim"]:
         key1, key2 = jr.split(key, 2)
 
@@ -1223,14 +1223,14 @@ class SQA(eqx.Module):
 
         attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
         attn = jax.nn.softmax(attn, axis=-1)
-        attn = self.attn_drop(attn, inference=not enable_dropout, key=key1)
+        attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x1 = jnp.einsum("hqk,hvd->hqd", attn, v)
         x1 = rearrange(x1, "h s d -> s (h d)")
         x1 = jax.vmap(self.proj_norm)(jax.vmap(self.proj1)(x1))
         x1 = jax.vmap(self.proj2)(jax.nn.relu(x1))
 
-        x = self.proj_drop(x + x1, inference=not enable_dropout, key=key2)
+        x = self.proj_drop(x + x1, inference=inference, key=key2)
 
         return x
 
@@ -1361,7 +1361,7 @@ class PartialFormerBlock(eqx.Module):
         self,
         x: Float[Array, "seqlen dim"],
         qa: Float[Array, "1 dim"],
-        enable_dropout: Optional[bool] = None,
+        inference: Optional[bool] = None,
         key: Optional[PRNGKeyArray] = None,
     ) -> Tuple[Float[Array, "seqlen dim"], Float[Array, "1 dim"]]:
         key_mmsa, key_sqa, key_dr1, key_dr2, key_mlp = jr.split(key, 5)
@@ -1388,24 +1388,24 @@ class PartialFormerBlock(eqx.Module):
         f = rearrange(f, "n s c -> (n s) c")
         b = rearrange(b, "n s c -> (n s) c")
 
-        qf = self.mmsa(jnp.concat([qa, f], axis=0), enable_dropout, key=key_mmsa)
+        qf = self.mmsa(jnp.concat([qa, f], axis=0), inference=inference, key=key_mmsa)
         qa, f = jnp.split(qf, [1])
-        b = self.sqa(b, qa, enable_dropout, key=key_sqa)
+        b = self.sqa(b, qa, inference=inference, key=key_sqa)
 
         x1 = self.ls1(jnp.concat([f, b], axis=0))
-        x = self.drop_path1(x, x1, inference=not enable_dropout, key=key_dr1)
+        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
 
         qa, x1 = jnp.split(
             self.mlp(
                 jax.vmap(self.norm2)(jnp.concat([qa, x])),
-                enable_dropout,
+                inference=inference,
                 key=key_mlp,
             )[1],
         )
         x = self.drop_path2(
             x,
             self.ls2(x1),
-            inference=not enable_dropout,
+            inference=inference,
             key=key_dr2,
         )
 
@@ -1442,8 +1442,8 @@ class LinearAngularAttention(eqx.Module):
 
     qkv: eqx.nn.Linear
     proj: eqx.nn.Linear
-    attn_drop: Dropout
-    proj_drop: Dropout
+    attn_drop: eqx.nn.Dropout
+    proj_drop: eqx.nn.Dropout
     dconv: eqx.nn.Conv
 
     def __init__(
@@ -1486,14 +1486,14 @@ class LinearAngularAttention(eqx.Module):
             key=key_dconv,
         )
 
-        self.attn_drop = Dropout(attn_drop)
-        self.proj_drop = Dropout(proj_drop)
+        self.attn_drop = eqx.nn.Dropout(attn_drop)
+        self.proj_drop = eqx.nn.Dropout(proj_drop)
 
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key1, key2 = jr.split(key, 2)
 
@@ -1510,7 +1510,7 @@ class LinearAngularAttention(eqx.Module):
         if self.sparse_reg:
             attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
             attn = jax.nn.softmax(attn, axis=-1)
-            attn = self.attn_drop(attn, inference=not enable_dropout, key=key1)
+            attn = self.attn_drop(attn, inference=inference, key=key1)
             sparse = jnp.where(attn > self.sparsity_threshold, attn, 0)
 
         q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
@@ -1529,6 +1529,6 @@ class LinearAngularAttention(eqx.Module):
 
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
-        x = self.proj_drop(x, inference=not enable_dropout, key=key2)
+        x = self.proj_drop(x, inference=inference, key=key2)
 
         return x

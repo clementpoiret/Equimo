@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import equinox as eqx
 import jax
@@ -154,29 +154,29 @@ class Vssd(eqx.Module):
     def features(
         self,
         x: Float[Array, "..."],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         key_pd, *keys = jr.split(key, 1 + len(self.blocks))
 
         x = self.patch_embed(x)
-        x = self.pos_drop(x, inference=not enable_dropout, key=key_pd)
+        x = self.pos_drop(x, inference=inference, key=key_pd)
         for i, blk in enumerate(self.blocks):
-            x = blk(x, enable_dropout=enable_dropout, key=keys[i])
+            x = blk(x, inference=inference, key=keys[i])
 
         return x
 
     def __call__(
         self,
         x: Float[Array, "..."],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         """Process input image through the VSSD network.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
@@ -188,7 +188,7 @@ class Vssd(eqx.Module):
         3. Global average pooling
         4. Classification head
         """
-        x = self.features(x, enable_dropout=enable_dropout, key=key)
+        x = self.features(x, inference=inference, key=key)
         x = jax.vmap(self.norm)(x)
         x = reduce(x, "s d -> d", "mean")
         x = self.head(x)

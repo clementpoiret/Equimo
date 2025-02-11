@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import equinox as eqx
 import jax
@@ -101,14 +101,14 @@ class Downsampler(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         """Apply downsampling to input features.
 
         Args:
             x: Input feature tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
@@ -116,15 +116,15 @@ class Downsampler(eqx.Module):
         """
         key_conv1, key_conv2, key_conv3, key_conv4 = jr.split(key, 4)
         x = self.conv2(
-            self.conv1(x, enable_dropout, key_conv1),
-            enable_dropout,
-            key_conv2,
+            self.conv1(x, inference=inference, key=key_conv1),
+            inference=inference,
+            key=key_conv2,
         )
         x = self.patch_merging(x)
         x = self.conv4(
-            self.conv3(x, enable_dropout, key_conv3),
-            enable_dropout,
-            key_conv4,
+            self.conv3(x, inference=inference, key=key_conv3),
+            inference=inference,
+            key=key_conv4,
         )
 
         return x
@@ -207,18 +207,18 @@ class BasicBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_conv, key_mixer, key_ffn = jr.split(key, 3)
         return self.ffn(
             self.mixer(
-                self.conv(x, enable_dropout, key_conv),
-                enable_dropout,
-                key_mixer,
+                self.conv(x, inference=inference, key=key_conv),
+                inference=inference,
+                key=key_mixer,
             ),
-            enable_dropout,
-            key_ffn,
+            inference=inference,
+            key=key_ffn,
         )
 
 
@@ -346,34 +346,34 @@ class SHViT(eqx.Module):
     def features(
         self,
         x: Float[Array, "..."],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         keys = jr.split(key, len(self.blocks))
 
         x = self.patch_embed(x)
         for i, blk in enumerate(self.blocks):
-            x = blk(x, enable_dropout=enable_dropout, key=keys[i])
+            x = blk(x, inference=inference, key=keys[i])
 
         return x
 
     def __call__(
         self,
         x: Float[Array, "..."],
-        enable_dropout: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         """Process input image through the full SHViT network.
 
         Args:
             x: Input image tensor
-            enable_dropout: Whether to enable dropout during inference
+            inference: Whether to enable dropout during inference
             key: PRNG key for random operations
 
         Returns:
             Classification logits for each class
         """
-        x = self.features(x, enable_dropout=enable_dropout, key=key)
+        x = self.features(x, inference=inference, key=key)
         x = jax.vmap(self.norm)(x)
         x = reduce(x, "c h w -> c", "mean")
         x = self.head(x)
