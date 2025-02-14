@@ -12,7 +12,6 @@ from equimo.layers.attention import Attention, AttentionBlock
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import PatchEmbedding
 from equimo.layers.posemb import PosCNN
-from equimo.layers.sharing import LayerSharing
 from equimo.utils import pool_sd, to_list
 
 
@@ -43,7 +42,6 @@ class BlockChunk(eqx.Module):
         *,
         key: PRNGKeyArray,
         block: eqx.Module = AttentionBlock,
-        repeat: int = 1,
         use_cpe: bool = False,
         downsampler: eqx.Module = eqx.nn.Identity,
         downsampler_contains_dropout: bool = False,
@@ -79,14 +77,7 @@ class BlockChunk(eqx.Module):
         blocks = []
         for i in range(depth):
             config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
-            blocks.append(
-                LayerSharing(
-                    dim=dim,
-                    f=block(**config, key=block_subkeys[i]),
-                    repeat=repeat,
-                    key=block_subkeys[i],
-                ),
-            )
+            blocks.append(block(**config, key=block_subkeys[i]))
         self.blocks = blocks
 
         self.downsample = downsampler(dim=dim, **downsampler_kwargs, key=key_ds)
@@ -177,7 +168,6 @@ class VisionTransformer(eqx.Module):
         *,
         key: PRNGKeyArray,
         use_mask_token: bool = False,
-        repeat: int = 1,
         dynamic_img_size: bool = False,
         dynamic_img_pad: bool = False,
         class_token: bool = True,
@@ -203,6 +193,7 @@ class VisionTransformer(eqx.Module):
         global_pool: Literal["", "token", "avg", "avgmax", "max"] = "avg",
         num_classes: int = 1000,
         interpolate_antialias: bool = False,
+        eps: float = 1e-5,
         **kwargs,
     ):
         depth = sum(depths)
@@ -261,7 +252,6 @@ class VisionTransformer(eqx.Module):
         self.blocks = [
             BlockChunk(
                 block=block,
-                repeat=repeat,
                 dim=dims[i],
                 depth=depths[i],
                 num_heads=num_heads[i],
@@ -278,12 +268,13 @@ class VisionTransformer(eqx.Module):
                 ffn_bias=ffn_bias,
                 norm_layer=norm_layer,
                 init_values=init_values,
+                eps=eps,
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
         ]
 
-        self.norm = norm_layer(dim)
+        self.norm = norm_layer(dim, eps=eps)
         self.head = (
             eqx.nn.Linear(dim, num_classes, key=key_head)
             if num_classes > 0

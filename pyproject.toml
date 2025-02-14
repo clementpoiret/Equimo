@@ -9,6 +9,14 @@ dependencies = [
   "equinox>=0.11.5",
   "jax>=0.4.25",
   "jaxlib>=0.4.25",
+  "loguru>=0.7.3",
+  "lz4>=4.4.3",
+  "orbax-checkpoint>=0.11.5",
+]
+
+[project.optional-dependencies]
+torch = [
+  "torch>=2.6.0",
 ]
 
 [dependency-groups]

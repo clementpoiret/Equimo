@@ -50,6 +50,7 @@ class Attention(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        eps: float = 1e-5,
         **kwargs,
     ):
         self.num_heads = num_heads
@@ -62,8 +63,8 @@ class Attention(eqx.Module):
         self.qkv = eqx.nn.Linear(dim, dim * 3, use_bias=qkv_bias, key=key_qkv)
         self.proj = eqx.nn.Linear(dim, dim, use_bias=proj_bias, key=key_proj)
 
-        self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
+        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
@@ -92,7 +93,7 @@ class Attention(eqx.Module):
         attn = jax.nn.softmax(attn, axis=-1)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
-        x = jnp.einsum("hqk,hvd->hqd", attn, v)
+        x = jnp.einsum("hqk,hkd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
         x = self.proj_drop(x, inference=inference, key=key2)
@@ -140,6 +141,7 @@ class WindowedAttention(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        eps: float = 1e-5,
         **kwargs,
     ):
         self.num_heads = num_heads
@@ -161,8 +163,8 @@ class WindowedAttention(eqx.Module):
             key=key_posemb,
         )
 
-        self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
+        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
@@ -192,7 +194,7 @@ class WindowedAttention(eqx.Module):
         attn = jax.nn.softmax(attn, axis=-1)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
-        x = jnp.einsum("hqk,hvd->hqd", attn, v)
+        x = jnp.einsum("hqk,hkd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
         x = self.proj_drop(x, inference=inference, key=key2)
@@ -250,6 +252,7 @@ class AttentionBlock(eqx.Module):
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
         post_attention_norm: bool = False,
         init_values: float | None = None,
+        eps: float = 1e-5,
         **kwargs,
     ):
         key_attn, key_mlp = jr.split(key, 2)
@@ -265,9 +268,11 @@ class AttentionBlock(eqx.Module):
         else:
             dr1 = dr2 = float(drop_path)
 
-        self.prenorm = norm_layer(dim)
-        self.postnorm = norm_layer(dim) if post_attention_norm else eqx.nn.Identity()
-        self.norm = norm_layer(dim)
+        self.prenorm = norm_layer(dim, eps=eps)
+        self.postnorm = (
+            norm_layer(dim, eps=eps) if post_attention_norm else eqx.nn.Identity()
+        )
+        self.norm = norm_layer(dim, eps=eps)
 
         if init_values:
             self.ls1 = LayerScale(dim, init_values=init_values)
@@ -284,6 +289,7 @@ class AttentionBlock(eqx.Module):
             attn_drop=attn_drop,
             proj_drop=proj_drop,
             norm_layer=norm_layer,
+            eps=eps,
             key=key_attn,
         )
 
@@ -294,6 +300,7 @@ class AttentionBlock(eqx.Module):
             norm_layer=norm_layer if ffn_norm else None,
             dropout_rate=proj_drop,
             bias=ffn_bias,
+            eps=eps,
             key=key_mlp,
         )
 
@@ -406,6 +413,7 @@ class HATBlock(eqx.Module):
         ct_size: int = 1,
         last: bool = False,
         do_propagation: bool = False,
+        eps: float = 1e-5,
         **kwargs,
     ):
         key_posemb, key_hatposemb, key_attn, key_hatattn, key_mlp, key_hatmlp = (
@@ -431,8 +439,8 @@ class HATBlock(eqx.Module):
         self.pos_embed = PosEmbMLPSwinv1D(
             dim, rank=2, seq_len=window_size**2, key=key_posemb
         )
-        self.norm1 = norm_layer(dim)
-        self.norm2 = norm_layer(dim)
+        self.norm1 = norm_layer(dim, eps=eps)
+        self.norm2 = norm_layer(dim, eps=eps)
 
         if init_values:
             self.ls1 = LayerScale(dim, init_values=init_values)
@@ -455,6 +463,7 @@ class HATBlock(eqx.Module):
             attn_drop=attn_drop,
             proj_drop=proj_drop,
             norm_layer=norm_layer,
+            eps=eps,
             key=key_attn,
         )
 
@@ -464,6 +473,7 @@ class HATBlock(eqx.Module):
             act_layer=act_layer,
             dropout_rate=proj_drop,
             bias=ffn_bias,
+            eps=eps,
             key=key_mlp,
         )
 
@@ -472,8 +482,8 @@ class HATBlock(eqx.Module):
 
         if self.sr_ratio > 1:
             # If hierarchical attention, this part is for carrier tokens
-            self.hat_norm1 = norm_layer(dim)
-            self.hat_norm2 = norm_layer(dim)
+            self.hat_norm1 = norm_layer(dim, eps=eps)
+            self.hat_norm2 = norm_layer(dim, eps=eps)
 
             self.hat_attn = WindowedAttention(
                 resolution=int(cr_tokens_total**0.5),
@@ -486,6 +496,7 @@ class HATBlock(eqx.Module):
                 attn_drop=attn_drop,
                 proj_drop=proj_drop,
                 norm_layer=norm_layer,
+                eps=eps,
                 key=key_hatattn,
             )
 
@@ -495,6 +506,7 @@ class HATBlock(eqx.Module):
                 act_layer=act_layer,
                 dropout_rate=proj_drop,
                 bias=ffn_bias,
+                eps=eps,
                 key=key_hatmlp,
             )
 
@@ -741,6 +753,7 @@ class SHSA(eqx.Module):
         attn = jnp.einsum("dq,dk->qk", q, k) * self.scale
         attn = jax.nn.softmax(attn, axis=-1)
 
+        # TODO: verify einsum, qk,kd->qd
         x1 = jnp.einsum("qk,dv->qd", attn, v)
         x1 = rearrange(x1, "(h w) d -> d h w", h=H, w=W, d=self.pdim)
 
@@ -883,6 +896,7 @@ class MllaBlock(eqx.Module):
         ffn_layer: eqx.Module = Mlp,
         ffn_bias: bool = True,
         proj_drop: float = 0.0,
+        eps: float = 1e-5,
         **kwargs,
     ):
         if attention_layer not in [Attention, LinearAttention, Mamba2Mixer]:
@@ -915,7 +929,7 @@ class MllaBlock(eqx.Module):
             use_bias=True,
             key=key_conv1,
         )
-        self.norm1 = norm_layer(dim)
+        self.norm1 = norm_layer(dim, eps=eps)
 
         if use_dwc:
             self.in_proj = eqx.nn.Linear(dim, dim, key=key_fc1)
@@ -967,7 +981,7 @@ class MllaBlock(eqx.Module):
             key=key_conv3,
         )
 
-        self.norm2 = norm_layer(dim)
+        self.norm2 = norm_layer(dim, eps=eps)
         self.mlp = ffn_layer(
             in_features=dim,
             hidden_features=int(dim * mlp_ratio),
@@ -1062,6 +1076,7 @@ class MMSA(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        eps: float = 1e-5,
         **kwargs,
     ):
         self.num_heads = num_heads
@@ -1084,8 +1099,8 @@ class MMSA(eqx.Module):
             key=key_attnproj2,
         )
 
-        self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
+        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
@@ -1121,7 +1136,7 @@ class MMSA(eqx.Module):
         )
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
-        x = jnp.einsum("hqk,hvd->hqd", attn, v)
+        x = jnp.einsum("hqk,hkd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
         x = self.proj_drop(x, inference=inference, key=key2)
@@ -1170,6 +1185,7 @@ class SQA(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        eps: float = 1e-5,
         **kwargs,
     ):
         self.num_heads = num_heads
@@ -1186,10 +1202,10 @@ class SQA(eqx.Module):
         self.proj2 = eqx.nn.Linear(
             int(dim // proj_ratio), dim, use_bias=proj_bias, key=key_proj
         )
-        self.proj_norm = norm_layer(int(dim // proj_ratio))
+        self.proj_norm = norm_layer(int(dim // proj_ratio), eps=eps)
 
-        self.q_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim) if qk_norm else eqx.nn.Identity()
+        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
@@ -1225,7 +1241,7 @@ class SQA(eqx.Module):
         attn = jax.nn.softmax(attn, axis=-1)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
-        x1 = jnp.einsum("hqk,hvd->hqd", attn, v)
+        x1 = jnp.einsum("hqk,hkd->hqd", attn, v)
         x1 = rearrange(x1, "h s d -> s (h d)")
         x1 = jax.vmap(self.proj_norm)(jax.vmap(self.proj1)(x1))
         x1 = jax.vmap(self.proj2)(jax.nn.relu(x1))
@@ -1286,6 +1302,7 @@ class PartialFormerBlock(eqx.Module):
         ffn_layer: eqx.Module = Mlp,
         ffn_bias: bool = True,
         init_values: float | None = None,
+        eps: float = 1e-5,
         **kwargs,
     ):
         (
@@ -1309,8 +1326,8 @@ class PartialFormerBlock(eqx.Module):
         else:
             dr1 = dr2 = float(drop_path)
 
-        self.norm1 = norm_layer(dim)
-        self.norm2 = norm_layer(dim)
+        self.norm1 = norm_layer(dim, eps=eps)
+        self.norm2 = norm_layer(dim, eps=eps)
 
         if init_values:
             self.ls1 = LayerScale(dim, init_values=init_values)
@@ -1330,6 +1347,7 @@ class PartialFormerBlock(eqx.Module):
             attn_drop=attn_drop,
             proj_drop=proj_drop,
             norm_layer=norm_layer,
+            eps=eps,
             key=key_mmsa,
         )
         self.sqa = SQA(
@@ -1342,6 +1360,7 @@ class PartialFormerBlock(eqx.Module):
             proj_ratio=proj_ratio,
             proj_drop=proj_drop,
             norm_layer=norm_layer,
+            eps=eps,
             key=key_sqa,
         )
 
@@ -1351,6 +1370,7 @@ class PartialFormerBlock(eqx.Module):
             act_layer=act_layer,
             dropout_rate=proj_drop,
             bias=ffn_bias,
+            eps=eps,
             key=key_mlp,
         )
 
