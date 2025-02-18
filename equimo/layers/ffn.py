@@ -170,6 +170,7 @@ class Mlp(eqx.Module):
         norm_layer: Callable | None = None,
         dropout_rate: float = 0.0,
         bias: bool = True,
+        eps: float = 1e-5,
         **kwargs,
     ):
         """Initialize the MLP.
@@ -195,7 +196,9 @@ class Mlp(eqx.Module):
         self.fc1 = eqx.nn.Linear(
             in_features, hidden_features, use_bias=bias, key=key_fc1
         )
-        self.norm = norm_layer(hidden_features) if norm_layer else eqx.nn.Identity()
+        self.norm = (
+            norm_layer(hidden_features, eps=eps) if norm_layer else eqx.nn.Identity()
+        )
         self.fc2 = eqx.nn.Linear(
             hidden_features, out_features, use_bias=bias, key=key_fc2
         )

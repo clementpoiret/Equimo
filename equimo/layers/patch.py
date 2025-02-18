@@ -60,6 +60,7 @@ class PatchEmbedding(eqx.Module):
         dynamic_img_size: bool = False,
         dynamic_img_pad: bool = False,
         norm_layer: eqx.Module = eqx.nn.Identity,
+        eps: float = 1e-5,
         **kwargs,
     ):
         patch_size = make_2tuple(patch_size)
@@ -89,7 +90,7 @@ class PatchEmbedding(eqx.Module):
             stride=patch_size,
             key=key,
         )
-        self.norm = norm_layer(dim)
+        self.norm = norm_layer(dim, eps=eps)
 
     def dynamic_feat_size(self, img_size: Tuple[int, int]) -> Tuple[int, int]:
         if self.dynamic_img_pad:
@@ -168,6 +169,7 @@ class ConvPatchEmbed(eqx.Module):
         key: PRNGKeyArray,
         act_layer: Callable = jax.nn.relu,
         norm_layer: Callable = eqx.nn.LayerNorm,
+        eps: float = 1e-5,
     ):
         key_conv1, key_conv2 = jr.split(key, 2)
 
@@ -181,7 +183,7 @@ class ConvPatchEmbed(eqx.Module):
             use_bias=False,
             key=key_conv1,
         )
-        self.norm1 = norm_layer(hidden_channels)
+        self.norm1 = norm_layer(hidden_channels, eps=eps)
         self.act = act_layer
         self.conv2 = eqx.nn.Conv(
             num_spatial_dims=2,
@@ -193,7 +195,7 @@ class ConvPatchEmbed(eqx.Module):
             use_bias=False,
             key=key_conv2,
         )
-        self.norm2 = norm_layer(out_channels)
+        self.norm2 = norm_layer(out_channels, eps=eps)
 
     def flatten(
         self, x: Float[Array, "channels height width"]

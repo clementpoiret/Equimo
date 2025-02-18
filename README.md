@@ -29,16 +29,16 @@ pip install -e .
 
 ## Implemented Models
 
-| Model | Paper | Year | Status |
-|-------|-------|------|--------|
-| FasterViT | [FasterViT: Fast Vision Transformers with Hierarchical Attention](https://arxiv.org/abs/2306.06189) | 2023 | ✅ |
-| Castling-ViT | [Castling-ViT: Compressing Self-Attention via Switching Towards Linear-Angular Attention During Vision Transformer Inference](https://arxiv.org/abs/2211.10526) | 2023 | Partial* |
-| MLLA | [Mamba-like Linear Attention](https://arxiv.org/abs/2405.16605) | 2024 | ✅ |
-| PartialFormer | [Efficient Vision Transformers with Partial Attention](https://eccv.ecva.net/virtual/2024/poster/1877) | 2024 | ✅ |
-| SHViT | [SHViT: Single-Head Vision Transformer with Memory Efficient Macro Design](https://arxiv.org/abs/2401.16456) | 2024 | ✅ |
-| VSSD | [VSSD: Vision Mamba with Non-Causal State Space Duality](https://arxiv.org/abs/2407.18559) | 2024 | ✅ |
+| Model         | Paper                                                                                                                                                           | Year | Status    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | --------- |
+| FasterViT     | [FasterViT: Fast Vision Transformers with Hierarchical Attention](https://arxiv.org/abs/2306.06189)                                                             | 2023 | ✅        |
+| Castling-ViT  | [Castling-ViT: Compressing Self-Attention via Switching Towards Linear-Angular Attention During Vision Transformer Inference](https://arxiv.org/abs/2211.10526) | 2023 | Partial\* |
+| MLLA          | [Mamba-like Linear Attention](https://arxiv.org/abs/2405.16605)                                                                                                 | 2024 | ✅        |
+| PartialFormer | [Efficient Vision Transformers with Partial Attention](https://eccv.ecva.net/virtual/2024/poster/1877)                                                          | 2024 | ✅        |
+| SHViT         | [SHViT: Single-Head Vision Transformer with Memory Efficient Macro Design](https://arxiv.org/abs/2401.16456)                                                    | 2024 | ✅        |
+| VSSD          | [VSSD: Vision Mamba with Non-Causal State Space Duality](https://arxiv.org/abs/2407.18559)                                                                      | 2024 | ✅        |
 
-*: Only contains the [Linear Angular Attention](https://github.com/clementpoiret/Equimo/blob/f8fcc79e45ca65e9deb1d970c4286c0b8562f9c2/equimo/layers/attention.py#L1407) module. It is straight forward to build a ViT around it, but may require an additional `__call__` kwarg to control the `sparse_reg` bool.
+\*: Only contains the [Linear Angular Attention](https://github.com/clementpoiret/Equimo/blob/f8fcc79e45ca65e9deb1d970c4286c0b8562f9c2/equimo/layers/attention.py#L1407) module. It is straight forward to build a ViT around it, but may require an additional `__call__` kwarg to control the `sparse_reg` bool.
 
 ## Basic Usage
 
@@ -68,6 +68,65 @@ x = jax.random.normal(key, (3, 224, 224))
 # Run inference
 output = model(x, enable_dropout=False, key=key)
 ```
+
+## Saving and Loading Models
+
+Equimo provides utilities for saving models locally and loading pre-trained models from the
+[official repository](https://huggingface.co/poiretclement/equimo).
+
+### Saving Models Locally
+
+```python
+from pathlib import Path
+from equimo.io import save_model
+
+# Save model with compression (creates .tar.lz4 file)
+save_model(
+    Path("path/to/save/model"),
+    model,  # can be any model you created using Equimo
+    model_config,
+    torch_hub_cfg,  # This can be an empty list, it's mainly to keep track of where are the weights coming
+    compression=True
+)
+
+# Save model without compression (creates directory)
+save_model(
+    Path("path/to/save/model"),
+    model,
+    model_config,
+    torch_hub_cfg,
+    compression=False
+)
+```
+
+### Loading Models
+
+```python
+from equimo.io import load_model
+
+# Load a pre-trained model from the official repository
+model = load_model(cls="vit", identifier="dinov2_vits14_reg")
+
+# Load a local model (compressed)
+model = load_model(cls="vit", path=Path("path/to/model.tar.lz4"))
+
+# Load a local model (uncompressed directory)
+model = load_model(cls="vit", path=Path("path/to/model/"))
+```
+
+#### List of pretrained models
+
+Currently, only [DinoV2](https://github.com/facebookresearch/dinov2/) have been ported, therefore the following
+identifiers are available:
+
+- `dinov2_vitb14.tar.lz4`
+- `dinov2_vitb14_reg.tar.lz4`
+- `dinov2_vitl14.tar.lz4`
+- `dinov2_vitl14_reg.tar.lz4`
+- `dinov2_vits14.tar.lz4`
+- `dinov2_vits14_reg.tar.lz4`
+
+(`giant` version coming soon)
 
 ## Contributing
 

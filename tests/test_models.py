@@ -1,9 +1,15 @@
-import equimo.models as em
+import tempfile
+from pathlib import Path
+
 import jax.numpy as jnp
 import jax.random as jr
 
+import equimo.models as em
+from equimo.io import save_model, load_model
+
 
 def test_vit_inference():
+    """Test forward pass of a ViT"""
     key = jr.PRNGKey(42)
     img_size = 224
     patch_size = 14
@@ -31,3 +37,86 @@ def test_vit_inference():
 
     assert jnp.all(f1)
     assert jnp.all(f2)
+
+
+def test_save_load_model_compressed():
+    """Test saving and loading a model with compression."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Create a simple model
+        key = jr.PRNGKey(42)
+        model = em.VisionTransformer(
+            img_size=224,
+            in_channels=3,
+            dim=384,
+            patch_size=14,
+            num_heads=[6],
+            depths=[12],
+            num_classes=0,
+            key=key,
+        )
+
+        # Create test input
+        x = jr.normal(key, (3, 224, 224))
+        original_output = model.features(x, key=key)
+
+        # Save model
+        save_path = Path(tmp_dir) / "test_model"
+        model_config = {
+            "img_size": 224,
+            "in_channels": 3,
+            "dim": 384,
+            "patch_size": 14,
+            "num_heads": [6],
+            "depths": [12],
+            "num_classes": 0,
+        }
+        torch_hub_cfg = ["example_config"]
+
+        save_model(save_path, model, model_config, torch_hub_cfg, compression=True)
+
+        # Load model
+        loaded_model = load_model(cls="vit", path=save_path.with_suffix(".tar.lz4"))
+
+        # Test loaded model
+        loaded_output = loaded_model.features(x, key=key)
+
+        # Compare outputs
+        assert jnp.allclose(original_output, loaded_output, atol=1e-5)
+
+
+def test_save_load_model_uncompressed():
+    """Test saving and loading a model without compression."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        key = jr.PRNGKey(42)
+        model = em.VisionTransformer(
+            img_size=224,
+            in_channels=3,
+            dim=384,
+            patch_size=14,
+            num_heads=[6],
+            depths=[12],
+            num_classes=0,
+            key=key,
+        )
+
+        x = jr.normal(key, (3, 224, 224))
+        original_output = model.features(x, key=key)
+
+        save_path = Path(tmp_dir) / "test_model_uncompressed"
+        model_config = {
+            "img_size": 224,
+            "in_channels": 3,
+            "dim": 384,
+            "patch_size": 14,
+            "num_heads": [6],
+            "depths": [12],
+            "num_classes": 0,
+        }
+        torch_hub_cfg = ["example_config"]
+
+        save_model(save_path, model, model_config, torch_hub_cfg, compression=False)
+
+        loaded_model = load_model(cls="vit", path=save_path)
+        loaded_output = loaded_model.features(x, key=key)
+
+        assert jnp.allclose(original_output, loaded_output, atol=1e-5)
