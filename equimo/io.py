@@ -2,12 +2,18 @@ import json
 import tarfile
 import tempfile
 from pathlib import Path
-from loguru import logger
 
 import equinox as eqx
 import jax
 import lz4.frame
+import requests
+from loguru import logger
+
 import equimo.models as em
+
+DEFAULT_REPOSITORY_URL = (
+    "https://huggingface.co/poiretclement/equimo/resolve/main/models/default"
+)
 
 
 def save_model(
@@ -17,7 +23,23 @@ def save_model(
     torch_hub_cfg: list[str],
     compression: bool = True,
 ):
-    """Save model with hyperparameters using Equinox serialization."""
+    """Save an Equinox model with its configuration and metadata to disk.
+
+    Args:
+        path (Path): Target path where the model will be saved. If compression is True
+            and path doesn't end with '.tar.lz4', it will be automatically appended.
+        model (eqx.Module): The Equinox model to be saved.
+        model_config (dict): Configuration dictionary containing model hyperparameters.
+        torch_hub_cfg (list[str]): List of torch hub configuration parameters.
+        compression (bool, optional): Whether to compress the saved model using LZ4.
+            Defaults to True.
+
+    The function saves:
+        - Model weights using Equinox serialization
+        - Metadata including model configuration, torch hub config, and version info
+        - If compression=True: Creates a .tar.lz4 archive containing both files
+        - If compression=False: Creates a directory containing both files
+    """
 
     logger.info(f"Saving model to {path}...")
 
@@ -57,10 +79,89 @@ def save_model(
     logger.info("Model succesfully saved.")
 
 
+@logger.catch
+def download(identifier: str, repository: str) -> Path:
+    """Download a model archive from a specified repository.
+
+    Args:
+        identifier (str): Unique identifier for the model to download.
+        repository (str): Base URL of the repository containing the model.
+
+    Returns:
+        Path: Local path to the downloaded model archive.
+
+    The function:
+        - Constructs the download URL using the repository and identifier
+        - Checks for existing cached file in ~/.cache/equimo/
+        - Downloads and saves the model if not cached
+        - Verifies the download using HTTPS
+        - Raises HTTP errors if download fails
+    """
+
+    logger.info(f"Downloading {identifier}...")
+
+    url = f"{repository}/{identifier}.tar.lz4"
+    path = Path(f"~/.cache/equimo/{identifier}.tar.lz4").expanduser()
+
+    if path.exists():
+        logger.info("Archive already downloaded, using cached file.")
+        return path
+
+    res = requests.get(url, verify=True)
+    res.raise_for_status()
+
+    with open(path.absolute(), "wb") as f:
+        f.write(res.content)
+
+    return path
+
+
+@logger.catch
 def load_model(
-    path: Path, cls: str, key: jax.Array = jax.random.PRNGKey(42)
+    cls: str,
+    identifier: str | None = None,
+    path: Path | None = None,
+    repository: str = DEFAULT_REPOSITORY_URL,
 ) -> eqx.Module:
-    """Load model from serialized format, handling both directories and archives."""
+    """Load an Equinox model from either a local path or remote repository.
+
+    Args:
+        cls (str): Model class identifier. Must be one of: 'vit', 'mlla', 'vssd',
+            'shvit', 'fastervit', 'partialformer'.
+        identifier (str | None, optional): Remote model identifier for downloading.
+            Mutually exclusive with path. Defaults to None.
+        path (Path | None, optional): Local path to load model from.
+            Mutually exclusive with identifier. Defaults to None.
+        repository (str, optional): Base URL for model download.
+            Defaults to DEFAULT_REPOSITORY_URL.
+
+    Returns:
+        eqx.Module: Loaded and initialized model with weights.
+
+    Raises:
+        ValueError: If both identifier and path are None or if both are provided.
+        ValueError: If cls is not one of the supported model types.
+
+    The function:
+        - Downloads model if identifier is provided
+        - Handles both compressed (.tar.lz4) and uncompressed formats
+        - Loads model configuration and metadata
+        - Reconstructs model architecture and loads weights
+        - Supports caching of downloaded and decompressed files
+    """
+
+    if identifier is None and path is None:
+        raise ValueError(
+            "Both `identifier` and `path` are None. Please provide one of them."
+        )
+    if identifier and path:
+        raise ValueError(
+            "Both `identifier` and `path` are defined. Please provide only one of them."
+        )
+
+    if identifier:
+        path = download(identifier, repository)
+
     load_path = path
 
     logger.info(f"Loading a {cls} model...")
@@ -91,11 +192,21 @@ def load_model(
     match cls:
         case "vit":
             model_cls = em.VisionTransformer
+        case "mlla":
+            model_cls = em.Mlla
+        case "vssd":
+            model_cls = em.Vssd
+        case "shvit":
+            model_cls = em.SHViT
+        case "fastervit":
+            model_cls = em.FasterViT
+        case "partialformer":
+            model_cls = em.PartialFormer
         case _:
             raise ValueError(f"Unknown model class: {cls}")
 
     # Reconstruct model skeleton
-    model = model_cls(**metadata["model_config"], key=key)
+    model = model_cls(**metadata["model_config"], key=jax.random.PRNGKey(42))
 
     # Load weights
     model = eqx.tree_deserialise_leaves(load_path / "weights.eqx", model)
