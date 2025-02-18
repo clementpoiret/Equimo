@@ -1,6 +1,6 @@
 [project]
 name = "Equimo"
-version = "0.1.3a9"
+version = "0.2.0"
 description = "Implementation of popular vision models in Jax"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,7 +11,6 @@ dependencies = [
   "jaxlib>=0.4.25",
   "loguru>=0.7.3",
   "lz4>=4.4.3",
-  "orbax-checkpoint>=0.11.5",
   "requests>=2.32.3",
 ]
 
@@ -24,3 +23,6 @@ torch = [
 dev = [
     "pytest>=8.3.4",
 ]
+
+[tool.setuptools]
+license-files = []
