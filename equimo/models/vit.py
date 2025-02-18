@@ -426,8 +426,8 @@ class VisionTransformer(eqx.Module):
     def forward_features(
         self,
         x: Float[Array, "channels height width"],
-        inference: bool,
         key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> dict:
         """Process features and return intermediate representations.
 
