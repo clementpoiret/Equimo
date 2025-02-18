@@ -18,10 +18,10 @@ def main():
         "depths": [12],
         "num_classes": 0,
         "use_mask_token": True,
-        "dynamic_img_size": False,
         "reg_tokens": 4,
         "init_values": 1e-5,
         "eps": 1e-6,
+        "dynamic_img_size": True,
     }
 
     dinov2_vits14_reg = em.VisionTransformer(
@@ -64,6 +64,6 @@ def main():
     )
 
     _ = load_model(
-        Path("~/.cache/equimo/dinov2_vits14_reg.tar.lz4").expanduser(),
-        "vit",
+        cls="vit",
+        path=Path("~/.cache/equimo/dinov2_vits14_reg.tar.lz4").expanduser(),
     )
