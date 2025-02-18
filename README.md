@@ -114,6 +114,20 @@ model = load_model(cls="vit", path=Path("path/to/model.tar.lz4"))
 model = load_model(cls="vit", path=Path("path/to/model/"))
 ```
 
+#### List of pretrained models
+
+Currently, only [DinoV2](https://github.com/facebookresearch/dinov2/) have been ported, therefore the following
+identifiers are available:
+
+- `dinov2_vitb14.tar.lz4`
+- `dinov2_vitb14_reg.tar.lz4`
+- `dinov2_vitl14.tar.lz4`
+- `dinov2_vitl14_reg.tar.lz4`
+- `dinov2_vits14.tar.lz4`
+- `dinov2_vits14_reg.tar.lz4`
+
+(`giant` version coming soon)
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
