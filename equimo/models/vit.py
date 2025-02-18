@@ -224,7 +224,9 @@ class VisionTransformer(eqx.Module):
         )
         self.num_patches = self.patch_embed.num_patches
         self.cls_token = jr.normal(key_cls, (1, dim))
-        self.reg_tokens = jr.normal(key_reg, (reg_tokens, dim))
+        self.reg_tokens = (
+            jr.normal(key_reg, (reg_tokens, dim)) if reg_tokens > 0 else None
+        )
 
         self.mask_token = jnp.zeros((1, dim)) if use_mask_token else None
 
