@@ -1,6 +1,6 @@
 [project]
 name = "Equimo"
-version = "0.2.1"
+version = "0.2.2"
 description = "Implementation of popular vision models in Jax"
 readme = "README.md"
 requires-python = ">=3.11"
