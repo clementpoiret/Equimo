@@ -120,3 +120,16 @@ def test_save_load_model_uncompressed():
         loaded_output = loaded_model.features(x, key=key)
 
         assert jnp.allclose(original_output, loaded_output, atol=1e-5)
+
+
+def test_load_pretrained_model():
+    """Test loading a pretrained model from the repository."""
+    key = jr.PRNGKey(42)
+    model = load_model(cls="vit", identifier="dinov2_vits14_reg")
+
+    # Test inference
+    x = jr.normal(key, (3, 224, 224))
+    features = model.features(x, key=key)
+
+    assert features.shape[-1] == 384  # DINOv2-S has embedding dimension of 384
+    assert jnp.all(jnp.isfinite(features))  # Check for NaN/Inf values
