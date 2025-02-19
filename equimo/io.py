@@ -102,6 +102,7 @@ def download(identifier: str, repository: str) -> Path:
 
     url = f"{repository}/{identifier}.tar.lz4"
     path = Path(f"~/.cache/equimo/{identifier}.tar.lz4").expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     if path.exists():
         logger.info("Archive already downloaded, using cached file.")
