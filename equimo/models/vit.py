@@ -8,8 +8,14 @@ import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from equimo.layers.attention import Attention, AttentionBlock
-from equimo.layers.ffn import Mlp
+from equimo.layers.attention import (
+    Attention,
+    AttentionBlock,
+    get_attention,
+    get_attention_block,
+)
+from equimo.layers.ffn import Mlp, get_ffn
+from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
 from equimo.layers.posemb import PosCNN
 from equimo.utils import pool_sd, to_list
@@ -177,7 +183,7 @@ class VisionTransformer(eqx.Module):
         pos_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
-        block: eqx.Module = AttentionBlock,
+        block: str | eqx.Module = AttentionBlock,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
         proj_bias: bool = True,
@@ -185,10 +191,10 @@ class VisionTransformer(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         act_layer: Callable = jax.nn.gelu,
-        attn_layer: eqx.Module = Attention,
-        ffn_layer: eqx.Module = Mlp,
+        attn_layer: str | eqx.Module = Attention,
+        ffn_layer: str | eqx.Module = Mlp,
         ffn_bias: bool = True,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | eqx.Module = eqx.nn.LayerNorm,
         init_values: float | None = None,
         global_pool: Literal["", "token", "avg", "avgmax", "max"] = "avg",
         num_classes: int = 1000,
@@ -211,6 +217,11 @@ class VisionTransformer(eqx.Module):
         self.pos_embed_reg_tokens = pos_embed_reg_tokens
         self.global_pool = global_pool
         self.embed_size = img_size // patch_size
+
+        block = get_attention_block(block)
+        attn_layer = get_attention(attn_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
 
         self.patch_embed = PatchEmbedding(
             in_channels,
