@@ -285,10 +285,10 @@ class SwiGlu(eqx.Module):
         out_features = out_features or in_features
 
         self.w12 = eqx.nn.Linear(
-            in_features, hidden_features, use_bias=bias, key=key_fc1
+            in_features, 2 * hidden_features, use_bias=bias, key=key_fc1
         )
         self.w3 = eqx.nn.Linear(
-            hidden_features // 2, out_features, use_bias=bias, key=key_fc2
+            hidden_features, out_features, use_bias=bias, key=key_fc2
         )
 
         self.drop1 = eqx.nn.Dropout(dropout_rate)
@@ -317,3 +317,57 @@ class SwiGlu(eqx.Module):
         )
 
         return x
+
+
+class SwiGluFused(SwiGlu):
+    def __init__(
+        self,
+        in_features: int,
+        *,
+        key: PRNGKeyArray,
+        out_features: int | None = None,
+        hidden_features: int | None = None,
+        dropout_rate: float = 0,
+        bias: bool = True,
+        **kwargs,
+    ):
+        """This matches the implementation of Dinov2 giant at
+        https://github.com/facebookresearch/dinov2/blob/e1277af2ba9496fbadf7aec6eba56e8d882d1e35/dinov2/layers/swiglu_ffn.py#L54
+        """
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        hidden_features = (int(hidden_features * 2 / 3) + 7) // 8 * 8
+
+        super().__init__(
+            in_features,
+            key=key,
+            out_features=out_features,
+            hidden_features=hidden_features,
+            dropout_rate=dropout_rate,
+            bias=bias,
+            **kwargs,
+        )
+
+
+def get_ffn(module: str | eqx.Module) -> eqx.Module:
+    """Get an `eqx.Module` from its common name.
+
+    This is necessary because configs have to be stringified and stored as
+    json files to allow (de)serialization.
+    """
+    if not isinstance(module, str):
+        return module
+
+    match module:
+        case "mlp":
+            return Mlp
+        case "swiglu":
+            return SwiGlu
+        case "swiglufused":
+            return SwiGluFused
+        case "dinohead":
+            return DINOHead
+        case "weightnormlinear":
+            return WeightNormLinear
+        case _:
+            raise ValueError(f"Got an unknown module string: {module}")

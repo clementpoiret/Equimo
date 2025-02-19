@@ -85,3 +85,27 @@ class LayerScale(eqx.Module):
             Scaled tensor of same shape as input
         """
         return x * self.gamma
+
+
+def get_norm(module: str | eqx.Module) -> eqx.Module:
+    """Get an `eqx.Module` from its common name.
+
+    This is necessary because configs have to be stringified and stored as
+    json files to allow (de)serialization.
+    """
+    if not isinstance(module, str):
+        return module
+
+    match module:
+        case "layernorm":
+            return eqx.nn.LayerNorm
+        case "rmsnorm":
+            return eqx.nn.RMSNorm
+        case "groupnorm":
+            return eqx.nn.GroupNorm
+        case "rmsnormgated":
+            return RMSNormGated
+        case "layerscale":
+            return LayerScale
+        case _:
+            raise ValueError(f"Got an unknown module string: {module}")

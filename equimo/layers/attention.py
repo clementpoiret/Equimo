@@ -1552,3 +1552,53 @@ class LinearAngularAttention(eqx.Module):
         x = self.proj_drop(x, inference=inference, key=key2)
 
         return x
+
+
+def get_attention(module: str | eqx.Module) -> eqx.Module:
+    """Get an `eqx.Module` from its common name.
+
+    This is necessary because configs have to be stringified and stored as
+    json files to allow (de)serialization.
+    """
+    if not isinstance(module, str):
+        return module
+
+    match module:
+        case "attention":
+            return Attention
+        case "windowedattention":
+            return WindowedAttention
+        case "shsa":
+            return SHSA
+        case "linearattention":
+            return LinearAttention
+        case "mmsa":
+            return MMSA
+        case "sqa":
+            return SQA
+        case "linearangularattention":
+            return LinearAngularAttention
+        case _:
+            raise ValueError(f"Got an unknown module string: {module}")
+
+
+def get_attention_block(module: str | eqx.Module) -> eqx.Module:
+    """Get an `eqx.Module` from its common name.
+
+    This is necessary because configs have to be stringified and stored as
+    json files to allow (de)serialization.
+    """
+    if not isinstance(module, str):
+        return module
+
+    match module:
+        case "attentionblock":
+            return AttentionBlock
+        case "hatblock":
+            return HATBlock
+        case "mllablock":
+            return MllaBlock
+        case "partialformerblock":
+            return PartialFormerBlock
+        case _:
+            raise ValueError(f"Got an unknown module string: {module}")
