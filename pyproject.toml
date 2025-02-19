@@ -1,6 +1,6 @@
 [project]
 name = "Equimo"
-version = "0.2.0"
+version = "0.2.1"
 description = "Implementation of popular vision models in Jax"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,6 +12,21 @@ dependencies = [
   "loguru>=0.7.3",
   "lz4>=4.4.3",
   "requests>=2.32.3",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+
+  "License :: OSI Approved :: MIT License",
+
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 
 [project.optional-dependencies]
