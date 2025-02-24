@@ -1,6 +1,6 @@
 [project]
 name = "Equimo"
-version = "0.2.2"
+version = "0.2.3"
 description = "Implementation of popular vision models in Jax"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,6 +12,7 @@ dependencies = [
   "loguru>=0.7.3",
   "lz4>=4.4.3",
   "requests>=2.32.3",
+  "semver>=3.0.4",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -32,6 +33,7 @@ classifiers = [
 [project.optional-dependencies]
 torch = [
   "torch>=2.6.0",
+  "timm>=1.0.15",
 ]
 
 [dependency-groups]

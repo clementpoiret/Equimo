@@ -8,8 +8,10 @@ import jax
 import lz4.frame
 import requests
 from loguru import logger
+from semver import Version
 
 import equimo.models as em
+from equimo import __version__
 
 DEFAULT_REPOSITORY_URL = (
     "https://huggingface.co/poiretclement/equimo/resolve/main/models/default"
@@ -20,7 +22,8 @@ def save_model(
     path: Path,
     model: eqx.Module,
     model_config: dict,
-    torch_hub_cfg: list[str],
+    torch_hub_cfg: list[str] = [],
+    timm_cfg: list = [],
     compression: bool = True,
 ):
     """Save an Equinox model with its configuration and metadata to disk.
@@ -31,6 +34,7 @@ def save_model(
         model (eqx.Module): The Equinox model to be saved.
         model_config (dict): Configuration dictionary containing model hyperparameters.
         torch_hub_cfg (list[str]): List of torch hub configuration parameters.
+        timm_cfg (list[str]): List of timm configuration parameters.
         compression (bool, optional): Whether to compress the saved model using LZ4.
             Defaults to True.
 
@@ -46,8 +50,10 @@ def save_model(
     metadata = {
         "model_config": model_config,
         "torch_hub_cfg": torch_hub_cfg,
+        "timm": timm_cfg,
         "jax_version": jax.__version__,
         "equinox_version": eqx.__version__,
+        "equimo_version": __version__,
     }
 
     logger.debug(f"Metadata: {metadata}")
@@ -100,8 +106,9 @@ def download(identifier: str, repository: str) -> Path:
 
     logger.info(f"Downloading {identifier}...")
 
-    url = f"{repository}/{identifier}.tar.lz4"
-    path = Path(f"~/.cache/equimo/{identifier}.tar.lz4").expanduser()
+    model = identifier.split("_")[0]
+    url = f"{repository}/{model}/{identifier}.tar.lz4"
+    path = Path(f"~/.cache/equimo/{model}/{identifier}.tar.lz4").expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if path.exists():
@@ -123,6 +130,7 @@ def load_model(
     identifier: str | None = None,
     path: Path | None = None,
     repository: str = DEFAULT_REPOSITORY_URL,
+    **model_kwargs,
 ) -> eqx.Module:
     """Load an Equinox model from either a local path or remote repository.
 
@@ -135,6 +143,7 @@ def load_model(
             Mutually exclusive with identifier. Defaults to None.
         repository (str, optional): Base URL for model download.
             Defaults to DEFAULT_REPOSITORY_URL.
+        model_kwargs: kwargs passed to model instanciation. Overrides metadatas.
 
     Returns:
         eqx.Module: Loaded and initialized model with weights.
@@ -189,6 +198,12 @@ def load_model(
 
     logger.debug(f"Metadata: {metadata}")
 
+    model_eqm_version = metadata.get("equimo_version", "0.2.0")
+    if Version.parse(model_eqm_version) > Version.parse(__version__):
+        logger.warning(
+            f"The model you are importing was packaged with equimo v{model_eqm_version}, but you have equimo v{__version__}. You may face unexpected errors. Please consider updating equimo."
+        )
+
     # Class resolution
     match cls:
         case "vit":
@@ -207,7 +222,8 @@ def load_model(
             raise ValueError(f"Unknown model class: {cls}")
 
     # Reconstruct model skeleton
-    model = model_cls(**metadata["model_config"], key=jax.random.PRNGKey(42))
+    kwargs = metadata["model_config"] | model_kwargs
+    model = model_cls(**kwargs, key=jax.random.PRNGKey(42))
 
     # Load weights
     model = eqx.tree_deserialise_leaves(load_path / "weights.eqx", model)

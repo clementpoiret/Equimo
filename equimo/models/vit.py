@@ -8,6 +8,7 @@ import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.layers.attention import (
     Attention,
     AttentionBlock,
@@ -190,7 +191,7 @@ class VisionTransformer(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: Callable | str = jax.nn.gelu,
         attn_layer: str | eqx.Module = Attention,
         ffn_layer: str | eqx.Module = Mlp,
         ffn_bias: bool = True,
@@ -222,6 +223,7 @@ class VisionTransformer(eqx.Module):
         attn_layer = get_attention(attn_layer)
         ffn_layer = get_ffn(ffn_layer)
         norm_layer = get_norm(norm_layer)
+        act_layer = get_act(act_layer)
 
         self.patch_embed = PatchEmbedding(
             in_channels,
@@ -234,7 +236,7 @@ class VisionTransformer(eqx.Module):
             key=key_patchemb,
         )
         self.num_patches = self.patch_embed.num_patches
-        self.cls_token = jr.normal(key_cls, (1, dim))
+        self.cls_token = jr.normal(key_cls, (1, dim)) if class_token else None
         self.reg_tokens = (
             jr.normal(key_reg, (reg_tokens, dim)) if reg_tokens > 0 else None
         )

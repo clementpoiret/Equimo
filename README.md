@@ -29,6 +29,8 @@ pip install -e .
 
 ## Implemented Models
 
+Beyond normal ViT (e.g., dinov2 or siglip), equimo proposes other SotA architectures:
+
 | Model         | Paper                                                                                                                                                           | Year | Status    |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | --------- |
 | FasterViT     | [FasterViT: Fast Vision Transformers with Hierarchical Attention](https://arxiv.org/abs/2306.06189)                                                             | 2023 | ✅        |
@@ -114,19 +116,28 @@ model = load_model(cls="vit", path=Path("path/to/model.tar.lz4"))
 model = load_model(cls="vit", path=Path("path/to/model/"))
 ```
 
+Parameters passed to models can be overridden such as:
+
+```python
+model = load_model(
+    cls="vit",
+    identifier="siglip2_vitb16_256",
+    dynamic_img_size=True,  # passed to the VisionTransformer class
+)
+```
+
 #### List of pretrained models
 
-Currently, only [DinoV2](https://github.com/facebookresearch/dinov2/) have been ported, therefore the following
-identifiers are available:
+Currently, only [DinoV2](https://github.com/facebookresearch/dinov2/) and SigLIP2 have been ported.
 
-- `dinov2_vitb14.tar.lz4`
-- `dinov2_vitb14_reg.tar.lz4`
-- `dinov2_vitl14.tar.lz4`
-- `dinov2_vitl14_reg.tar.lz4`
-- `dinov2_vits14.tar.lz4`
-- `dinov2_vits14_reg.tar.lz4`
+Model identifiers allows downloading from equimo's [repository on huggingface](https://huggingface.co/poiretclement/equimo/tree/main/models/default)
 
-(`giant` version coming soon)
+Identifiers are filenames without the extensions, such as:
+
+- `dinov2_vitb14`
+- `dinov2_vits14_reg`
+- `siglip2_vitl16_512`
+- `siglip2_vitso400m16_384`
 
 ## Contributing
 
