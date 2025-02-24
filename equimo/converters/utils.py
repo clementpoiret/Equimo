@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -33,12 +33,15 @@ def expand_torch_tensor(tensor, pos: str, n: int):
 
 def convert_params_from_torch_hub(
     jax_model: eqx.Module,
-    torch_hub_cfg: list[str],
     replace_cfg: Dict[str, str],
     expand_cfg: Dict[str, list],
     squeeze_cfg: Dict[str, int | None],
     whitelist: list[str],
     strict: bool = True,
+    source: Literal["torchhub", "timm"] = "torchhub",
+    torch_hub_cfg: Optional[list[str]] = None,
+    timm_cfg: Optional[list] = None,
+    return_torch: bool = False,
 ):
     """
     Load weights from a torch hub model into an Equinox module.
@@ -46,16 +49,37 @@ def convert_params_from_torch_hub(
     Args:
         jax_model (eqx.Module): A preexisting Jax model corresponding to the checkpoint to download.
         torch_hub_cfg (Tuple[str]): Arguments passed to `torch.hub.load()`.
-        transpose_whitelist (Set[str]): Parameters to exclude from format conversion.
+        replace_cfg (Dict[str, str]): Rename parameters from key to value.
+        expand_cfg (Dict[str, list]): Config to reshape params, see `expand_torch_tensor`
+        sqeeze_cfg (Dict[str, int|None]): Config to squeeze tensors, opposite of expand.
+        whitelist (Set[str]): Parameters to exclude from format conversion.
         strict (bool): Whether to crash on missing parameters one of the models.
+        source (str): Torch Hub or timm.
+        torch_hub_cfg (Optional[list]): args to pass to `torch.hub.load`.
+        timm_cfg (Optional[list]): args to pass to `timm.create_model`.
+        return_torch (bool): Return both jax and torch models.
     """
     try:
+        import timm
         import torch
     except:
         raise ImportError("`torch` not available")
 
-    # Load the pytorch model from torch hub
-    torch_model = torch.hub.load(*torch_hub_cfg)
+    # Load the pytorch model
+    match source:
+        case "torchhub":
+            if torch_hub_cfg is None:
+                raise ValueError(
+                    "The `torchhub` source is selected but `torch_hub_cfg` is None."
+                )
+            torch_model = torch.hub.load(*torch_hub_cfg)
+        case "timm":
+            if timm_cfg is None:
+                raise ValueError(
+                    "The `timm` source is selected but `timm_cfg` is None."
+                )
+            torch_model = timm.create_model(*timm_cfg)
+
     torch_params = dict(torch_model.named_parameters())
 
     # Extract the parameters from the defined Jax model
@@ -111,42 +135,71 @@ def convert_params_from_torch_hub(
             logger.error(_msg)
             raise AttributeError(_msg)
 
+    if return_torch:
+        return loaded_params, torch_model
     return loaded_params
 
 
 def convert_torch_to_equinox(
     jax_model: eqx.Module,
-    torch_hub_cfg: list[str],
     replace_cfg: dict = {},
     expand_cfg: dict = {},
     squeeze_cfg: dict = {},
     whitelist: list[str] = [],
     strict: bool = True,
-) -> eqx.Module:
+    source: Literal["torchhub", "timm"] = "torchhub",
+    torch_hub_cfg: Optional[list[str]] = None,
+    timm_cfg: Optional[list] = None,
+    return_torch: bool = False,
+) -> eqx.Module | Tuple[eqx.Module, Any]:
     """
     Convert a PyTorch model from torch.hub to Equinox format.
 
     Args:
         jax_model: The Equinox model
-        torch_hub_cfg: [repo, model_name] for torch.hub.load
         replace_cfg: Dict of parameter name replacements
         expand_cfg: Dict of dimensions to expand
         squeeze_cfg: Dict of dimensions to squeeze
         whitelist: List of parameters to keep from JAX model
         strict: Wether to raise an issue if not all weights are converted
+        source (str): Torch Hub or timm.
+        torch_hub_cfg: [repo, model_name] for torch.hub.load
+        timm_cfg (Optional[list]): args to pass to `timm.create_model`.
+        return_torch (bool): Return both jax and torch models.
 
     Returns:
         eqx.Module: Converted Equinox model in inference mode
     """
     dynamic, static = eqx.partition(jax_model, eqx.is_array)
-    converted_params = convert_params_from_torch_hub(
-        dynamic,
-        torch_hub_cfg,
-        replace_cfg,
-        expand_cfg,
-        squeeze_cfg,
-        whitelist,
-        strict,
-    )
+    if return_torch:
+        converted_params, torch_model = convert_params_from_torch_hub(
+            dynamic,
+            replace_cfg,
+            expand_cfg,
+            squeeze_cfg,
+            whitelist,
+            strict,
+            source,
+            torch_hub_cfg,
+            timm_cfg,
+            return_torch,
+        )
 
-    return eqx.nn.inference_mode(eqx.combine(converted_params, static), value=True)
+        return eqx.nn.inference_mode(
+            eqx.combine(converted_params, static), value=True
+        ), torch_model.eval()
+    else:
+        converted_params = convert_params_from_torch_hub(
+            dynamic,
+            replace_cfg,
+            expand_cfg,
+            squeeze_cfg,
+            whitelist,
+            strict,
+            source,
+            torch_hub_cfg,
+            timm_cfg,
+            return_torch,
+        )
+
+        return eqx.nn.inference_mode(eqx.combine(converted_params, static), value=True)
