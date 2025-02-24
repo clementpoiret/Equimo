@@ -116,6 +116,16 @@ model = load_model(cls="vit", path=Path("path/to/model.tar.lz4"))
 model = load_model(cls="vit", path=Path("path/to/model/"))
 ```
 
+Parameters passed to models can be overridden such as:
+
+```python
+model = load_model(
+    cls="vit",
+    identifier="siglip2_vitb16_256",
+    dynamic_img_size=True,  # passed to the VisionTransformer class
+)
+```
+
 #### List of pretrained models
 
 Currently, only [DinoV2](https://github.com/facebookresearch/dinov2/) and SigLIP2 have been ported.
