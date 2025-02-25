@@ -72,6 +72,7 @@ def save_model(
             eqx.tree_serialise_leaves(tmp_path / "weights.eqx", model)
 
             # Create compressed archive
+            path.parent.mkdir(parents=True, exist_ok=True)
             with lz4.frame.open(path, "wb") as f_out:
                 with tarfile.open(fileobj=f_out, mode="w") as tar:
                     tar.add(tmp_path / "metadata.json", arcname="metadata.json")
