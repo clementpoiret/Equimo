@@ -128,9 +128,13 @@ model = load_model(
 
 #### List of pretrained models
 
-Currently, only [DinoV2](https://github.com/facebookresearch/dinov2/) and SigLIP2 have been ported.
+The following models have pretrained weights available in Equimo:
 
-Model identifiers allows downloading from equimo's [repository on huggingface](https://huggingface.co/poiretclement/equimo/tree/main/models/default)
+- [DinoV2](https://arxiv.org/abs/2304.07193),
+- [SigLIP2](https://arxiv.org/abs/2502.14786),
+- [TIPS](https://arxiv.org/abs/2410.16512).
+
+Model identifiers allow downloading from equimo's [repository on huggingface](https://huggingface.co/poiretclement/equimo/tree/main/models/default)
 
 Identifiers are filenames without the extensions, such as:
 
@@ -138,6 +142,7 @@ Identifiers are filenames without the extensions, such as:
 - `dinov2_vits14_reg`
 - `siglip2_vitl16_512`
 - `siglip2_vitso400m16_384`
+- `tips_vitg14_lr`
 
 ## Contributing
 

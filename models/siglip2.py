@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import equimo.models as em
-from equimo.converters.utils import convert_torch_to_equinox
+from equimo.conversion.utils import convert_torch_to_equinox
 from equimo.io import load_model, save_model
 
 
