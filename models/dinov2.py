@@ -5,8 +5,8 @@ import jax.numpy as jnp
 import numpy as np
 
 import equimo.models as em
-from equimo.converters.utils import convert_torch_to_equinox
-from equimo.io import load_model, save_model
+from equimo.conversion.utils import convert_torch_to_equinox
+from equimo.io import save_model
 
 
 def compare(j, t) -> float:
@@ -151,8 +151,3 @@ def main():
             torch_hub_cfg,
             compression=True,
         )
-
-        # _ = load_model(
-        #     cls="vit",
-        #     path=Path(f"~/.cache/equimo/dinov2/{name}.tar.lz4").expanduser(),
-        # )

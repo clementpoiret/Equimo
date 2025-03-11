@@ -31,15 +31,16 @@ def expand_torch_tensor(tensor, pos: str, n: int):
             )
 
 
-def convert_params_from_torch_hub(
+def convert_params_from_torch(
     jax_model: eqx.Module,
     replace_cfg: Dict[str, str],
     expand_cfg: Dict[str, list],
     squeeze_cfg: Dict[str, int | None],
     whitelist: list[str],
     strict: bool = True,
-    source: Literal["torchhub", "timm"] = "torchhub",
+    source: Literal["torchhub", "timm", "custom"] = "torchhub",
     torch_hub_cfg: Optional[list[str]] = None,
+    torch_model=None,
     timm_cfg: Optional[list] = None,
     return_torch: bool = False,
 ):
@@ -56,6 +57,7 @@ def convert_params_from_torch_hub(
         strict (bool): Whether to crash on missing parameters one of the models.
         source (str): Torch Hub or timm.
         torch_hub_cfg (Optional[list]): args to pass to `torch.hub.load`.
+        torch_model [torch.nn.Module]: Custom torch model
         timm_cfg (Optional[list]): args to pass to `timm.create_model`.
         return_torch (bool): Return both jax and torch models.
     """
@@ -67,6 +69,11 @@ def convert_params_from_torch_hub(
 
     # Load the pytorch model
     match source:
+        case "custom":
+            if torch_model is None:
+                raise ValueError(
+                    "The `custom` source is selected but `torch_model` is None."
+                )
         case "torchhub":
             if torch_hub_cfg is None:
                 raise ValueError(
@@ -149,6 +156,7 @@ def convert_torch_to_equinox(
     strict: bool = True,
     source: Literal["torchhub", "timm"] = "torchhub",
     torch_hub_cfg: Optional[list[str]] = None,
+    torch_model=None,
     timm_cfg: Optional[list] = None,
     return_torch: bool = False,
 ) -> eqx.Module | Tuple[eqx.Module, Any]:
@@ -164,6 +172,7 @@ def convert_torch_to_equinox(
         strict: Wether to raise an issue if not all weights are converted
         source (str): Torch Hub or timm.
         torch_hub_cfg: [repo, model_name] for torch.hub.load
+        torch_model [torch.nn.Module]: Custom torch model
         timm_cfg (Optional[list]): args to pass to `timm.create_model`.
         return_torch (bool): Return both jax and torch models.
 
@@ -172,7 +181,7 @@ def convert_torch_to_equinox(
     """
     dynamic, static = eqx.partition(jax_model, eqx.is_array)
     if return_torch:
-        converted_params, torch_model = convert_params_from_torch_hub(
+        converted_params, torch_model = convert_params_from_torch(
             dynamic,
             replace_cfg,
             expand_cfg,
@@ -181,6 +190,7 @@ def convert_torch_to_equinox(
             strict,
             source,
             torch_hub_cfg,
+            torch_model,
             timm_cfg,
             return_torch,
         )
@@ -189,7 +199,7 @@ def convert_torch_to_equinox(
             eqx.combine(converted_params, static), value=True
         ), torch_model.eval()
     else:
-        converted_params = convert_params_from_torch_hub(
+        converted_params = convert_params_from_torch(
             dynamic,
             replace_cfg,
             expand_cfg,
@@ -198,6 +208,7 @@ def convert_torch_to_equinox(
             strict,
             source,
             torch_hub_cfg,
+            torch_model,
             timm_cfg,
             return_torch,
         )
