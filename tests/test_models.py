@@ -127,7 +127,7 @@ def test_save_load_model_uncompressed():
 def test_load_pretrained_model():
     """Test loading a pretrained model from the repository."""
     key = jr.PRNGKey(42)
-    model = load_model(cls="vit", identifier="dinov2_vits14_reg")
+    model = load_model(cls="vit", identifier="dinov2_vits14_reg", dynamic_img_size=True)
 
     # Test inference
     x = jr.normal(key, (3, 224, 224))
