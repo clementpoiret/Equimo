@@ -1,6 +1,6 @@
 [project]
 name = "Equimo"
-version = "0.2.4"
+version = "0.3.0"
 description = "Implementation of popular vision models in Jax"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,9 +31,21 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+# Useful to convert models from PyTorch
 torch = [
   "torch>=2.6.0",
   "timm>=1.0.15",
+]
+# Required for equimo.experimental.text (text tokenizer)
+text = [
+  "tensorflow>=2.18.1",
+  "tensorflow-text>=2.18.1",
+]
+# Required for some external utils
+extras = [
+  "matplotlib>=3.10.1",
+  "pillow>=11.1.0",
+  "scikit-learn>=1.6.1",
 ]
 
 [dependency-groups]

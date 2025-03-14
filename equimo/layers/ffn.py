@@ -210,6 +210,7 @@ class Mlp(eqx.Module):
         self,
         x: Float[Array, "seqlen dim"],
         key: PRNGKeyArray,
+        mask: Optional[Float[Array, ""]] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_dr1, key_dr2 = jr.split(key, 2)
@@ -219,11 +220,18 @@ class Mlp(eqx.Module):
             inference=inference,
             key=key_dr1,
         )
+
+        if mask is not None:
+            x *= mask
+
         x = self.drop2(
             jax.vmap(self.fc2)(x),
             inference=inference,
             key=key_dr2,
         )
+
+        if mask is not None:
+            x *= mask
 
         return x
 
