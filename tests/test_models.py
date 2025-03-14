@@ -75,7 +75,9 @@ def test_save_load_model_compressed():
         save_model(save_path, model, model_config, torch_hub_cfg, compression=True)
 
         # Load model
-        loaded_model = load_model(cls="vit", path=save_path.with_suffix(".tar.lz4"))
+        loaded_model = load_model(
+            cls="vit", path=save_path.with_suffix(".tar.lz4"), dynamic_img_size=True
+        )
 
         # Test loaded model
         loaded_output = loaded_model.features(x, key=key)
@@ -116,7 +118,7 @@ def test_save_load_model_uncompressed():
 
         save_model(save_path, model, model_config, torch_hub_cfg, compression=False)
 
-        loaded_model = load_model(cls="vit", path=save_path)
+        loaded_model = load_model(cls="vit", path=save_path, dynamic_img_size=True)
         loaded_output = loaded_model.features(x, key=key)
 
         assert jnp.allclose(original_output, loaded_output, atol=1e-5)

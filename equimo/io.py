@@ -1,10 +1,13 @@
 import json
+import io
 import tarfile
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import lz4.frame
 import requests
 from loguru import logger
@@ -131,6 +134,7 @@ def load_model(
     identifier: str | None = None,
     path: Path | None = None,
     repository: str = DEFAULT_REPOSITORY_URL,
+    inference_mode: bool = True,
     **model_kwargs,
 ) -> eqx.Module:
     """Load an Equinox model from either a local path or remote repository.
@@ -144,6 +148,8 @@ def load_model(
             Mutually exclusive with identifier. Defaults to None.
         repository (str, optional): Base URL for model download.
             Defaults to DEFAULT_REPOSITORY_URL.
+        inference_mode (bool): Disables dropouts if True.
+            Defaults to True.
         model_kwargs: kwargs passed to model instanciation. Overrides metadatas.
 
     Returns:
@@ -219,6 +225,10 @@ def load_model(
             model_cls = em.FasterViT
         case "partialformer":
             model_cls = em.PartialFormer
+        case "experimental.textencoder":
+            from equimo.experimental.text import TextEncoder
+
+            model_cls = TextEncoder
         case _:
             raise ValueError(f"Unknown model class: {cls}")
 
@@ -226,9 +236,52 @@ def load_model(
     kwargs = metadata["model_config"] | model_kwargs
     model = model_cls(**kwargs, key=jax.random.PRNGKey(42))
 
-    # Load weights
+    # Load weights and set inference mode
     model = eqx.tree_deserialise_leaves(load_path / "weights.eqx", model)
+    model = eqx.nn.inference_mode(model, inference_mode)
 
     logger.info("Model loaded successfully.")
 
     return model
+
+
+def load_image(
+    path: str,
+    mean: Optional[list[float]] = None,
+    std: Optional[list[float]] = None,
+    size: Optional[int] = None,
+):
+    """Load an image and perform minor preprocessing.
+
+    Args:
+        path (str): Path of the image.
+        mean (list, optional): Channel mean for normalization.
+        std (list, optional): Channel std for normalization.
+        size (int, optional): Size to which resize the image.
+
+    Returns:
+        jnp.array: The loaded image.
+
+    Raises:
+        ImportError: If PIL can't be loaded.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("PIL is needed to be able to load images.")
+
+    with open(path, "rb") as fd:
+        image_bytes = io.BytesIO(fd.read())
+        pil_image = Image.open(image_bytes)
+
+        array = jnp.array(pil_image).astype(jnp.float32) / 255.0
+        if size is not None:
+            array = jax.image.resize(array, (size, size, 3), method="bilinear")
+
+        if mean is not None and std is not None:
+            mean = jnp.array(mean)[None, None, :]
+            std = jnp.array(std)[None, None, :]
+
+            array = (array - mean) / std
+
+    return array.transpose(2, 0, 1)

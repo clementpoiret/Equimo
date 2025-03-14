@@ -1,5 +1,4 @@
 from typing import Callable, List, Optional, Tuple
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -74,6 +73,7 @@ class Attention(eqx.Module):
         x: Float[Array, "seqlen dim"],
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
+        mask: Optional[Float[Array, ""]] = None,
     ) -> Float[Array, "seqlen dim"]:
         key1, key2 = jr.split(key, 2)
 
@@ -90,6 +90,10 @@ class Attention(eqx.Module):
         k = jax.vmap(jax.vmap(self.k_norm))(k)
 
         attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
+
+        if mask is not None:
+            attn = jnp.where(mask == 0, jnp.finfo(attn.dtype).min, attn)
+
         attn = jax.nn.softmax(attn, axis=-1)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
@@ -312,8 +316,13 @@ class AttentionBlock(eqx.Module):
         x: Float[Array, "seqlen dim"],
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
+        mask: Optional[Float[Array, ""]] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_attn, key_mlp, key_dr1, key_dr2 = jr.split(key, 4)
+
+        # I chose to define extra args here rather than passing mask directly
+        # because not all attention mechanisms support masks as args
+        extra_kwargs = {"mask": mask} if mask is not None else {}
 
         x = self.drop_path1(
             x,
@@ -323,6 +332,7 @@ class AttentionBlock(eqx.Module):
                         jax.vmap(self.prenorm)(x),
                         inference=inference,
                         key=key_attn,
+                        **extra_kwargs,
                     )
                 )
             ),
@@ -336,6 +346,7 @@ class AttentionBlock(eqx.Module):
                     jax.vmap(self.norm)(x),
                     inference=inference,
                     key=key_mlp,
+                    **extra_kwargs,
                 )
             ),
             inference=inference,

@@ -4,6 +4,84 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+import typing as t
+import numpy as np
+
+
+_ArrayLike = t.Union[np.ndarray, jnp.ndarray]
+
+
+def normalize(x, order: int = 2):
+    return x / np.linalg.norm(x, ord=order, axis=-1, keepdims=True).clip(min=1e-3)
+
+
+class PCAVisualizer:
+    """PCA visualizer.
+
+    Taken as-is from https://github.com/google-deepmind/tips/blob/72820c1841f973c9543d9c95c5ff2262ec621955/scenic/utils/feature_viz.py#L32
+    """
+
+    def __init__(
+        self, features: _ArrayLike, n_samples: int = 100000, n_components: int = 3
+    ) -> None:
+        """Creates a PCA object for visualizing features of shape [..., F]."""
+        try:
+            from sklearn import decomposition
+        except ImportError:
+            raise ImportError(
+                "You need sklearn to use the PCAVisualizer, install it using `uv add equimo[viz]`"
+            )
+
+        features = np.array(features)
+        pca_object = decomposition.PCA(n_components=n_components)
+        features = features.reshape([-1, features.shape[-1]])
+        features = features[np.random.randint(0, features.shape[0], n_samples), :]
+        pca_object.fit(features)
+        self.pca_object = pca_object
+        self.n_components = n_components
+
+    def __call__(self, features: _ArrayLike) -> np.ndarray:
+        """Apply PCA to features of shape [..., F]."""
+        features = np.array(features)
+        features_pca = self.pca_object.transform(
+            features.reshape([-1, features.shape[-1]])
+        ).reshape(features.shape[:-1] + (self.n_components,))
+        return normalize(features_pca) * 0.5 + 0.5
+
+
+def plot_image_and_feature_map(
+    image,
+    feature_map,
+    save_path,
+    image_title="Image",
+    map_title="Feature Map",
+    fontsize=16,
+):
+    """
+    Plots an image and its feature map side by side and saves the figure.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise ImportError("Matplotlib is required to plot an image")
+
+    feature_map_normalized = (feature_map - feature_map.min()) / (
+        feature_map.max() - feature_map.min()
+    )
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    ax1.imshow(image)
+    ax1.set_title(image_title, fontsize=fontsize)
+    ax1.axis("off")
+
+    ax2.imshow(feature_map_normalized, cmap="gray")
+    ax2.set_title(map_title, fontsize=fontsize)
+    ax2.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
 
 def make_2tuple(x):
     """Convert input into a 2-tuple.
