@@ -31,6 +31,8 @@ class RMSNormGated(eqx.Module):
         self,
         x: Float[Array, "dim"],
         z: Optional[Float[Array, "dim"]] = None,
+        *args,
+        **kwargs,
     ) -> Float[Array, "dim"]:
         """Apply RMS normalization with optional gating.
 
@@ -114,7 +116,12 @@ class DyT(eqx.Module):
         self.weight = jnp.ones(dim)
         self.bias = jnp.zeros(dim)
 
-    def __call__(self, x: Float[Array, "dim"]):
+    def __call__(
+        self,
+        x: Float[Array, "dim"],
+        *args,
+        **kwargs,
+    ):
         """Apply dynamic tanh to input tensor.
 
         Args:
