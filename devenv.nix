@@ -8,7 +8,7 @@ let
 in
 {
   env = {
-    LD_LIBRARY_PATH = "${with pkgs; lib.makeLibraryPath buildInputs}";
+    LD_LIBRARY_PATH = lib.makeLibraryPath buildInputs;
   };
 
   languages.python = {
