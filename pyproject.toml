@@ -13,7 +13,6 @@ dependencies = [
   "lz4>=4.4.3",
   "requests>=2.32.3",
   "semver>=3.0.4",
-  "pytest>=8.3.5",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
