@@ -13,6 +13,7 @@ dependencies = [
   "lz4>=4.4.3",
   "requests>=2.32.3",
   "semver>=3.0.4",
+  "pytest>=8.3.5",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -50,8 +51,8 @@ extras = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3.4",
+    "pytest>=8.3.5",
 ]
 
-[tool.setuptools]
-packages = ["equimo"]
+[tool.pytest.ini_options]
+pythonpath = ["src"]
