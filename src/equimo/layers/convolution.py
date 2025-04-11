@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import equinox as eqx
 import jax
@@ -327,3 +327,61 @@ class Stem(eqx.Module):
         x = self.conv3(x)
 
         return rearrange(x, "c h w -> (h w) c")
+
+
+class ConvBottleneck(eqx.Module):
+    """YOLO's Bottleneck to be used into a C2F or C3k2 block."""
+
+    add: bool = eqx.field(static=True)
+
+    conv1: SingleConvBlock
+    conv2: SingleConvBlock
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        shortcut: bool = True,
+        groups: int = 1,
+        kernel_sizes: Sequence[int] = [3, 3],
+        expansion_ratio: float = 0.5,
+    ):
+        key_conv1, key_conv2 = jr.split(key, 2)
+
+        hidden_channels = int(out_channels * expansion_ratio)
+
+        self.conv1 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=hidden_channels,
+            act_layer=jax.nn.silu,
+            kernel_size=kernel_sizes[0],
+            stride=1,
+            padding="SAME",
+            key=key_conv1,
+        )
+        self.conv2 = SingleConvBlock(
+            in_channels=hidden_channels,
+            out_channels=out_channels,
+            act_layer=jax.nn.silu,
+            kernel_size=kernel_sizes[1],
+            stride=1,
+            padding="SAME",
+            groups=groups,
+            key=key_conv2,
+        )
+
+        self.add = shortcut and in_channels == out_channels
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ):
+        x1 = self.conv2(self.conv1(x))
+
+        if self.add:
+            return x + x1
+        return x1
