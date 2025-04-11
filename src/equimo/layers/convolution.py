@@ -453,3 +453,195 @@ class C2f(eqx.Module):
         y = jnp.split(self.conv1(x), [self.hidden_channels])
         y.extend(blk(y[-1]) for blk in self.blocks)
         return self.conv2(jnp.concatenate(y, axis=0))
+
+
+class C3k(eqx.Module):
+    """YOLO's Fast CSP Bottleneck with 3 convolutions with customizable kernel"""
+
+    conv1: SingleConvBlock
+    conv2: SingleConvBlock
+    conv3: SingleConvBlock
+    blocks: eqx.nn.Sequential
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        n: int = 1,
+        kernel_sizes: Sequence[int] = [3, 3],
+        shortcut: bool = True,
+        groups: int = 1,
+        expansion_ratio: float = 0.5,
+    ):
+        key_conv1, key_conv2, key_conv3, *key_blocks = jr.split(key, 3 + n)
+
+        hidden_channels = int(out_channels * expansion_ratio)
+
+        self.conv1 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=hidden_channels,
+            act_layer=jax.nn.silu,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key_conv1,
+        )
+        self.conv2 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=hidden_channels,
+            act_layer=jax.nn.silu,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key_conv2,
+        )
+        self.conv3 = SingleConvBlock(
+            in_channels=2 * hidden_channels,
+            out_channels=out_channels,
+            act_layer=jax.nn.silu,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key_conv3,
+        )
+
+        self.blocks = eqx.nn.Sequential(
+            [
+                ConvBottleneck(
+                    in_channels=hidden_channels,
+                    out_channels=hidden_channels,
+                    shortcut=shortcut,
+                    groups=groups,
+                    kernel_sizes=kernel_sizes,
+                    expansion_ratio=1.0,
+                    key=key_blocks[i],
+                )
+                for i in range(n)
+            ]
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ):
+        return self.conv3(
+            jnp.concatenate([self.blocks(self.conv1(x)), self.conv2(x)], axis=0)
+        )
+
+
+class C3(eqx.Module):
+    """YOLO's Fast CSP Bottleneck with 3 convolutions"""
+
+    c3k: C3k
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        n: int = 1,
+        shortcut: bool = True,
+        groups: int = 1,
+        expansion_ratio: float = 0.5,
+    ):
+        self.c3k = C3k(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_sizes=[1, 3],
+            shortcut=shortcut,
+            groups=groups,
+            expansion_ratio=expansion_ratio,
+            key=key,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ):
+        return self.c3k(x)
+
+
+class C3k2(eqx.Module):
+    """YOLO's Fast CSP Bottleneck"""
+
+    hidden_channels: int = eqx.field(static=True)
+
+    conv1: SingleConvBlock
+    conv2: SingleConvBlock
+    blocks: list[ConvBottleneck] | list[C3k]
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        n: int = 1,
+        shortcut: bool = True,
+        groups: int = 1,
+        expansion_ratio: float = 0.5,
+        c3k: bool = True,
+    ):
+        key_conv1, key_conv2, *key_blocks = jr.split(key, 2 + n)
+
+        self.hidden_channels = int(out_channels * expansion_ratio)
+
+        self.conv1 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=self.hidden_channels * 2,
+            act_layer=jax.nn.silu,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key_conv1,
+        )
+        self.conv2 = SingleConvBlock(
+            in_channels=(2 + n) * self.hidden_channels,
+            out_channels=out_channels,
+            act_layer=jax.nn.silu,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key_conv2,
+        )
+
+        if c3k:
+            self.blocks = [
+                C3k(
+                    in_channels=self.hidden_channels,
+                    out_channels=self.hidden_channels,
+                    n=2,
+                    shortcut=shortcut,
+                    groups=groups,
+                    key=key_blocks[i],
+                )
+                for i in range(n)
+            ]
+        else:
+            self.blocks = [
+                ConvBottleneck(
+                    in_channels=self.hidden_channels,
+                    out_channels=self.hidden_channels,
+                    shortcut=shortcut,
+                    groups=groups,
+                    key=key_blocks[i],
+                )
+                for i in range(n)
+            ]
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ):
+        y = jnp.split(self.conv1(x), [self.hidden_channels])
+        y.extend(blk(y[-1]) for blk in self.blocks)
+        return self.conv2(jnp.concatenate(y, axis=0))
