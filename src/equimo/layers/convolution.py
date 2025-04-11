@@ -2,6 +2,7 @@ from typing import Callable, Optional, Sequence
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
@@ -385,3 +386,70 @@ class ConvBottleneck(eqx.Module):
         if self.add:
             return x + x1
         return x1
+
+
+class C2f(eqx.Module):
+    """YOLO's Fast CSP Bottleneck"""
+
+    hidden_channels: int = eqx.field(static=True)
+
+    conv1: SingleConvBlock
+    conv2: SingleConvBlock
+    blocks: list[ConvBottleneck]
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        n: int = 1,
+        shortcut: bool = False,
+        groups: int = 1,
+        expansion_ratio: float = 0.5,
+    ):
+        key_conv1, key_conv2, *key_blocks = jr.split(key, 2 + n)
+
+        self.hidden_channels = int(out_channels * expansion_ratio)
+
+        self.conv1 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=self.hidden_channels * 2,
+            act_layer=jax.nn.silu,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key_conv1,
+        )
+        self.conv2 = SingleConvBlock(
+            in_channels=(2 + n) * self.hidden_channels,
+            out_channels=out_channels,
+            act_layer=jax.nn.silu,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key_conv2,
+        )
+
+        self.blocks = [
+            ConvBottleneck(
+                in_channels=self.hidden_channels,
+                out_channels=self.hidden_channels,
+                shortcut=shortcut,
+                groups=groups,
+                kernel_sizes=[3, 3],
+                expansion_ratio=1.0,
+                key=key_blocks[i],
+            )
+            for i in range(n)
+        ]
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ):
+        y = jnp.split(self.conv1(x), [self.hidden_channels])
+        y.extend(blk(y[-1]) for blk in self.blocks)
+        return self.conv2(jnp.concatenate(y, axis=0))
