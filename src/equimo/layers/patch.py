@@ -278,7 +278,7 @@ class PatchMerging(eqx.Module):
             kernel_size=1,
             stride=1,
             padding=0,
-            use_norm=False,
+            norm_layer=None,
             act_layer=jax.nn.relu,
             key=key_conv1,
         )
@@ -289,7 +289,7 @@ class PatchMerging(eqx.Module):
             stride=2,
             padding=1,
             groups=hidden_dim,
-            use_norm=False,
+            norm_layer=None,
             act_layer=jax.nn.relu,
             key=key_conv2,
         )
@@ -299,7 +299,7 @@ class PatchMerging(eqx.Module):
             kernel_size=1,
             stride=1,
             padding=0,
-            use_norm=False,
+            norm_layer=None,
             act_layer=jax.nn.relu,
             key=key_conv3,
         )
