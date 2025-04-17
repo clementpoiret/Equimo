@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -153,6 +153,9 @@ class SingleConvBlock(eqx.Module):
         out_channels: int,
         *,
         key: PRNGKeyArray,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: str | int = "SAME",
         norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
         norm_max_group: int = 32,
         act_layer: Callable | None = None,
@@ -175,6 +178,9 @@ class SingleConvBlock(eqx.Module):
         self.conv = eqx.nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
             key=key,
             **kwargs,
         )
@@ -664,12 +670,34 @@ class MBConv(eqx.Module):
         mid_channels: int | None = None,
         kernel_size: int = 3,
         stride: int = 1,
-        use_bias: bool = False,
+        use_bias: Tuple[bool, ...] | bool = False,
         expand_ratio: float = 6.0,
-        norm_layers: list[eqx.Module | None] = [eqx.nn.GroupNorm] * 3,
-        act_layers: list[eqx.Module | None] = [jax.nn.relu6] * 3,
+        norm_layers: Tuple[eqx.Module | None, ...]
+        | eqx.Module
+        | None = eqx.nn.GroupNorm,
+        act_layers: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        **kwargs,
     ):
         key_inverted, key_depth, key_point = jr.split(key, 3)
+
+        if not isinstance(norm_layers, Tuple):
+            norm_layers = (norm_layers,) * 3
+        if not isinstance(act_layers, Tuple):
+            act_layers = (act_layers,) * 3
+        if isinstance(use_bias, bool):
+            use_bias: Tuple = (use_bias,) * 3
+        if len(use_bias) != 3:
+            raise ValueError(
+                f"`use_bias` should be a Tuple of length 3, got: {len(use_bias)}"
+            )
+        if len(norm_layers) != 3:
+            raise ValueError(
+                f"`norm_layers` should be a Tuple of length 3, got: {len(norm_layers)}"
+            )
+        if len(act_layers) != 3:
+            raise ValueError(
+                f"`act_layers` should be a Tuple of length 3, got: {len(act_layers)}"
+            )
 
         mid_channels = (
             mid_channels
@@ -737,11 +765,33 @@ class DSConv(eqx.Module):
         key: PRNGKeyArray,
         kernel_size: int = 3,
         stride: int = 1,
-        use_bias: bool = False,
-        norm_layers: list[eqx.Module | None] = [eqx.nn.GroupNorm] * 2,
-        act_layers: list[eqx.Module | None] = [jax.nn.relu6] * 2,
+        use_bias: Tuple[bool, ...] | bool = False,
+        norm_layers: Tuple[eqx.Module | None, ...]
+        | eqx.Module
+        | None = eqx.nn.GroupNorm,
+        act_layers: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        **kwargs,
     ):
         key_depth, key_point = jr.split(key, 2)
+
+        if not isinstance(norm_layers, Tuple):
+            norm_layers = (norm_layers,) * 2
+        if not isinstance(act_layers, Tuple):
+            act_layers = (act_layers,) * 2
+        if isinstance(use_bias, bool):
+            use_bias: Tuple = (use_bias,) * 2
+        if len(use_bias) != 2:
+            raise ValueError(
+                f"`use_bias` should be a Tuple of length 2, got: {len(use_bias)}"
+            )
+        if len(norm_layers) != 2:
+            raise ValueError(
+                f"`norm_layers` should be a Tuple of length 2, got: {len(norm_layers)}"
+            )
+        if len(act_layers) != 2:
+            raise ValueError(
+                f"`act_layers` should be a Tuple of length 2, got: {len(act_layers)}"
+            )
 
         self.depth_conv = SingleConvBlock(
             in_channels=in_channels,

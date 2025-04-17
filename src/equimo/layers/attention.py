@@ -1696,8 +1696,8 @@ class RFAttentionBlock(eqx.Module):
         rfattn_norm_layer: eqx.Module = eqx.nn.GroupNorm,
         norm_kwargs: dict = {},
         expand_ratio: float = 4.0,
-        mbconv_norm_layers: list = [None, None, eqx.nn.GroupNorm],
-        mbconv_act_layers: list = [jax.nn.hard_swish, jax.nn.hard_swish, None],
+        mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
+        mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
         **kwargs,
     ):
         key_context, key_local = jr.split(key, 2)
