@@ -153,9 +153,10 @@ class SingleConvBlock(eqx.Module):
         out_channels: int,
         *,
         key: PRNGKeyArray,
-        use_norm: bool = True,
+        norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
         norm_max_group: int = 32,
         act_layer: Callable | None = None,
+        norm_kwargs: dict = {},
         **kwargs,
     ):
         """Initialize the SingleConvBlock.
@@ -164,25 +165,30 @@ class SingleConvBlock(eqx.Module):
             in_channels: Number of input channels
             out_channels: Number of output channels
             key: PRNG key for initialization
-            use_norm: Whether to use group normalization (default: True)
             norm_max_group: Maximum number of groups for GroupNorm (default: 32)
             act_layer: Optional activation function (default: None)
+            norm_kwargs: Args passed to the norm layer. This allows disabling
+                weights of LayerNorm, which do not work well with conv layers
             **kwargs: Additional arguments passed to Conv layer
         """
 
-        num_groups = nearest_power_of_2_divisor(out_channels, norm_max_group)
-        self.conv = eqx.nn.Conv(
-            num_spatial_dims=2,
+        self.conv = eqx.nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
             key=key,
             **kwargs,
         )
-        self.norm = (
-            eqx.nn.GroupNorm(num_groups, out_channels)
-            if use_norm
-            else eqx.nn.Identity()
-        )
+
+        # TODO: test
+        if norm_layer is not None:
+            if norm_layer == eqx.nn.GroupNorm:
+                num_groups = nearest_power_of_2_divisor(out_channels, norm_max_group)
+                self.norm = eqx.nn.GroupNorm(num_groups, out_channels, **norm_kwargs)
+            else:
+                self.norm = norm_layer(out_channels, **norm_kwargs)
+        else:
+            self.norm = eqx.nn.Identity()
+
         self.act = eqx.nn.Lambda(act_layer) if act_layer else eqx.nn.Identity()
 
     def __call__(
@@ -258,7 +264,6 @@ class Stem(eqx.Module):
             stride=2,
             padding=1,
             use_bias=False,
-            use_norm=True,
             act_layer=jax.nn.relu,
             key=key_conv1,
         )
@@ -272,7 +277,6 @@ class Stem(eqx.Module):
                     stride=1,
                     padding=1,
                     use_bias=False,
-                    use_norm=True,
                     act_layer=jax.nn.relu,
                     key=key_conv2,
                 ),
@@ -283,7 +287,6 @@ class Stem(eqx.Module):
                     stride=1,
                     padding=1,
                     use_bias=False,
-                    use_norm=True,
                     act_layer=None,
                     key=key_conv3,
                 ),
@@ -299,7 +302,6 @@ class Stem(eqx.Module):
                     stride=2,
                     padding=1,
                     use_bias=False,
-                    use_norm=True,
                     act_layer=jax.nn.relu,
                     key=key_conv4,
                 ),
@@ -310,7 +312,6 @@ class Stem(eqx.Module):
                     stride=1,
                     padding=0,
                     use_bias=False,
-                    use_norm=True,
                     act_layer=None,
                     key=key_conv5,
                 ),
@@ -645,3 +646,134 @@ class C3k2(eqx.Module):
         y = jnp.split(self.conv1(x), [self.hidden_channels])
         y.extend(blk(y[-1]) for blk in self.blocks)
         return self.conv2(jnp.concatenate(y, axis=0))
+
+
+class MBConv(eqx.Module):
+    """MobileNet Conv Block"""
+
+    inverted_conv: SingleConvBlock
+    depth_conv: SingleConvBlock
+    point_conv: SingleConvBlock
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        mid_channels: int | None = None,
+        kernel_size: int = 3,
+        stride: int = 1,
+        use_bias: bool = False,
+        expand_ratio: float = 6.0,
+        norm_layers: list[eqx.Module | None] = [eqx.nn.GroupNorm] * 3,
+        act_layers: list[eqx.Module | None] = [jax.nn.relu6] * 3,
+    ):
+        key_inverted, key_depth, key_point = jr.split(key, 3)
+
+        mid_channels = (
+            mid_channels
+            if mid_channels is not None
+            else round(in_channels * expand_ratio)
+        )
+
+        self.inverted_conv = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=mid_channels,
+            kernel_size=1,
+            stride=1,
+            norm_layer=norm_layers[0],
+            act_layer=act_layers[0],
+            use_bias=use_bias,
+            padding="SAME",
+            key=key_inverted,
+        )
+        self.depth_conv = SingleConvBlock(
+            in_channels=mid_channels,
+            out_channels=mid_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            groups=mid_channels,
+            norm_layer=norm_layers[1],
+            act_layer=act_layers[1],
+            use_bias=use_bias,
+            padding="SAME",
+            key=key_depth,
+        )
+        self.point_conv = SingleConvBlock(
+            in_channels=mid_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            stride=1,
+            norm_layer=norm_layers[2],
+            act_layer=act_layers[2],
+            use_bias=use_bias,
+            padding="SAME",
+            key=key_point,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ):
+        x = self.inverted_conv(x)
+        x = self.depth_conv(x)
+        x = self.point_conv(x)
+
+        return x
+
+
+class DSConv(eqx.Module):
+    depth_conv: SingleConvBlock
+    point_conv: SingleConvBlock
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        kernel_size: int = 3,
+        stride: int = 1,
+        use_bias: bool = False,
+        norm_layers: list[eqx.Module | None] = [eqx.nn.GroupNorm] * 2,
+        act_layers: list[eqx.Module | None] = [jax.nn.relu6] * 2,
+    ):
+        key_depth, key_point = jr.split(key, 2)
+
+        self.depth_conv = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            groups=in_channels,
+            norm_layer=norm_layers[0],
+            act_layer=act_layers[0],
+            use_bias=use_bias,
+            padding="SAME",
+            key=key_depth,
+        )
+        self.point_conv = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            stride=1,
+            norm_layer=norm_layers[1],
+            act_layer=act_layers[1],
+            use_bias=use_bias,
+            padding="SAME",
+            key=key_point,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ):
+        x = self.depth_conv(x)
+        x = self.point_conv(x)
+
+        return x
