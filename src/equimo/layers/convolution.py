@@ -712,7 +712,7 @@ class MBConv(eqx.Module):
             stride=1,
             norm_layer=norm_layers[0],
             act_layer=act_layers[0],
-            use_bias=use_bias,
+            use_bias=use_bias[0],
             padding="SAME",
             key=key_inverted,
         )
@@ -724,7 +724,7 @@ class MBConv(eqx.Module):
             groups=mid_channels,
             norm_layer=norm_layers[1],
             act_layer=act_layers[1],
-            use_bias=use_bias,
+            use_bias=use_bias[1],
             padding="SAME",
             key=key_depth,
         )
@@ -735,7 +735,7 @@ class MBConv(eqx.Module):
             stride=1,
             norm_layer=norm_layers[2],
             act_layer=act_layers[2],
-            use_bias=use_bias,
+            use_bias=use_bias[2],
             padding="SAME",
             key=key_point,
         )
@@ -801,7 +801,7 @@ class DSConv(eqx.Module):
             groups=in_channels,
             norm_layer=norm_layers[0],
             act_layer=act_layers[0],
-            use_bias=use_bias,
+            use_bias=use_bias[0],
             padding="SAME",
             key=key_depth,
         )
@@ -812,7 +812,7 @@ class DSConv(eqx.Module):
             stride=1,
             norm_layer=norm_layers[1],
             act_layer=act_layers[1],
-            use_bias=use_bias,
+            use_bias=use_bias[1],
             padding="SAME",
             key=key_point,
         )
