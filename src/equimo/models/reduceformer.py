@@ -176,6 +176,7 @@ class ReduceFormer(eqx.Module):
                     kernel_size=3,
                     stride=2,
                     padding="SAME",
+                    use_bias=False,
                     norm_layer=norm_layer,
                     act_layer=act_layer,
                     key=key_stem,
@@ -288,5 +289,5 @@ class ReduceFormer(eqx.Module):
 #     head_dim=16,
 #     key=key,
 # )
-# model(x,key=key)
+# model(x, key=key)
 # print(x.shape)
