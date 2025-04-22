@@ -1621,7 +1621,7 @@ class RFAttention(eqx.Module):
         self.qkv = eqx.nn.Conv2d(
             in_channels=in_channels,
             out_channels=3 * total_dim,
-            kernel_size=3,
+            kernel_size=1,
             padding="SAME",
             use_bias=use_bias,
             key=key_qkv,
@@ -1718,6 +1718,7 @@ class RFAttentionBlock(eqx.Module):
             expand_ratio=expand_ratio,
             norm_layers=mbconv_norm_layers,
             act_layers=mbconv_act_layers,
+            use_bias=(True, True, False),
             key=key_local,
         )
 
