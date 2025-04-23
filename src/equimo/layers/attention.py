@@ -1,4 +1,5 @@
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -6,6 +7,7 @@ import jax.random as jr
 from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.convolution import SingleConvBlock, MBConv
 from equimo.layers.dropout import DropPathAdd
 from equimo.layers.ffn import Mlp
 from equimo.layers.mamba import Mamba2Mixer
@@ -1561,6 +1563,177 @@ class LinearAngularAttention(eqx.Module):
         x = rearrange(x, "h s d -> s (h d)")
         x = jax.vmap(self.proj)(x)
         x = self.proj_drop(x, inference=inference, key=key2)
+
+        return x
+
+
+class RFAttention(eqx.Module):
+    """Attention with Tensor Reduction by Summation[1].
+
+    A ReLU Linear Attention mechanism replacing matmuls with global
+    summation and element-wise multiplications.
+
+    Attributes:
+        dim: Total dimension of the input/output
+        num_heads: Number of attention heads
+        head_dim: Dimension of each attention head (dim // num_heads)
+
+    References:
+        [1]. Yang, J., An, L., & Park, S. I. (2024). ReduceFormer: Attention
+            with Tensor Reduction by Summation (No. arXiv:2406.07488). arXiv.
+            https://doi.org/10.48550/arXiv.2406.07488
+    """
+
+    total_dim: int = eqx.field(static=True)
+    kernel_func: Callable = eqx.field(static=True)
+    eps: float = eqx.field(static=True)
+
+    qkv: eqx.nn.Conv2d
+    aggreg: list[eqx.nn.Conv2d]
+    proj: SingleConvBlock
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        key: PRNGKeyArray,
+        num_heads: int | None = None,
+        head_dim: int = 8,
+        heads_ratio: float = 1.0,
+        scales: Sequence[int] = (5,),
+        use_bias: bool = False,
+        kernel_func: Callable = jax.nn.relu,
+        # TODO: Benchmark against LN, RMSN, NsLN
+        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        norm_kwargs: dict = {},
+        eps: float = 1e-15,
+        **kwargs,
+    ):
+        key_qkv, key_aggreg, key_proj = jr.split(key, 3)
+
+        self.kernel_func = kernel_func
+        self.eps = eps
+        num_heads = num_heads or int(in_channels // head_dim * heads_ratio)
+        total_dim = num_heads * head_dim
+        self.total_dim = total_dim * (1 + len(scales))
+
+        self.qkv = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=3 * total_dim,
+            kernel_size=1,
+            padding="SAME",
+            use_bias=use_bias,
+            key=key_qkv,
+        )
+        self.aggreg = [
+            eqx.nn.Conv2d(
+                in_channels=3 * total_dim,
+                out_channels=3 * total_dim,
+                kernel_size=scale,
+                padding="SAME",
+                groups=3 * total_dim,
+                key=key_aggreg,
+                use_bias=use_bias,
+            )
+            for scale in scales
+        ]
+        # TODO: test different normalizations
+        self.proj = SingleConvBlock(
+            in_channels=self.total_dim,
+            out_channels=out_channels,
+            kernel_size=1,
+            use_bias=use_bias,
+            norm_layer=norm_layer,
+            norm_kwargs=norm_kwargs,
+            key=key_proj,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "seqlen height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "seqlen height width"]:
+        qkv_base = self.qkv(x)
+
+        aggregated_qkvs = [op(qkv_base) for op in self.aggreg]
+        all_qkvs = [qkv_base] + aggregated_qkvs
+
+        rearranged_qkvs = [
+            rearrange(qkv, "(n d) h w -> n d h w", n=3) for qkv in all_qkvs
+        ]
+        multiscale_qkv = jnp.concatenate(rearranged_qkvs, axis=1)
+
+        q, k, v = multiscale_qkv
+
+        q = self.kernel_func(q)
+        k = self.kernel_func(k)
+
+        sum_k = jnp.sum(k, axis=(-1, -2), keepdims=True)
+        sum_v = jnp.sum(v, axis=(-1, -2), keepdims=True)
+        sum_kv = jnp.sum(k * sum_v, axis=(-1, -2), keepdims=True)
+        sum_q = jnp.sum(q, axis=0, keepdims=True)
+
+        out = (q * sum_kv) / (sum_q * sum_k + self.eps)
+        out = self.proj(out)
+
+        return out
+
+
+class RFAttentionBlock(eqx.Module):
+    context_module: RFAttention
+    local_module: MBConv
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        key,
+        head_dim: int = 32,
+        heads_ratio: float = 1.0,
+        scales: Sequence[int] = (5,),
+        rfattn_norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        norm_kwargs: dict = {},
+        expand_ratio: float = 4.0,
+        mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
+        mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
+        fuse_mbconv: bool = False,
+        **kwargs,
+    ):
+        key_context, key_local = jr.split(key, 2)
+
+        self.context_module = RFAttention(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            head_dim=head_dim,
+            heads_ratio=heads_ratio,
+            scales=scales,
+            norm_layer=rfattn_norm_layer,
+            norm_kwargs=norm_kwargs,
+            key=key_context,
+        )
+        self.local_module = MBConv(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            expand_ratio=expand_ratio,
+            norm_layers=mbconv_norm_layers,
+            act_layers=mbconv_act_layers,
+            use_bias=(True, True, False),
+            fuse=fuse_mbconv,
+            key=key_local,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "dim height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ):
+        key_context, key_local = jr.split(key, 2)
+
+        x += self.context_module(x, inference=inference, key=key_context)
+        x += self.local_module(x, inference=inference, key=key_local)
 
         return x
 

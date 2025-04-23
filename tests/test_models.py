@@ -135,3 +135,27 @@ def test_load_pretrained_model():
 
     assert features.shape[-1] == 384  # DINOv2-S has embedding dimension of 384
     assert jnp.all(jnp.isfinite(features))  # Check for NaN/Inf values
+
+
+def test_reduceformer():
+    """Test creation and inference of a ReduceFormer model."""
+    key = jr.PRNGKey(42)
+
+    x = jr.normal(key, (3, 64, 64))
+    model = em.reduceformer_backbone_b1(in_channels=3, num_classes=10, key=key)
+    y_hat = model(x, key=key)
+
+    assert len(y_hat) == 10
+
+
+def test_fused_reduceformer():
+    """Test creation and inference of a ReduceFormer model with fused mbconv."""
+    key = jr.PRNGKey(42)
+
+    x = jr.normal(key, (3, 64, 64))
+    model = em.reduceformer_backbone_b1(
+        in_channels=3, num_classes=10, fuse_mbconv=True, key=key
+    )
+    y_hat = model(x, key=key)
+
+    assert len(y_hat) == 10
