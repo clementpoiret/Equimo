@@ -1,3 +1,4 @@
+from ssl import DefaultVerifyPaths
 from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
@@ -278,20 +279,52 @@ class ReduceFormer(eqx.Module):
         return x
 
 
-key = jr.PRNGKey(42)
-x = jr.normal(key, (3, 128, 128))
-model = ReduceFormer(
-    3,
-    [16, 32, 64, 128, 256],
-    depths=[1, 2, 3, 3, 4],
-    block_types=[
-        "conv",
-        "conv",
-        "conv",
-        "attention",
-        "attention",
-    ],
-    expand_ratio=4.0,
-    head_dim=16,
-    key=key,
-)
+def reduceformer_backbone_b1(**kwargs) -> ReduceFormer:
+    backbone = ReduceFormer(
+        widths=[16, 32, 64, 128, 256],
+        depths=[1, 2, 3, 3, 4],
+        block_types=[
+            "conv",
+            "conv",
+            "conv",
+            "attention",
+            "attention",
+        ],
+        heads_dim=16,
+        **kwargs,
+    )
+    return backbone
+
+
+def reduceformer_backbone_b2(**kwargs) -> ReduceFormer:
+    backbone = ReduceFormer(
+        widths=[24, 48, 96, 192, 384],
+        depths=[1, 3, 4, 4, 6],
+        block_types=[
+            "conv",
+            "conv",
+            "conv",
+            "attention",
+            "attention",
+        ],
+        heads_dim=32,
+        **kwargs,
+    )
+    return backbone
+
+
+def reduceformer_backbone_b3(**kwargs) -> ReduceFormer:
+    backbone = ReduceFormer(
+        widths=[32, 64, 128, 256, 512],
+        depths=[1, 4, 6, 6, 9],
+        block_types=[
+            "conv",
+            "conv",
+            "conv",
+            "attention",
+            "attention",
+        ],
+        heads_dim=32,
+        **kwargs,
+    )
+    return backbone
