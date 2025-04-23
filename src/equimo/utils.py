@@ -1,12 +1,12 @@
+import typing as t
 from functools import partial
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float
-
-import typing as t
+import jax.random as jr
 import numpy as np
-
+from jaxtyping import Array, Float
 
 _ArrayLike = t.Union[np.ndarray, jnp.ndarray]
 
@@ -203,3 +203,50 @@ def pool_sd(
                 raise ValueError(f"Unknown pool type {pool_type}")
 
     return x
+
+
+def count_params(model: eqx.Module):
+    num_params = sum(
+        x.size for x in jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
+    )
+    return num_params / 1_000_000
+
+
+def cost_analysis(model: eqx.Module, input_example: Float[Array, "..."]):
+    """Estimates the memory usage, flops, and #params of a model's forward pass.
+
+    This function JIT-compiles the model's forward pass for a given input,
+    retrieves the cost analysis, and extracts the estimated bytes accessed,
+    converting it to Mebibytes (MiB), the flops converting it to GigaFLOPs
+    (GFLOPs), and the number of parameters in millions.
+
+    Args:
+        model: The Equinox model.
+        x: An example input tensor for the model.
+
+    Returns:
+        A dict containing the relevant information.
+    """
+    key = jr.PRNGKey(42)
+
+    @jax.jit
+    def fpass(x):
+        return model(x, inference=True, key=key)
+
+    analysis: dict | list[dict] = fpass.lower(input_example).compile().cost_analysis()
+    cost_dict: dict = analysis[0] if isinstance(analysis, list) else analysis
+
+    # Memory
+    memory_mib = cost_dict.get("bytes accessed", 0.0) / (1024 * 1024)
+
+    # Flops
+    gflops = cost_dict.get("flops", 0.0) / 1_000_000_000
+
+    # Params
+    mparams = count_params(model)
+
+    return {
+        "memory_mib": memory_mib,
+        "gflops": gflops,
+        "mparams": mparams,
+    }
