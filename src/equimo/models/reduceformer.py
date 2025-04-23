@@ -1,4 +1,3 @@
-from ssl import DefaultVerifyPaths
 from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
