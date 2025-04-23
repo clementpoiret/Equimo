@@ -32,6 +32,7 @@ class BlockChunk(eqx.Module):
         norm_layer: eqx.Module = eqx.nn.GroupNorm,
         act_layer: Callable = jax.nn.hard_swish,
         fewer_norm: bool = False,
+        fuse_mbconv: bool = False,
         **kwargs,
     ):
         key, *block_subkeys = jr.split(key, depth + 1)
@@ -64,6 +65,7 @@ class BlockChunk(eqx.Module):
 
                     if block == MBConv:
                         config["expand_ratio"] = expand_ratio
+                        config["fuse"] = fuse_mbconv
 
                     blocks.append(
                         block(
@@ -93,6 +95,7 @@ class BlockChunk(eqx.Module):
                         norm_layers=(None, None, norm_layer),
                         act_layers=(act_layer, act_layer, None),
                         use_bias=(True, True, False),
+                        fuse=fuse_mbconv,
                         key=key,
                     )
                 )
@@ -107,6 +110,7 @@ class BlockChunk(eqx.Module):
                             expand_ratio=expand_ratio,
                             mbconv_norm_layers=(None, None, norm_layer),
                             mbconv_act_layers=(act_layer, act_layer, None),
+                            fuse_mbconv=fuse_mbconv,
                             key=block_subkeys[i],
                         )
                     )
@@ -150,6 +154,7 @@ class ReduceFormer(eqx.Module):
         expand_ratio: float = 4.0,
         norm_layer: eqx.Module | str = eqx.nn.GroupNorm,
         act_layer: Callable | str = jax.nn.hard_swish,
+        fuse_mbconv: bool = False,
         num_classes: int | None = 1000,
         **kwargs,
     ):
@@ -205,6 +210,7 @@ class ReduceFormer(eqx.Module):
                 expand_ratio=expand_ratio,
                 norm_layer=norm_layer,
                 act_layer=act_layer,
+                fuse_mbconv=fuse_mbconv,
                 key=key_block,
             )
             for i, (depth, block_type, key_block) in enumerate(
@@ -272,22 +278,20 @@ class ReduceFormer(eqx.Module):
         return x
 
 
-# key = jr.PRNGKey(42)
-# x = jr.normal(key, (3, 256, 256))
-# model = ReduceFormer(
-#     3,
-#     [16, 32, 64, 128, 256],
-#     depths=[1, 2, 3, 3, 4],
-#     block_types=[
-#         "conv",
-#         "conv",
-#         "conv",
-#         "attention",
-#         "attention",
-#     ],
-#     expand_ratio=4.0,
-#     head_dim=16,
-#     key=key,
-# )
-# model(x, key=key)
-# print(x.shape)
+key = jr.PRNGKey(42)
+x = jr.normal(key, (3, 128, 128))
+model = ReduceFormer(
+    3,
+    [16, 32, 64, 128, 256],
+    depths=[1, 2, 3, 3, 4],
+    block_types=[
+        "conv",
+        "conv",
+        "conv",
+        "attention",
+        "attention",
+    ],
+    expand_ratio=4.0,
+    head_dim=16,
+    key=key,
+)

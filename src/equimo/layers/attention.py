@@ -1698,6 +1698,7 @@ class RFAttentionBlock(eqx.Module):
         expand_ratio: float = 4.0,
         mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
         mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
+        fuse_mbconv: bool = False,
         **kwargs,
     ):
         key_context, key_local = jr.split(key, 2)
@@ -1719,6 +1720,7 @@ class RFAttentionBlock(eqx.Module):
             norm_layers=mbconv_norm_layers,
             act_layers=mbconv_act_layers,
             use_bias=(True, True, False),
+            fuse=fuse_mbconv,
             key=key_local,
         )
 

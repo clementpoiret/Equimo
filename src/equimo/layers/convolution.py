@@ -655,10 +655,19 @@ class C3k2(eqx.Module):
 
 
 class MBConv(eqx.Module):
-    """MobileNet Conv Block"""
+    """MobileNet Conv Block with optional fusing from [1].
 
-    inverted_conv: SingleConvBlock
-    depth_conv: SingleConvBlock
+    References:
+        [1]: Nottebaum, M., Dunnhofer, M., & Micheloni, C. (2024). LowFormer:
+        Hardware Efficient Design for Convolutional Transformer Backbones (No.
+        arXiv:2409.03460). arXiv. https://doi.org/10.48550/arXiv.2409.03460
+    """
+
+    fused: bool = eqx.field(static=True)
+
+    inverted_conv: SingleConvBlock | None
+    depth_conv: SingleConvBlock | None
+    spatial_conv: SingleConvBlock | None
     point_conv: SingleConvBlock
 
     def __init__(
@@ -676,6 +685,10 @@ class MBConv(eqx.Module):
         | eqx.Module
         | None = eqx.nn.GroupNorm,
         act_layers: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        fuse: bool = False,
+        fuse_threshold: int = 256,
+        fuse_group: bool = False,
+        fused_conv_groups: int = 1,
         **kwargs,
     ):
         key_inverted, key_depth, key_point = jr.split(key, 3)
@@ -704,29 +717,56 @@ class MBConv(eqx.Module):
             if mid_channels is not None
             else round(in_channels * expand_ratio)
         )
+        self.fused = fuse and in_channels <= fuse_threshold
 
-        self.inverted_conv = SingleConvBlock(
-            in_channels=in_channels,
-            out_channels=mid_channels,
-            kernel_size=1,
-            stride=1,
-            norm_layer=norm_layers[0],
-            act_layer=act_layers[0],
-            use_bias=use_bias[0],
-            padding="SAME",
-            key=key_inverted,
+        self.inverted_conv = (
+            SingleConvBlock(
+                in_channels=in_channels,
+                out_channels=mid_channels,
+                kernel_size=1,
+                stride=1,
+                norm_layer=norm_layers[0],
+                act_layer=act_layers[0],
+                use_bias=use_bias[0],
+                padding="SAME",
+                key=key_inverted,
+            )
+            if not self.fused
+            else None
         )
-        self.depth_conv = SingleConvBlock(
-            in_channels=mid_channels,
-            out_channels=mid_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            groups=mid_channels,
-            norm_layer=norm_layers[1],
-            act_layer=act_layers[1],
-            use_bias=use_bias[1],
-            padding="SAME",
-            key=key_depth,
+        self.depth_conv = (
+            SingleConvBlock(
+                in_channels=mid_channels,
+                out_channels=mid_channels,
+                kernel_size=kernel_size,
+                stride=stride,
+                groups=mid_channels,
+                norm_layer=norm_layers[1],
+                act_layer=act_layers[1],
+                use_bias=use_bias[1],
+                padding="SAME",
+                key=key_depth,
+            )
+            if not self.fused
+            else None
+        )
+        self.spatial_conv = (
+            SingleConvBlock(
+                in_channels=in_channels,
+                out_channels=mid_channels,
+                kernel_size=kernel_size,
+                stride=stride,
+                groups=2
+                if fuse_group and fused_conv_groups == 1
+                else fused_conv_groups,
+                norm_layer=norm_layers[0],
+                act_layer=act_layers[0],
+                use_bias=use_bias[0],
+                padding="SAME",
+                key=key_depth,
+            )
+            if self.fused
+            else None
         )
         self.point_conv = SingleConvBlock(
             in_channels=mid_channels,
@@ -746,8 +786,11 @@ class MBConv(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        x = self.inverted_conv(x)
-        x = self.depth_conv(x)
+        if self.fused:
+            x = self.spatial_conv(x)
+        else:
+            x = self.inverted_conv(x)
+            x = self.depth_conv(x)
         x = self.point_conv(x)
 
         return x
