@@ -30,12 +30,13 @@ class BlockChunk(eqx.Module):
         attention_type: Literal["softmax", "sigmoid"] = "softmax",
         fuse_conv: bool = True,
         stride: int = 1,
-        expand_ratio: float = 1.0,
+        expand_ratio: float = 4.0,
+        attention_expand_ratio: float = 4.0,
         norm_layer: eqx.Module = eqx.nn.GroupNorm,
         act_layer: Callable = jax.nn.hard_swish,
         fewer_norm: bool = False,
         fuse_mbconv: bool = False,
-        drop_path: float | list[float] = 0.0,
+        drop_path: list[float] = [0.0],
         **kwargs,
     ):
         key, *block_subkeys = jr.split(key, depth + 1)
@@ -94,7 +95,7 @@ class BlockChunk(eqx.Module):
                         in_channels,
                         out_channels,
                         stride=2,  # TODO: make downsampling optional
-                        expand_ratio=expand_ratio,
+                        expand_ratio=attention_expand_ratio,
                         norm_layers=(None, None, norm_layer),
                         act_layers=(act_layer, act_layer, None),
                         use_bias=(True, True, False),
@@ -110,7 +111,7 @@ class BlockChunk(eqx.Module):
                             att_stride=att_stride,
                             attention_type=attention_type,
                             fuse_conv=fuse_conv,
-                            drop_path=drop_path,
+                            drop_path=drop_path[i],
                             act_layer=act_layer,
                             norm_layer=norm_layer,
                             expand_ratio=expand_ratio,
@@ -153,11 +154,15 @@ class LowFormer(eqx.Module):
         in_channels: int,
         widths: list[int],
         depths: list[int],
+        att_strides: list[int],
         block_types: list[Literal["conv", "attention"]],
         *,
         key: PRNGKeyArray,
-        heads_dim: int = 32,
-        expand_ratio: float = 4.0,
+        mlp_ratio: float = 4.0,
+        attention_type: Literal["softmax", "sigmoid"],
+        stem_expand_ratio: float = 2.0,
+        blocks_expand_ratio: float = 4.0,
+        blocks_attention_expand_ratio: float = 4.0,
         norm_layer: eqx.Module | str = eqx.nn.GroupNorm,
         act_layer: Callable | str = jax.nn.hard_swish,
         fuse_mbconv: bool = False,
@@ -166,9 +171,9 @@ class LowFormer(eqx.Module):
         drop_path_uniform: bool = False,
         **kwargs,
     ):
-        if not len(widths) == len(depths) == len(block_types):
+        if not len(widths) == len(depths) == len(att_strides) == len(block_types):
             raise ValueError(
-                "`widths`, `depths`, `strides`, and `expand_ratios` and `block_types` must have the same lengths."
+                "`widths`, `depths`, `att_strides`, and `block_types` must have the same lengths."
             )
 
         key_stem, key_head, *key_blocks = jr.split(key, 3 + len(depths))
@@ -206,7 +211,8 @@ class LowFormer(eqx.Module):
                     depth=depth_stem,
                     block_type=block_type_stem,
                     stride=1,
-                    expand_ratio=1.0,  # TODO: update according to model size
+                    expand_ratio=stem_expand_ratio,
+                    fuse_mbconv=fuse_mbconv,
                     norm_layer=norm_layer,
                     act_layer=act_layer,
                     key=key_block_stem,
@@ -220,16 +226,20 @@ class LowFormer(eqx.Module):
                 out_channels=widths[i],
                 depth=depth,
                 block_type=block_type,
+                mlp_ratio=mlp_ratio,
                 stride=2,
-                expand_ratio=expand_ratio,  # TODO: update according to model size
+                att_stride=att_stride,
+                attention_type=attention_type,
+                expand_ratio=blocks_expand_ratio,
+                attention_expand_ratio=blocks_attention_expand_ratio,
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 fuse_mbconv=fuse_mbconv,
                 drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
                 key=key_block,
             )
-            for i, (depth, block_type, key_block) in enumerate(
-                zip(depths, block_types, key_blocks)
+            for i, (depth, att_stride, block_type, key_block) in enumerate(
+                zip(depths, att_strides, block_types, key_blocks)
             )
         ]
 
@@ -291,3 +301,87 @@ class LowFormer(eqx.Module):
         x = self.head(x)
 
         return x
+
+
+def lowformer_backbone_b0(**kwargs) -> LowFormer:
+    backbone = LowFormer(
+        widths=[8, 16, 32, 64, 128],
+        depths=[0, 1, 1, 3, 4],
+        block_types=[
+            "conv",
+            "conv",
+            "conv",
+            "attention",
+            "attention",
+        ],
+        att_strides=[2, 2, 2, 2, 1],
+        stem_expand_ratio=2.0,
+        blocks_expand_ratio=4.0,
+        blocks_attention_expand_ratio=4.0,
+        fuse_mbconv=True,
+        **kwargs,
+    )
+    return backbone
+
+
+def lowformer_backbone_b1(**kwargs) -> LowFormer:
+    backbone = LowFormer(
+        widths=[16, 32, 64, 128, 256],
+        depths=[1, 2, 3, 3, 4],
+        block_types=[
+            "conv",
+            "conv",
+            "conv",
+            "attention",
+            "attention",
+        ],
+        att_strides=[2, 2, 2, 2, 1],
+        stem_expand_ratio=2.0,
+        blocks_expand_ratio=4.0,
+        blocks_attention_expand_ratio=4.0,
+        fuse_mbconv=True,
+        **kwargs,
+    )
+    return backbone
+
+
+def lowformer_backbone_b2(**kwargs) -> LowFormer:
+    backbone = LowFormer(
+        widths=[24, 48, 96, 192, 384],
+        depths=[1, 3, 4, 4, 6],
+        block_types=[
+            "conv",
+            "conv",
+            "conv",
+            "attention",
+            "attention",
+        ],
+        att_strides=[2, 2, 2, 2, 1],
+        stem_expand_ratio=4.0,
+        blocks_expand_ratio=4.0,
+        blocks_attention_expand_ratio=6.0,
+        fuse_mbconv=True,
+        **kwargs,
+    )
+    return backbone
+
+
+def lowformer_backbone_b3(**kwargs) -> LowFormer:
+    backbone = LowFormer(
+        widths=[32, 64, 128, 256, 512],
+        depths=[1, 4, 6, 6, 9],
+        block_types=[
+            "conv",
+            "conv",
+            "conv",
+            "attention",
+            "attention",
+        ],
+        att_strides=[2, 2, 2, 2, 1],
+        stem_expand_ratio=4.0,
+        blocks_expand_ratio=6.0,
+        blocks_attention_expand_ratio=6.0,
+        fuse_mbconv=True,
+        **kwargs,
+    )
+    return backbone
