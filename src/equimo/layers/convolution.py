@@ -36,7 +36,7 @@ class ConvBlock(eqx.Module):
     norm2: eqx.Module
     drop_path1: DropPathAdd
     act: Callable
-    ls1: LayerScale
+    ls1: LayerScale | None
 
     def __init__(
         self,
@@ -71,7 +71,8 @@ class ConvBlock(eqx.Module):
 
         key_conv1, key_conv2 = jr.split(key, 2)
         hidden_dim = hidden_dim or dim
-        num_groups = nearest_power_of_2_divisor(dim, norm_max_group)
+        num_groups1 = nearest_power_of_2_divisor(hidden_dim, norm_max_group)
+        num_groups2 = nearest_power_of_2_divisor(dim, norm_max_group)
         self.conv1 = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=dim,
@@ -82,7 +83,7 @@ class ConvBlock(eqx.Module):
             use_bias=True,
             key=key_conv1,
         )
-        self.norm1 = eqx.nn.GroupNorm(num_groups, hidden_dim)
+        self.norm1 = eqx.nn.GroupNorm(num_groups1, hidden_dim)
         self.act = act_layer
         self.conv2 = eqx.nn.Conv(
             num_spatial_dims=2,
@@ -94,16 +95,12 @@ class ConvBlock(eqx.Module):
             use_bias=True,
             key=key_conv2,
         )
-        self.norm2 = eqx.nn.GroupNorm(num_groups, dim)
+        self.norm2 = eqx.nn.GroupNorm(num_groups2, dim)
 
         dpr = drop_path[0] if isinstance(drop_path, list) else float(drop_path)
         self.drop_path1 = DropPathAdd(dpr)
 
-        self.ls1 = (
-            LayerScale(dim, init_values=init_values)
-            if init_values
-            else eqx.nn.Identity()
-        )
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else None
 
     def permute(
         self, x: Float[Array, "channels height width"]
@@ -122,10 +119,10 @@ class ConvBlock(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
-        _, h, w = x.shape
         x2 = self.act(self.norm1(self.conv1(x)))
         x2 = self.norm2(self.conv2(x2))
-        x2 = self.depermute(jax.vmap(jax.vmap(self.ls1))(self.permute(x2)))
+        if self.ls1 is not None:
+            x2 = self.depermute(jax.vmap(jax.vmap(self.ls1))(self.permute(x2)))
 
         return self.drop_path1(x, x2, inference=inference, key=key)
 
@@ -143,7 +140,7 @@ class SingleConvBlock(eqx.Module):
         act: Activation layer (Lambda or Identity)
     """
 
-    conv: eqx.nn.Conv
+    conv: eqx.nn.Conv2d | eqx.nn.ConvTranspose2d
     norm: eqx.Module
     act: eqx.Module
 
@@ -159,6 +156,7 @@ class SingleConvBlock(eqx.Module):
         norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
         norm_max_group: int = 32,
         act_layer: Callable | None = None,
+        transposed: bool = False,
         norm_kwargs: dict = {},
         **kwargs,
     ):
@@ -175,7 +173,8 @@ class SingleConvBlock(eqx.Module):
             **kwargs: Additional arguments passed to Conv layer
         """
 
-        self.conv = eqx.nn.Conv2d(
+        conv = eqx.nn.ConvTranspose2d if transposed else eqx.nn.Conv2d
+        self.conv = conv(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
