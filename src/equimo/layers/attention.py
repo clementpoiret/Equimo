@@ -1,4 +1,4 @@
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Literal, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
@@ -7,7 +7,7 @@ import jax.random as jr
 from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.convolution import SingleConvBlock, MBConv
+from equimo.layers.convolution import ConvBlock, SingleConvBlock, MBConv
 from equimo.layers.dropout import DropPathAdd
 from equimo.layers.ffn import Mlp
 from equimo.layers.mamba import Mamba2Mixer
@@ -1734,6 +1734,316 @@ class RFAttentionBlock(eqx.Module):
 
         x += self.context_module(x, inference=inference, key=key_context)
         x += self.local_module(x, inference=inference, key=key_local)
+
+        return x
+
+
+class ConvAttention(eqx.Module):
+    """Lightweight ConvAttention from LowFormer."""
+
+    num_heads: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
+    attention_type: Literal["softmax", "sigmoid"] = eqx.field(static=True)
+
+    qkv: eqx.nn.Sequential
+    out_proj: eqx.nn.Conv2d | eqx.nn.Identity
+    upsample: eqx.nn.ConvTranspose2d
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        key: PRNGKeyArray,
+        att_kernel: int = 7,
+        att_stride: int = 4,
+        fuse: bool = True,
+        attention_type: Literal["softmax", "sigmoid"] = "softmax",
+        norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
+        norm_kwargs: dict = {},
+        **kwargs,
+    ):
+        key_qkv1, key_qkv2, key_oproj, key_upsampling = jr.split(key, 4)
+
+        self.attention_type = attention_type
+        self.num_heads = int(max(1, in_channels // 30))
+        self.head_dim = in_channels // self.num_heads
+        total_dim = int(self.head_dim * self.num_heads * 3)
+
+        self.qkv = eqx.nn.Sequential(
+            [
+                SingleConvBlock(
+                    in_channels=in_channels,
+                    out_channels=in_channels,
+                    kernel_size=att_kernel,
+                    stride=att_stride,
+                    padding=att_kernel // 2,
+                    groups=in_channels,
+                    use_bias=False,
+                    norm_layer=norm_layer,
+                    act_layer=None,
+                    key=key_qkv1,
+                ),
+                eqx.nn.Conv2d(
+                    in_channels=in_channels,
+                    out_channels=total_dim,
+                    kernel_size=1,
+                    stride=1,
+                    padding=0,
+                    use_bias=False,
+                    key=key_qkv2,
+                ),
+            ]
+        )
+
+        if fuse:
+            self.out_proj = eqx.nn.Identity()
+            self.upsample = eqx.nn.ConvTranspose2d(
+                in_channels=self.head_dim * self.num_heads,
+                out_channels=in_channels,
+                kernel_size=3 if att_stride == 1 else (att_stride * 2),
+                stride=att_stride,
+                padding=1 if att_stride == 1 else (att_stride // 2),
+                key=key_upsampling,
+            )
+        else:
+            self.out_proj = eqx.nn.Conv2d(
+                self.head_dim * self.num_heads,
+                in_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                key=key_oproj,
+            )
+            self.upsample = eqx.nn.ConvTranspose2d(
+                in_channels=in_channels,
+                out_channels=in_channels,
+                kernel_size=3 if att_stride == 1 else (att_stride * 2),
+                stride=att_stride,
+                padding=1 if att_stride == 1 else (att_stride // 2),
+                groups=in_channels,
+                key=key_upsampling,
+            )
+
+    def __call__(
+        self,
+        x: Float[Array, "seqlen height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "seqlen height width"]:
+        q, k, v = rearrange(
+            self.qkv(x),
+            "(n h d) s1 s2 -> n h (s1 s2) d",
+            n=3,
+            h=self.num_heads,
+            d=self.head_dim,
+        )
+
+        _, s, _ = q.shape
+        h = w = int(s**0.5)
+
+        attn_logits = q @ rearrange(k, "h s d -> h d s")
+        attn_logits /= self.head_dim**0.5
+
+        if self.attention_type == "softmax":
+            attn = jax.nn.softmax(attn_logits, axis=-1)
+        elif self.attention_type == "sigmoid":
+            attn = jax.nn.sigmoid(attn_logits)
+
+        v = attn @ v
+
+        out = self.out_proj(rearrange(v, "h (s1 s2) d -> (h d) s1 s2", s1=h, s2=w))
+        out = self.upsample(out)
+
+        return out
+
+
+class ConvAttentionBlock(eqx.Module):
+    prenorm: eqx.Module
+    postnorm: eqx.Module
+    norm: eqx.Module
+    attn: eqx.Module
+    mlp: eqx.Module
+    drop_path1: DropPathAdd
+    drop_path2: DropPathAdd
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        key: PRNGKeyArray,
+        mlp_ratio: float = 4.0,
+        att_stride: int = 1,
+        attention_type: Literal["softmax", "sigmoid"] = "softmax",
+        fuse: bool = True,  # TODO: verify
+        drop_path: float | List[float] = 0.0,
+        act_layer: Callable = jax.nn.gelu,  # TODO: try hardswish
+        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        norm_max_group: int = 32,
+        post_attention_norm: bool = False,
+        eps: float = 1e-5,
+        **kwargs,
+    ):
+        key_attn, key_mlp = jr.split(key, 2)
+
+        if isinstance(drop_path, list):
+            if len(drop_path) != 2:
+                raise AssertionError(
+                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                )
+            dr1, dr2 = drop_path
+            dr1 = float(dr1)
+            dr2 = float(dr2)
+        else:
+            dr1 = dr2 = float(drop_path)
+
+        num_groups = nearest_power_of_2_divisor(in_channels, norm_max_group)
+        self.prenorm = norm_layer(num_groups, in_channels, eps=eps)
+        self.postnorm = (
+            norm_layer(num_groups, in_channels, eps=eps)
+            if post_attention_norm
+            else eqx.nn.Identity()
+        )
+        self.norm = norm_layer(num_groups, in_channels, eps=eps)
+
+        self.attn = ConvAttention(
+            in_channels=in_channels,
+            att_kernel=5 if att_stride > 1 else 3,
+            att_stride=att_stride,
+            fuse=fuse,
+            attention_type=attention_type,
+            key=key_attn,
+        )
+
+        self.mlp = ConvBlock(
+            dim=in_channels,
+            hidden_dim=int(in_channels * mlp_ratio),
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            drop_path=dr1,
+            act_layer=act_layer,
+            key=key_mlp,
+        )
+
+        self.drop_path1 = DropPathAdd(dr1)
+        self.drop_path2 = DropPathAdd(dr2)
+
+    def __call__(
+        self,
+        x: Float[Array, "seqlen dim"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "seqlen dim"]:
+        key_attn, key_mlp, key_dr1, key_dr2 = jr.split(key, 4)
+
+        x = self.drop_path1(
+            x,
+            self.postnorm(
+                self.attn(
+                    self.prenorm(x),
+                    inference=inference,
+                    key=key_attn,
+                )
+            ),
+            inference=inference,
+            key=key_dr1,
+        )
+        x = self.drop_path2(
+            x,
+            self.mlp(
+                self.norm(x),
+                inference=inference,
+                key=key_mlp,
+            ),
+            inference=inference,
+            key=key_dr2,
+        )
+
+        return x
+
+
+class LowFormerBlock(eqx.Module):
+    context_module: ConvAttentionBlock
+    local_module: MBConv
+    drop_path1: DropPathAdd
+    drop_path2: DropPathAdd
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        key,
+        mlp_ratio: float = 4.0,
+        att_stride: int = 1,
+        attention_type: Literal["softmax", "sigmoid"] = "softmax",
+        fuse_conv: bool = True,
+        drop_path: float | List[float] = 0.0,
+        act_layer: Callable = jax.nn.hard_swish,
+        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        expand_ratio: float = 4.0,
+        mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
+        mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
+        fuse_mbconv: bool = False,
+        **kwargs,
+    ):
+        key_context, key_local = jr.split(key, 2)
+
+        if isinstance(drop_path, list):
+            if len(drop_path) != 2:
+                raise AssertionError(
+                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                )
+            dr1, dr2 = drop_path
+            dr1 = float(dr1)
+            dr2 = float(dr2)
+        else:
+            dr1 = dr2 = float(drop_path)
+
+        self.context_module = ConvAttentionBlock(
+            in_channels=in_channels,
+            mlp_ratio=mlp_ratio,
+            att_stride=att_stride,
+            attention_type=attention_type,
+            fuse=fuse_conv,
+            drop_path=drop_path,
+            act_layer=act_layer,
+            norm_layer=norm_layer,
+            key=key_context,
+        )
+        self.local_module = MBConv(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            expand_ratio=expand_ratio,
+            norm_layers=mbconv_norm_layers,
+            act_layers=mbconv_act_layers,
+            use_bias=(True, True, False),
+            fuse=fuse_mbconv,
+            key=key_local,
+        )
+
+        self.drop_path1 = DropPathAdd(dr1)
+        self.drop_path2 = DropPathAdd(dr2)
+
+    def __call__(
+        self,
+        x: Float[Array, "dim height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ):
+        key_context, key_local, key_dr1, key_dr2 = jr.split(key, 4)
+
+        x = self.drop_path1(
+            x,
+            self.context_module(x, inference=inference, key=key_context),
+            inference=inference,
+            key=key_dr1,
+        )
+        x = self.drop_path2(
+            x,
+            self.local_module(x, inference=inference, key=key_local),
+            inference=inference,
+            key=key_dr2,
+        )
 
         return x
 
