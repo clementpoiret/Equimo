@@ -1591,6 +1591,8 @@ class RFAttention(eqx.Module):
     qkv: eqx.nn.Conv2d
     aggreg: list[eqx.nn.Conv2d]
     proj: SingleConvBlock
+    attn_drop: eqx.nn.Dropout
+    proj_drop: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -1604,6 +1606,8 @@ class RFAttention(eqx.Module):
         scales: Sequence[int] = (5,),
         use_bias: bool = False,
         kernel_func: Callable = jax.nn.relu,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
         # TODO: Benchmark against LN, RMSN, NsLN
         norm_layer: eqx.Module = eqx.nn.GroupNorm,
         norm_kwargs: dict = {},
@@ -1649,6 +1653,9 @@ class RFAttention(eqx.Module):
             key=key_proj,
         )
 
+        self.attn_drop = eqx.nn.Dropout(attn_drop)
+        self.proj_drop = eqx.nn.Dropout(proj_drop)
+
     def __call__(
         self,
         x: Float[Array, "seqlen height width"],
@@ -1671,7 +1678,7 @@ class RFAttention(eqx.Module):
         k = self.kernel_func(k)
 
         sum_k = jnp.sum(k, axis=(-1, -2), keepdims=True)
-        sum_v = jnp.sum(v, axis=(-1, -2), keepdims=True)
+        sum_v = jnp.sum(v * sum_k, axis=(-1, -2), keepdims=True)
         sum_kv = jnp.sum(k * sum_v, axis=(-1, -2), keepdims=True)
         sum_q = jnp.sum(q, axis=0, keepdims=True)
 
