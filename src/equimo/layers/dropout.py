@@ -124,5 +124,5 @@ class DropPathAdd(eqx.Module, strict=True):
             )
         else:
             q = 1 - lax.stop_gradient(self.p)
-            add = jrandom.bernouilli(key, q)
+            add = jrandom.bernoulli(key, q)
             return jax.lax.cond(add, lambda x, y: x + y, lambda x, y: x, x1, x2)

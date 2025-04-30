@@ -663,11 +663,14 @@ class MBConv(eqx.Module):
     """
 
     fused: bool = eqx.field(static=True)
+    residual: bool = eqx.field(static=True)
 
     inverted_conv: SingleConvBlock | None
     depth_conv: SingleConvBlock | None
     spatial_conv: SingleConvBlock | None
     point_conv: SingleConvBlock
+    dropout: eqx.nn.Dropout
+    drop_path: DropPathAdd
 
     def __init__(
         self,
@@ -688,6 +691,9 @@ class MBConv(eqx.Module):
         fuse_threshold: int = 256,
         fuse_group: bool = False,
         fused_conv_groups: int = 1,
+        dropout: float = 0.0,
+        drop_path: float = 0.0,
+        residual: bool = False,
         **kwargs,
     ):
         key_inverted, key_depth, key_point = jr.split(key, 3)
@@ -710,6 +716,9 @@ class MBConv(eqx.Module):
             raise ValueError(
                 f"`act_layers` should be a Tuple of length 3, got: {len(act_layers)}"
             )
+
+        # Ensure shapes are the same between input and output
+        self.residual = residual and (stride == 1) and (in_channels == out_channels)
 
         mid_channels = (
             mid_channels
@@ -779,25 +788,38 @@ class MBConv(eqx.Module):
             key=key_point,
         )
 
+        self.dropout = eqx.nn.Dropout(dropout)
+        self.drop_path = DropPathAdd(drop_path)
+
     def __call__(
         self,
         x: Float[Array, "channels height width"],
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
+        key_dropout, key_droppath = jr.split(key, 2)
         if self.fused:
-            x = self.spatial_conv(x)
+            out = self.spatial_conv(x)
         else:
-            x = self.inverted_conv(x)
-            x = self.depth_conv(x)
-        x = self.point_conv(x)
+            out = self.inverted_conv(x)
+            out = self.depth_conv(out)
+        out = self.point_conv(out)
 
-        return x
+        out = self.dropout(out, inference=inference, key=key_dropout)
+
+        if self.residual:
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+
+        return out
 
 
 class DSConv(eqx.Module):
+    residual: bool = eqx.field(static=True)
+
     depth_conv: SingleConvBlock
     point_conv: SingleConvBlock
+    dropout: eqx.nn.Dropout
+    drop_path: DropPathAdd
 
     def __init__(
         self,
@@ -812,6 +834,9 @@ class DSConv(eqx.Module):
         | eqx.Module
         | None = eqx.nn.GroupNorm,
         act_layers: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        residual: bool = False,
+        dropout: float = 0.0,
+        drop_path: float = 0.0,
         **kwargs,
     ):
         key_depth, key_point = jr.split(key, 2)
@@ -834,6 +859,9 @@ class DSConv(eqx.Module):
             raise ValueError(
                 f"`act_layers` should be a Tuple of length 2, got: {len(act_layers)}"
             )
+
+        # Ensure shapes are the same between input and output
+        self.residual = residual and (stride == 1) and (in_channels == out_channels)
 
         self.depth_conv = SingleConvBlock(
             in_channels=in_channels,
@@ -859,13 +887,23 @@ class DSConv(eqx.Module):
             key=key_point,
         )
 
+        self.dropout = eqx.nn.Dropout(dropout)
+        self.drop_path = DropPathAdd(drop_path)
+
     def __call__(
         self,
         x: Float[Array, "channels height width"],
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        x = self.depth_conv(x)
-        x = self.point_conv(x)
+        key_dropout, key_droppath = jr.split(key, 2)
 
-        return x
+        out = self.depth_conv(x)
+        out = self.point_conv(out)
+
+        out = self.dropout(out, inference=inference, key=key_dropout)
+
+        if self.residual:
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+
+        return out

@@ -1689,6 +1689,8 @@ class RFAttention(eqx.Module):
 class RFAttentionBlock(eqx.Module):
     context_module: RFAttention
     local_module: MBConv
+    drop_path1: DropPathAdd
+    drop_path2: DropPathAdd
 
     def __init__(
         self,
@@ -1704,9 +1706,24 @@ class RFAttentionBlock(eqx.Module):
         mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
         mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
         fuse_mbconv: bool = False,
+        context_drop: float = 0.0,
+        local_drop: float = 0.0,
+        drop_path: float | List[float] = 0.0,
+        residual_mbconv: bool = False,
         **kwargs,
     ):
         key_context, key_local = jr.split(key, 2)
+
+        if isinstance(drop_path, list):
+            if len(drop_path) != 2:
+                raise AssertionError(
+                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                )
+            dr1, dr2 = drop_path
+            dr1 = float(dr1)
+            dr2 = float(dr2)
+        else:
+            dr1 = dr2 = float(drop_path)
 
         self.context_module = RFAttention(
             in_channels=in_channels,
@@ -1716,6 +1733,7 @@ class RFAttentionBlock(eqx.Module):
             scales=scales,
             norm_layer=rfattn_norm_layer,
             norm_kwargs=norm_kwargs,
+            proj_drop=context_drop,
             key=key_context,
         )
         self.local_module = MBConv(
@@ -1726,8 +1744,14 @@ class RFAttentionBlock(eqx.Module):
             act_layers=mbconv_act_layers,
             use_bias=(True, True, False),
             fuse=fuse_mbconv,
+            dropout=local_drop,
+            drop_path=dr1,
+            residual=False,
             key=key_local,
         )
+
+        self.drop_path1 = DropPathAdd(dr1)
+        self.drop_path2 = DropPathAdd(dr2)
 
     def __call__(
         self,
@@ -1735,10 +1759,21 @@ class RFAttentionBlock(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        key_context, key_local = jr.split(key, 2)
+        key_context, key_local, key_dr1, key_dr2 = jr.split(key, 4)
 
-        x += self.context_module(x, inference=inference, key=key_context)
-        x += self.local_module(x, inference=inference, key=key_local)
+        # TODO: some prenorm?
+        x = self.drop_path1(
+            x,
+            self.context_module(x, inference=inference, key=key_context),
+            inference=inference,
+            key=key_dr1,
+        )
+        x = self.drop_path2(
+            x,
+            self.local_module(x, inference=inference, key=key_local),
+            inference=inference,
+            key=key_dr2,
+        )
 
         return x
 

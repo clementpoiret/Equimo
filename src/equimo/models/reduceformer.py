@@ -2,6 +2,7 @@ from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
@@ -13,7 +14,6 @@ from equimo.layers.norm import get_norm
 
 
 class BlockChunk(eqx.Module):
-    residuals: list[bool] = eqx.field(static=True)
     blocks: list[DSConv | MBConv | RFAttentionBlock]
 
     def __init__(
@@ -33,6 +33,8 @@ class BlockChunk(eqx.Module):
         act_layer: Callable = jax.nn.hard_swish,
         fewer_norm: bool = False,
         fuse_mbconv: bool = False,
+        dropout: float = 0.0,
+        drop_path: list[float] | float = 0.0,
         **kwargs,
     ):
         key, *block_subkeys = jr.split(key, depth + 1)
@@ -41,8 +43,10 @@ class BlockChunk(eqx.Module):
             k for k, v in kwargs.items() if isinstance(v, list) and len(v) == depth
         ]
 
+        if isinstance(drop_path, float):
+            drop_path = [drop_path] * depth
+
         blocks = []
-        residuals = []
 
         # TODO: simplify logic
         match block_type:
@@ -74,15 +78,15 @@ class BlockChunk(eqx.Module):
                             stride=stride if i == 0 else 1,
                             use_bias=use_bias,
                             norm_layers=norm_layer,
+                            dropout=dropout,
+                            drop_path=drop_path[i],
+                            residual=True,
                             act_layers=(act_layer, None)
                             if block == DSConv
                             else (act_layer, act_layer, None),
                             **config,
                             key=block_subkeys[i],
                         )
-                    )
-                    residuals.append(
-                        (in_channels == out_channels and stride == 1) or i > 0
                     )
 
             case "attention":
@@ -95,6 +99,7 @@ class BlockChunk(eqx.Module):
                         norm_layers=(None, None, norm_layer),
                         act_layers=(act_layer, act_layer, None),
                         use_bias=(True, True, False),
+                        dropout=dropout,
                         fuse=fuse_mbconv,
                         key=key,
                     )
@@ -111,13 +116,14 @@ class BlockChunk(eqx.Module):
                             mbconv_norm_layers=(None, None, norm_layer),
                             mbconv_act_layers=(act_layer, act_layer, None),
                             fuse_mbconv=fuse_mbconv,
+                            context_drop=dropout,
+                            local_drop=dropout,
+                            drop_path=drop_path[i],
                             key=block_subkeys[i],
                         )
                     )
-                residuals.append(False)
 
         self.blocks = blocks
-        self.residuals = residuals
 
     def __call__(
         self,
@@ -130,9 +136,8 @@ class BlockChunk(eqx.Module):
         keys = jr.split(key, len(self.blocks))
 
         # TODO: Dropout and Stochastic Path Add
-        for blk, residual, key_block in zip(self.blocks, self.residuals, keys):
-            res = blk(x, inference=inference, key=key_block, **kwargs)
-            x = x + res if residual else res
+        for blk, key_block in zip(self.blocks, keys):
+            x = blk(x, inference=inference, key=key_block, **kwargs)
 
         return x
 
@@ -156,6 +161,9 @@ class ReduceFormer(eqx.Module):
         act_layer: Callable | str = jax.nn.hard_swish,
         fuse_mbconv: bool = False,
         num_classes: int | None = 1000,
+        dropout: float = 0.0,
+        drop_path_rate: float = 0.0,
+        drop_path_uniform: bool = False,
         **kwargs,
     ):
         if not len(widths) == len(depths) == len(block_types):
@@ -164,6 +172,13 @@ class ReduceFormer(eqx.Module):
             )
 
         key_stem, key_head, *key_blocks = jr.split(key, 3 + len(depths))
+
+        depth = sum(depths)
+
+        if drop_path_uniform:
+            dpr = [drop_path_rate] * depth
+        else:
+            dpr = list(jnp.linspace(0.0, drop_path_rate, depth))
 
         act_layer = get_act(act_layer)
         norm_layer = get_norm(norm_layer)
@@ -195,6 +210,8 @@ class ReduceFormer(eqx.Module):
                     expand_ratio=1.0,
                     norm_layer=norm_layer,
                     act_layer=act_layer,
+                    dropout=dropout,
+                    drop_path=0.0,
                     key=key_block_stem,
                 ),
             ]
@@ -211,6 +228,8 @@ class ReduceFormer(eqx.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 fuse_mbconv=fuse_mbconv,
+                dropout=dropout,
+                drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
                 key=key_block,
             )
             for i, (depth, block_type, key_block) in enumerate(
