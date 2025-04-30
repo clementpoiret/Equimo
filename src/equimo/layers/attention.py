@@ -97,7 +97,7 @@ class Attention(eqx.Module):
             attn = jnp.where(mask == 0, jnp.finfo(attn.dtype).min, attn)
 
         attn = jax.nn.softmax(attn, axis=-1)
-        attn = self.attn_drop(attn, inference=inference, key=key1)
+        attn = self.attn_drop(attn, inference=infeoence, key=key1)
 
         x = jnp.einsum("hqk,hkd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
@@ -1591,7 +1591,6 @@ class RFAttention(eqx.Module):
     qkv: eqx.nn.Conv2d
     aggreg: list[eqx.nn.Conv2d]
     proj: SingleConvBlock
-    attn_drop: eqx.nn.Dropout
     proj_drop: eqx.nn.Dropout
 
     def __init__(
@@ -1606,7 +1605,6 @@ class RFAttention(eqx.Module):
         scales: Sequence[int] = (5,),
         use_bias: bool = False,
         kernel_func: Callable = jax.nn.relu,
-        attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         # TODO: Benchmark against LN, RMSN, NsLN
         norm_layer: eqx.Module = eqx.nn.GroupNorm,
@@ -1653,15 +1651,14 @@ class RFAttention(eqx.Module):
             key=key_proj,
         )
 
-        self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
 
     def __call__(
         self,
-        x: Float[Array, "seqlen height width"],
+        x: Float[Array, "dim height width"],
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
-    ) -> Float[Array, "seqlen height width"]:
+    ) -> Float[Array, "dim height width"]:
         qkv_base = self.qkv(x)
 
         aggregated_qkvs = [op(qkv_base) for op in self.aggreg]
@@ -1684,6 +1681,7 @@ class RFAttention(eqx.Module):
 
         out = (q * sum_kv) / (sum_q * sum_k + self.eps)
         out = self.proj(out)
+        out = self.proj_drop(out, inference=inference, key=key)
 
         return out
 
