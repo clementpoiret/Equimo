@@ -97,7 +97,7 @@ class Attention(eqx.Module):
             attn = jnp.where(mask == 0, jnp.finfo(attn.dtype).min, attn)
 
         attn = jax.nn.softmax(attn, axis=-1)
-        attn = self.attn_drop(attn, inference=infeoence, key=key1)
+        attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hkd->hqd", attn, v)
         x = rearrange(x, "h s d -> s (h d)")
