@@ -35,6 +35,7 @@ class BlockChunk(eqx.Module):
         fuse_mbconv: bool = False,
         dropout: float = 0.0,
         drop_path: list[float] | float = 0.0,
+        residual: bool = False,
         **kwargs,
     ):
         key, *block_subkeys = jr.split(key, depth + 1)
@@ -80,7 +81,7 @@ class BlockChunk(eqx.Module):
                             norm_layers=norm_layer,
                             dropout=dropout,
                             drop_path=drop_path[i],
-                            residual=True,
+                            residual=residual,
                             act_layers=(act_layer, None)
                             if block == DSConv
                             else (act_layer, act_layer, None),
@@ -119,6 +120,7 @@ class BlockChunk(eqx.Module):
                             context_drop=dropout,
                             local_drop=dropout,
                             drop_path=drop_path[i],
+                            residual_mbconv=False,
                             key=block_subkeys[i],
                         )
                     )
@@ -164,6 +166,7 @@ class ReduceFormer(eqx.Module):
         dropout: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
+        residual: bool = False,
         **kwargs,
     ):
         if not len(widths) == len(depths) == len(block_types):
@@ -211,6 +214,7 @@ class ReduceFormer(eqx.Module):
                     norm_layer=norm_layer,
                     act_layer=act_layer,
                     dropout=dropout,
+                    residual=False,
                     drop_path=0.0,
                     key=key_block_stem,
                 ),
@@ -230,6 +234,7 @@ class ReduceFormer(eqx.Module):
                 fuse_mbconv=fuse_mbconv,
                 dropout=dropout,
                 drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
+                residual=residual,
                 key=key_block,
             )
             for i, (depth, block_type, key_block) in enumerate(
