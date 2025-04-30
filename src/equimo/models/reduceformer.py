@@ -102,6 +102,7 @@ class BlockChunk(eqx.Module):
                         use_bias=(True, True, False),
                         dropout=dropout,
                         fuse=fuse_mbconv,
+                        residual=False,
                         key=key,
                     )
                 )
@@ -145,7 +146,8 @@ class BlockChunk(eqx.Module):
 
 
 class ReduceFormer(eqx.Module):
-    input_stem: eqx.nn.Sequential
+    conv_stem: SingleConvBlock
+    block_stem: BlockChunk
     blocks: list[BlockChunk]
     head: eqx.nn.Linear | eqx.nn.Identity
 
@@ -190,35 +192,32 @@ class ReduceFormer(eqx.Module):
         depth_stem = depths.pop(0)
         block_type_stem = block_types.pop(0)
         key_block_stem = key_blocks.pop(0)
+        dpr_stem = 0.0
 
-        self.input_stem = eqx.nn.Sequential(
-            [
-                SingleConvBlock(
-                    in_channels=in_channels,
-                    out_channels=width_stem,
-                    kernel_size=3,
-                    stride=2,
-                    padding="SAME",
-                    use_bias=False,
-                    norm_layer=norm_layer,
-                    act_layer=act_layer,
-                    key=key_stem,
-                ),
-                BlockChunk(
-                    in_channels=width_stem,
-                    out_channels=width_stem,
-                    depth=depth_stem,
-                    block_type=block_type_stem,
-                    stride=1,
-                    expand_ratio=1.0,
-                    norm_layer=norm_layer,
-                    act_layer=act_layer,
-                    dropout=dropout,
-                    residual=False,
-                    drop_path=0.0,
-                    key=key_block_stem,
-                ),
-            ]
+        self.conv_stem = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=width_stem,
+            kernel_size=3,
+            stride=2,
+            padding="SAME",
+            use_bias=False,
+            norm_layer=norm_layer,
+            act_layer=act_layer,
+            key=key_stem,
+        )
+        self.block_stem = BlockChunk(
+            in_channels=width_stem,
+            out_channels=width_stem,
+            depth=depth_stem,
+            block_type=block_type_stem,
+            stride=1,
+            expand_ratio=1.0,
+            norm_layer=norm_layer,
+            act_layer=act_layer,
+            dropout=dropout,
+            residual=residual,
+            drop_path=dpr_stem,
+            key=key_block_stem,
         )
 
         self.blocks = [
@@ -269,7 +268,8 @@ class ReduceFormer(eqx.Module):
         """
         key_stem, *key_blocks = jr.split(key, len(self.blocks) + 1)
 
-        x = self.input_stem(x, key=key_stem)
+        x = self.conv_stem(x, key=key_stem)
+        x = self.block_stem(x, inference=inference, key=key_stem)
 
         for i, blk in enumerate(self.blocks):
             x = blk(x, inference=inference, key=key_blocks[i])
