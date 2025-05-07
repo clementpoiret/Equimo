@@ -249,6 +249,28 @@ class ReduceFormer(eqx.Module):
             else eqx.nn.Identity()
         )
 
+    def intermediates(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+        **kwargs,
+    ):
+        key_stem, *key_blocks = jr.split(key, len(self.blocks) + 1)
+
+        intermediates = []
+
+        x = self.conv_stem(x, key=key_stem)
+        x = self.block_stem(x, inference=inference, key=key_stem)
+
+        intermediates.append(x)  # let's consider the stem is a normal block
+
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, inference=inference, key=key_blocks[i])
+            intermediates.append(x)
+
+        return intermediates
+
     def features(
         self,
         x: Float[Array, "channels height width"],
