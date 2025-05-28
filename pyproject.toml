@@ -1,9 +1,9 @@
 [project]
 name = "Equimo"
-version = "0.4.0-alpha.6"
+version = "0.4.0-alpha.7"
 description = "Implementation of popular vision models in Jax"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
   "einops>=0.8.0",
   "equinox>=0.11.5",
