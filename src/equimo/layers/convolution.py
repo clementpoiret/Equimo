@@ -1,4 +1,3 @@
-from curses import KEY_EIC
 from typing import Callable, Optional, Sequence, Tuple
 
 import equinox as eqx
@@ -927,9 +926,9 @@ class UIB(eqx.Module):
 
     residual: bool = eqx.field(static=True)
 
-    start_dw_conv: SingleConvBlock | eqx.nn.Identity
+    start_dw_conv: SingleConvBlock | None
     expand_conv: SingleConvBlock
-    middle_dw_conv: SingleConvBlock | eqx.nn.Identity
+    middle_dw_conv: SingleConvBlock | None
     proj_conv: SingleConvBlock
 
     dropout: eqx.nn.Dropout
@@ -968,7 +967,7 @@ class UIB(eqx.Module):
                 key=key_sdwc,
             )
             if start_dw_kernel_size
-            else eqx.nn.Identity()
+            else None
         )
 
         expand_channels = make_divisible(in_channels * expand_ratio, 8)
@@ -998,7 +997,7 @@ class UIB(eqx.Module):
                 key=key_mdwc,
             )
             if middle_dw_kernel_size
-            else eqx.nn.Identity()
+            else None
         )
 
         self.proj_conv = SingleConvBlock(
@@ -1027,9 +1026,16 @@ class UIB(eqx.Module):
             key, 6
         )
 
-        out = self.start_dw_conv(x, inference=inference, key=key_sdwc)
+        out = x
+
+        if self.start_dw_conv is not None:
+            out = self.start_dw_conv(out, inference=inference, key=key_sdwc)
+
         out = self.expand_conv(out, inference=inference, key=key_ec)
-        out = self.middle_dw_conv(out, inference=inference, key=key_mdwc)
+
+        if self.middle_dw_conv is not None:
+            out = self.middle_dw_conv(out, inference=inference, key=key_mdwc)
+
         out = self.proj_conv(out, inference=inference, key=key_proj)
 
         out = self.dropout(out, inference=inference, key=key_dropout)
