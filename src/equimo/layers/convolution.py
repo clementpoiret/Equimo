@@ -143,6 +143,7 @@ class SingleConvBlock(eqx.Module):
     conv: eqx.nn.Conv2d | eqx.nn.ConvTranspose2d
     norm: eqx.Module
     act: eqx.Module
+    dropout: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -156,6 +157,7 @@ class SingleConvBlock(eqx.Module):
         norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
         norm_max_group: int = 32,
         act_layer: Callable | None = None,
+        dropout: float = 0.0,
         transposed: bool = False,
         norm_kwargs: dict = {},
         **kwargs,
@@ -194,15 +196,18 @@ class SingleConvBlock(eqx.Module):
         else:
             self.norm = eqx.nn.Identity()
 
+        self.dropout = eqx.nn.Dropout(dropout)
         self.act = eqx.nn.Lambda(act_layer) if act_layer else eqx.nn.Identity()
 
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
-        key: Optional[PRNGKeyArray] = None,
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "dim height width"]:
-        return self.act(self.norm(self.conv(x)))
+        return self.dropout(
+            self.act(self.norm(self.conv(x))), inference=inference, key=key
+        )
 
 
 class Stem(eqx.Module):
