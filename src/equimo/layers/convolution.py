@@ -1,3 +1,4 @@
+from curses import KEY_EIC
 from typing import Callable, Optional, Sequence, Tuple
 
 import equinox as eqx
@@ -1022,12 +1023,14 @@ class UIB(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        key_dropout, key_droppath = jr.split(key, 2)
+        key_sdwc, key_ec, key_mdwc, key_proj, key_dropout, key_droppath = jr.split(
+            key, 6
+        )
 
-        out = self.start_dw_conv(x)
-        out = self.expand_conv(out)
-        out = self.middle_dw_conv(out)
-        out = self.proj_conv(out)
+        out = self.start_dw_conv(x, inference=inference, key=key_sdwc)
+        out = self.expand_conv(out, inference=inference, key=key_ec)
+        out = self.middle_dw_conv(out, inference=inference, key=key_mdwc)
+        out = self.proj_conv(out, inference=inference, key=key_proj)
 
         out = self.dropout(out, inference=inference, key=key_dropout)
 
