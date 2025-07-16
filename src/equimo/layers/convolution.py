@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.dropout import DropPathAdd
 from equimo.layers.norm import LayerScale
-from equimo.utils import nearest_power_of_2_divisor
+from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
 
 class ConvBlock(eqx.Module):
@@ -905,6 +905,129 @@ class DSConv(eqx.Module):
 
         out = self.depth_conv(x)
         out = self.point_conv(out)
+
+        out = self.dropout(out, inference=inference, key=key_dropout)
+
+        if self.residual:
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+
+        return out
+
+
+class UIB(eqx.Module):
+    """MobileNet v4's Universal Inverted Bottleneck with optional fusing from [1].
+
+    References:
+        [1]: Qin, Danfeng, Chas Leichner, Manolis Delakis, Marco Fornoni,
+        Shixin Luo, Fan Yang, Weijun Wang, Colby Banbury, Chengxi Ye, Berkin
+        Akin, Vaibhav Aggarwal, Tenghui Zhu, Daniele Moro, and Andrew Howard.
+        2024. “MobileNetV4 -- Universal Models for the Mobile Ecosystem.”
+    """
+
+    residual: bool = eqx.field(static=True)
+
+    start_dw_conv: SingleConvBlock | eqx.nn.Identity
+    expand_conv: SingleConvBlock
+    middle_dw_conv: SingleConvBlock | eqx.nn.Identity
+    proj_conv: SingleConvBlock
+
+    dropout: eqx.nn.Dropout
+    drop_path: DropPathAdd
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        start_dw_kernel_size: int | None,
+        middle_dw_kernel_size: int | None,
+        middle_dw_downsample: bool = True,
+        stride: int = 1,
+        expand_ratio: float = 6.0,
+        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        act_layer: Callable | None = jax.nn.relu,
+        dropout: float = 0.0,
+        drop_path: float = 0.0,
+        residual: bool = False,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        key_sdwc, key_ec, key_mdwc, key_proj = jr.split(key, 4)
+
+        self.start_dw_conv = (
+            SingleConvBlock(
+                in_channels,
+                in_channels,
+                kernel_size=start_dw_kernel_size,
+                stride=stride if not middle_dw_downsample else 1,
+                padding=(start_dw_kernel_size - 1) // 2,
+                groups=in_channels,
+                use_bias=False,
+                norm_layer=norm_layer,
+                key=key_sdwc,
+            )
+            if start_dw_kernel_size
+            else eqx.nn.Identity()
+        )
+
+        expand_channels = make_divisible(in_channels * expand_ratio, 8)
+        self.expand_conv = SingleConvBlock(
+            in_channels,
+            expand_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=False,
+            norm_layer=norm_layer,
+            act_layer=act_layer,
+            key=key_ec,
+        )
+
+        self.middle_dw_conv = (
+            SingleConvBlock(
+                expand_channels,
+                expand_channels,
+                kernel_size=middle_dw_kernel_size,
+                stride=stride if middle_dw_downsample else 1,
+                padding=(middle_dw_kernel_size - 1) // 2,
+                groups=expand_channels,
+                use_bias=False,
+                norm_layer=norm_layer,
+                act_layer=act_layer,
+                key=key_mdwc,
+            )
+            if middle_dw_kernel_size
+            else eqx.nn.Identity()
+        )
+
+        self.proj_conv = SingleConvBlock(
+            expand_channels,
+            out_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=False,
+            norm_layer=norm_layer,
+            key=key_proj,
+        )
+
+        # Ensure shapes are the same between input and output
+        self.residual = residual and (stride == 1) and (in_channels == out_channels)
+        self.dropout = eqx.nn.Dropout(dropout)
+        self.drop_path = DropPathAdd(drop_path)
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ):
+        key_dropout, key_droppath = jr.split(key, 2)
+
+        out = self.start_dw_conv(x)
+        out = self.expand_conv(out)
+        out = self.middle_dw_conv(out)
+        out = self.proj_conv(out)
 
         out = self.dropout(out, inference=inference, key=key_dropout)
 

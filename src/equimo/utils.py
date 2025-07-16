@@ -15,6 +15,37 @@ def normalize(x, order: int = 2):
     return x / np.linalg.norm(x, ord=order, axis=-1, keepdims=True).clip(min=1e-3)
 
 
+def make_divisible(
+    value: float,
+    divisor: int,
+    min_value: t.Optional[float] = None,
+    round_down_protect: bool = True,
+) -> int:
+    """
+    This function is copied from here
+    "https://github.com/tensorflow/models/blob/master/official/vision/modeling/layers/nn_layers.py"
+
+    This is to ensure that all layers have channels that are divisible by 8.
+
+    Args:
+        value: A `float` of original value.
+        divisor: An `int` of the divisor that need to be checked upon.
+        min_value: A `float` of  minimum value threshold.
+        round_down_protect: A `bool` indicating whether round down more than 10%
+        will be allowed.
+
+    Returns:
+        The adjusted value in `int` that is divisible against divisor.
+    """
+    if min_value is None:
+        min_value = divisor
+    new_value = max(min_value, int(value + divisor / 2) // divisor * divisor)
+    # Make sure that round down does not go down by more than 10%.
+    if round_down_protect and new_value < 0.9 * value:
+        new_value += divisor
+    return int(new_value)
+
+
 class PCAVisualizer:
     """PCA visualizer.
 
