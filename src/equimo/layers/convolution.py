@@ -1217,7 +1217,7 @@ class GenericGhostModule(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        key_p, key_c = jr.split(key, 3)
+        # key_p, key_c = jr.split(key, 2)
         # key_ps = jr.split(key_p, self.num_conv_branches)
         # key_cs = jr.split(key_c, self.num_conv_branches)
 
