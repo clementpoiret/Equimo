@@ -1060,6 +1060,7 @@ class GenericGhostModule(eqx.Module):
     mode: Literal["original", "shortcut"] = eqx.field(static=True)
     out_channels: int = eqx.field(static=True)
     num_conv_branches: int = eqx.field(static=True)
+    inference: bool
 
     primary_conv: eqx.nn.Conv2d
     cheap_operation: eqx.nn.Conv2d
@@ -1097,6 +1098,7 @@ class GenericGhostModule(eqx.Module):
         init_channels = math.ceil(out_channels / ratio)
         new_channels = init_channels * (ratio - 1)
 
+        self.inference = False
         self.mode = mode
         self.num_conv_branches = num_conv_branches
         self.out_channels = out_channels
@@ -1111,11 +1113,12 @@ class GenericGhostModule(eqx.Module):
             key=key_primary,
         )
         self.cheap_operation = eqx.nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=init_channels,
+            in_channels=init_channels,
+            out_channels=new_channels,
             kernel_size=dw_size,
             stride=stride,
             padding=dw_size // 2,
+            groups=1,
             key=key_cheap,
         )
 
@@ -1211,6 +1214,31 @@ class GenericGhostModule(eqx.Module):
             else eqx.nn.Identity()
         )
 
+    def training_features(self, x):
+        x1 = jax.tree_util.tree_reduce(
+            operator.add, [conv(x) for conv in self.primary_rpr_conv]
+        )
+        x1 = self.primary_activation(self.primary_shared_norm(x1))
+
+        cheap_branches = [self.cheap_rpr_skip(x1), self.cheap_rpr_scale(x1)] + [
+            conv(x1) for conv in self.cheap_rpr_conv
+        ]
+
+        x2 = jax.tree_util.tree_reduce(operator.add, cheap_branches)
+        x2 = self.cheap_activation(self.cheap_shared_norm(x2))
+
+        out = jnp.concatenate([x1, x2], axis=0)
+
+        return out
+
+    def inference_features(self, x):
+        x1 = self.primary_activation(self.primary_shared_norm(self.primary_conv(x)))
+        x2 = self.cheap_activation(self.cheap_shared_norm(self.cheap_operation(x1)))
+
+        out = jnp.concatenate([x1, x2], axis=0)
+
+        return out
+
     def __call__(
         self,
         x: Float[Array, "channels height width"],
@@ -1221,23 +1249,10 @@ class GenericGhostModule(eqx.Module):
         # key_ps = jr.split(key_p, self.num_conv_branches)
         # key_cs = jr.split(key_c, self.num_conv_branches)
 
-        if inference:
-            x1 = self.primary_activation(self.primary_shared_norm(self.primary_conv(x)))
-            x2 = self.cheap_activation(self.cheap_shared_norm(self.cheap_operation(x1)))
+        if self.inference:
+            out = self.inference_features(x)
         else:
-            x1 = jax.tree_util.tree_reduce(
-                operator.add, [conv(x) for conv in self.primary_rpr_conv]
-            )
-            x1 = self.primary_activation(self.primary_shared_norm(x1))
-
-            cheap_branches = [self.cheap_rpr_skip(x1), self.cheap_rpr_scale(x1)] + [
-                conv(x1) for conv in self.cheap_rpr_conv
-            ]
-
-            x2 = jax.tree_util.tree_reduce(operator.add, cheap_branches)
-            x2 = self.cheap_activation(self.cheap_shared_norm(x2))
-
-        out = jnp.concatenate([x1, x2], axis=0)
+            out = self.training_features(x)
 
         if self.mode == "shortcut":
             res = self.short_conv(reduce(x, "c (h 2) (w 2) -> c h w", reduction="mean"))
