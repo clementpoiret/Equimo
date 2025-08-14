@@ -1591,7 +1591,6 @@ class RFAttention(eqx.Module):
     qkv: eqx.nn.Conv2d
     aggreg: list[eqx.nn.Conv2d]
     proj: SingleConvBlock
-    proj_drop: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -1648,10 +1647,9 @@ class RFAttention(eqx.Module):
             use_bias=use_bias,
             norm_layer=norm_layer,
             norm_kwargs=norm_kwargs,
+            dropout=proj_drop,
             key=key_proj,
         )
-
-        self.proj_drop = eqx.nn.Dropout(proj_drop)
 
     def __call__(
         self,
@@ -1680,8 +1678,7 @@ class RFAttention(eqx.Module):
         sum_q = jnp.sum(q, axis=0, keepdims=True)
 
         out = (q * sum_kv) / (sum_q * sum_k + self.eps)
-        out = self.proj(out)
-        out = self.proj_drop(out, inference=inference, key=key)
+        out = self.proj(out, inference=inference, key=key)
 
         return out
 
