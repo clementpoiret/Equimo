@@ -900,10 +900,10 @@ class DSConv(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        key_dropout, key_droppath = jr.split(key, 2)
+        key_depth, key_point, key_dropout, key_droppath = jr.split(key, 4)
 
-        out = self.depth_conv(x)
-        out = self.point_conv(out)
+        out = self.depth_conv(x, inference=inference, key=key_depth)
+        out = self.point_conv(out, inference=inference, key=key_point)
 
         out = self.dropout(out, inference=inference, key=key_dropout)
 

@@ -260,7 +260,7 @@ class ReduceFormer(eqx.Module):
 
         intermediates = []
 
-        x = self.conv_stem(x, key=key_stem)
+        x = self.conv_stem(x, inference=inference, key=key_stem)
         x = self.block_stem(x, inference=inference, key=key_stem)
 
         intermediates.append(x)  # let's consider the stem is a normal block
@@ -290,7 +290,7 @@ class ReduceFormer(eqx.Module):
         """
         key_stem, *key_blocks = jr.split(key, len(self.blocks) + 1)
 
-        x = self.conv_stem(x, key=key_stem)
+        x = self.conv_stem(x, inference=inference, key=key_stem)
         x = self.block_stem(x, inference=inference, key=key_stem)
 
         for i, blk in enumerate(self.blocks):
