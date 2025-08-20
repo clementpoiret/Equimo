@@ -148,6 +148,7 @@ class VisionTransformer(eqx.Module):
     blocks: List[eqx.Module]
     pos_drop: eqx.nn.Dropout
     norm: eqx.Module
+    local_cls_norm: eqx.Module | None
     head: eqx.Module
 
     dim: int = eqx.field(static=True)
@@ -205,6 +206,7 @@ class VisionTransformer(eqx.Module):
         ffn_layer: str | eqx.Module = Mlp,
         ffn_bias: bool = True,
         norm_layer: str | eqx.Module = eqx.nn.LayerNorm,
+        untie_global_and_local_cls_norm: bool = False,
         init_values: float | None = None,
         global_pool: Literal["", "token", "avg", "avgmax", "max"] = "avg",
         num_classes: int = 1000,
@@ -327,6 +329,13 @@ class VisionTransformer(eqx.Module):
         ]
 
         self.norm = norm_layer(dim, eps=eps)
+
+        # WARNING: This has no effect in the code.
+        # This norm layer is created to hold some training-only norm layer of Dinov3
+        self.local_cls_norm = (
+            norm_layer(dim, eps=eps) if untie_global_and_local_cls_norm else None
+        )
+
         self.head = (
             eqx.nn.Linear(dim, num_classes, key=key_head)
             if num_classes > 0
