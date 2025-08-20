@@ -1592,7 +1592,7 @@ class FasterNetBlock(eqx.Module):
         padding: str | int = "SAME",
         norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
         norm_max_group: int = 32,
-        act_layer: Callable | None = None,
+        act_layer: Callable | None = jax.nn.relu,
         dropout: float = 0.0,
         drop_path: float = 0.0,
         norm_kwargs: dict = {},
