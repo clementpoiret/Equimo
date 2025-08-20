@@ -16,6 +16,70 @@ from equimo.layers.posemb import PosCNN2D, PosEmbMLPSwinv1D, PosEmbMLPSwinv2D, R
 from equimo.utils import nearest_power_of_2_divisor
 
 
+def rope_rotate_half(x: jax.Array) -> jax.Array:
+    """Rotate last-dim pairs by 90 degrees: [x0..x_{D/2-1}, x_{D/2}..x_{D-1}]
+    -> [-x_{D/2}..-x_{D-1}, x0..x_{D/2-1}]
+    """
+    x1, x2 = jnp.split(x, 2, axis=-1)
+    return jnp.concatenate([-x2, x1], axis=-1)
+
+
+def rope_apply(x: jax.Array, sin: jax.Array, cos: jax.Array) -> jax.Array:
+    """Apply RoPE to `x` using per-position sin/cos.
+
+    Shapes:
+    - x:   [..., D]
+    - sin: [..., D]
+    - cos: [..., D]
+    Broadcasting across leading axes is supported.
+    """
+    return (x * cos) + (rope_rotate_half(x) * sin)
+
+
+def rope_apply_qk_last_hw(
+    q: jax.Array, k: jax.Array, sin: jax.Array, cos: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+    """Apply RoPE to the last HW tokens of q and k (keeping any prefix unchanged).
+
+    Shapes:
+    - q, k: [H, N, D] (heads, tokens, head_dim)
+    - sin, cos: [HW, D]
+    - N = prefix + HW
+
+    Returns:
+    - q_rot, k_rot: same shape as inputs.
+    """
+    if sin.shape[-1] != q.shape[-1] or cos.shape[-1] != q.shape[-1]:
+        raise ValueError(
+            f"sin/cos last dim must equal head_dim; got {sin.shape[-1]} vs {q.shape[-1]}"
+        )
+    N = q.shape[-2]
+    HW = sin.shape[-2]
+    prefix = N - HW
+    if prefix < 0:
+        raise ValueError(f"Sequence length N={N} smaller than HW={HW}.")
+
+    q_dtype, k_dtype = q.dtype, k.dtype
+    rope_dtype = sin.dtype
+
+    q = q.astype(rope_dtype)
+    k = k.astype(rope_dtype)
+
+    # Broadcast sin/cos across heads
+    sin_b = sin[None, :, :]  # [1, HW, D]
+    cos_b = cos[None, :, :]  # [1, HW, D]
+
+    q_prefix, q_tail = jnp.split(q, [prefix], axis=-2)  # axis -2 is tokens
+    k_prefix, k_tail = jnp.split(k, [prefix], axis=-2)
+
+    q_tail = rope_apply(q_tail, sin_b, cos_b)
+    k_tail = rope_apply(k_tail, sin_b, cos_b)
+
+    q_out = jnp.concatenate([q_prefix, q_tail], axis=-2).astype(q_dtype)
+    k_out = jnp.concatenate([k_prefix, k_tail], axis=-2).astype(k_dtype)
+    return q_out, k_out
+
+
 class Attention(eqx.Module):
     """Multi-head self attention module.
 
@@ -76,6 +140,7 @@ class Attention(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
         mask: Optional[Float[Array, ""]] = None,
+        rope_sincos: Optional[Tuple[jax.Array, jax.Array]] = None,
     ) -> Float[Array, "seqlen dim"]:
         key1, key2 = jr.split(key, 2)
 
@@ -90,6 +155,15 @@ class Attention(eqx.Module):
         q, k, v = qkv
         q = jax.vmap(jax.vmap(self.q_norm))(q)
         k = jax.vmap(jax.vmap(self.k_norm))(k)
+
+        if rope_sincos is not None:
+            sin, cos = rope_sincos  # [HW, D], [HW, D]
+            if sin.shape[-1] != self.head_dim or cos.shape[-1] != self.head_dim:
+                raise ValueError(
+                    f"RoPE sin/cos last dim ({sin.shape[-1]}) must equal head_dim ({self.head_dim})."
+                )
+            # leave any prefix tokens untouched; rotate last HW tokens
+            q, k = rope_apply_qk_last_hw(q, k, sin, cos)
 
         attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
 
@@ -317,6 +391,7 @@ class AttentionBlock(eqx.Module):
         self,
         x: Float[Array, "seqlen dim"],
         key: PRNGKeyArray,
+        rope_sincos: Optional[Tuple[jax.Array, jax.Array]] = None,
         inference: Optional[bool] = None,
         mask: Optional[Float[Array, ""]] = None,
     ) -> Float[Array, "seqlen dim"]:
@@ -325,6 +400,11 @@ class AttentionBlock(eqx.Module):
         # I chose to define extra args here rather than passing mask directly
         # because not all attention mechanisms support masks as args
         extra_kwargs = {"mask": mask} if mask is not None else {}
+        attn_kwargs = (
+            extra_kwargs | {"rope_sincos": rope_sincos}
+            if rope_sincos is not None
+            else extra_kwargs
+        )
 
         x = self.drop_path1(
             x,
@@ -334,7 +414,7 @@ class AttentionBlock(eqx.Module):
                         jax.vmap(self.prenorm)(x),
                         inference=inference,
                         key=key_attn,
-                        **extra_kwargs,
+                        **attn_kwargs,
                     )
                 )
             ),
