@@ -244,6 +244,103 @@ class SwiGlu(eqx.Module):
     a gating mechanism where the input is transformed by two parallel paths and
     combined multiplicatively.
 
+    Attributes:
+        w1, w2: projection layers for both paths
+        w3: Final projection layer
+        drop1: Dropout after gating
+        drop2: Dropout after final projection
+
+    References:
+        [1]: https://arxiv.org/pdf/2002.05202
+    """
+
+    w1: eqx.nn.Linear
+    w2: eqx.nn.Linear
+    w3: eqx.nn.Linear
+    drop1: eqx.nn.Dropout
+    drop2: eqx.nn.Dropout
+
+    def __init__(
+        self,
+        in_features: int,
+        *,
+        key: PRNGKeyArray,
+        out_features: int | None = None,
+        hidden_features: int | None = None,
+        dropout_rate: float = 0.0,
+        align_to: int = 8,
+        bias: bool = True,
+        **kwargs,
+    ):
+        """Initialize the SwiGLU module.
+
+        Args:
+            in_features: Number of input features
+            key: PRNG key for initialization
+            out_features: Number of output features (default: same as in_features)
+            hidden_features: Size of hidden dimension (default: same as in_features)
+            dropout_rate: Dropout probability (default: 0.0)
+            align_to: constrains hidden features to be a multiple of a given int (default: 8)
+            bias: Whether to include bias in linear layers (default: True)
+            **kwargs: Additional arguments
+        """
+        key_fc1, key_fc2, key_fc3 = jr.split(key, 3)
+
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        d = int(hidden_features * 2 / 3)
+        hidden_features = d + (-d % align_to)
+
+        self.w1 = eqx.nn.Linear(
+            in_features, hidden_features, use_bias=bias, key=key_fc1
+        )
+        self.w2 = eqx.nn.Linear(
+            in_features, hidden_features, use_bias=bias, key=key_fc2
+        )
+        self.w3 = eqx.nn.Linear(
+            hidden_features, out_features, use_bias=bias, key=key_fc3
+        )
+
+        self.drop1 = eqx.nn.Dropout(dropout_rate)
+        self.drop2 = eqx.nn.Dropout(dropout_rate)
+
+    def __call__(
+        self,
+        x: Float[Array, "seqlen dim"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "seqlen dim"]:
+        key_dr1, key_dr2 = jr.split(key, 2)
+
+        x1 = jax.vmap(self.w1)(x)
+        x2 = jax.vmap(self.w2)(x)
+
+        x = self.drop1(
+            jax.nn.silu(x1) * x2,
+            inference=inference,
+            key=key_dr1,
+        )
+
+        x = self.drop2(
+            jax.vmap(self.w3)(x),
+            inference=inference,
+            key=key_dr2,
+        )
+
+        return x
+
+
+class SwiGluFused(eqx.Module):
+    """SwiGLU activation module with dropout.
+
+    This matches the implementation of Dinov2 giant at
+    https://github.com/facebookresearch/dinov2/blob/e1277af2ba9496fbadf7aec6eba56e8d882d1e35/dinov2/layers/swiglu_ffn.py#L54
+
+    Implements the SwiGLU (Swish-Gated Linear Unit) activation function with dropout,
+    as described in "GLU Variants Improve Transformer" paper [1]. The architecture uses
+    a gating mechanism where the input is transformed by two parallel paths and
+    combined multiplicatively.
+
     The computation flow is:
     1. Joint projection to higher dimension (w12)
     2. Split into two paths
@@ -289,8 +386,9 @@ class SwiGlu(eqx.Module):
         """
         key_fc1, key_fc2 = jr.split(key, 2)
 
-        hidden_features = hidden_features or in_features
         out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        hidden_features = (int(hidden_features * 2 / 3) + 7) // 8 * 8
 
         self.w12 = eqx.nn.Linear(
             in_features, 2 * hidden_features, use_bias=bias, key=key_fc1
@@ -325,36 +423,6 @@ class SwiGlu(eqx.Module):
         )
 
         return x
-
-
-class SwiGluFused(SwiGlu):
-    def __init__(
-        self,
-        in_features: int,
-        *,
-        key: PRNGKeyArray,
-        out_features: int | None = None,
-        hidden_features: int | None = None,
-        dropout_rate: float = 0,
-        bias: bool = True,
-        **kwargs,
-    ):
-        """This matches the implementation of Dinov2 giant at
-        https://github.com/facebookresearch/dinov2/blob/e1277af2ba9496fbadf7aec6eba56e8d882d1e35/dinov2/layers/swiglu_ffn.py#L54
-        """
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        hidden_features = (int(hidden_features * 2 / 3) + 7) // 8 * 8
-
-        super().__init__(
-            in_features,
-            key=key,
-            out_features=out_features,
-            hidden_features=hidden_features,
-            dropout_rate=dropout_rate,
-            bias=bias,
-            **kwargs,
-        )
 
 
 def get_ffn(module: str | eqx.Module) -> eqx.Module:
