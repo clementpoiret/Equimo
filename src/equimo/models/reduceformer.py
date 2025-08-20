@@ -159,7 +159,7 @@ class ReduceFormer(eqx.Module):
         block_types: list[Literal["conv", "attention"]],
         *,
         key: PRNGKeyArray,
-        heads_dim: int = 32,
+        head_dim: int = 32,
         expand_ratio: float = 4.0,
         norm_layer: eqx.Module | str = eqx.nn.GroupNorm,
         act_layer: Callable | str = jax.nn.hard_swish,
@@ -227,6 +227,7 @@ class ReduceFormer(eqx.Module):
                 depth=depth,
                 block_type=block_type,
                 stride=2,
+                head_dim=head_dim,
                 expand_ratio=expand_ratio,
                 norm_layer=norm_layer,
                 act_layer=act_layer,
@@ -335,7 +336,7 @@ def reduceformer_backbone_b1(**kwargs) -> ReduceFormer:
             "attention",
             "attention",
         ],
-        heads_dim=16,
+        head_dim=16,
         **kwargs,
     )
     return backbone
@@ -352,7 +353,7 @@ def reduceformer_backbone_b2(**kwargs) -> ReduceFormer:
             "attention",
             "attention",
         ],
-        heads_dim=32,
+        head_dim=32,
         **kwargs,
     )
     return backbone
@@ -369,7 +370,7 @@ def reduceformer_backbone_b3(**kwargs) -> ReduceFormer:
             "attention",
             "attention",
         ],
-        heads_dim=32,
+        head_dim=32,
         **kwargs,
     )
     return backbone
