@@ -676,7 +676,6 @@ class MBConv(eqx.Module):
     depth_conv: SingleConvBlock | None
     spatial_conv: SingleConvBlock | None
     point_conv: SingleConvBlock
-    dropout: eqx.nn.Dropout
     drop_path: DropPathAdd
 
     def __init__(
@@ -792,10 +791,10 @@ class MBConv(eqx.Module):
             act_layer=act_layers[2],
             use_bias=use_bias[2],
             padding="SAME",
+            dropout=dropout,
             key=key_point,
         )
 
-        self.dropout = eqx.nn.Dropout(dropout)
         self.drop_path = DropPathAdd(drop_path)
 
     def __call__(
@@ -804,15 +803,13 @@ class MBConv(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        key_dropout, key_droppath = jr.split(key, 2)
+        key_spatial, key_inverted, key_depth, key_point, key_droppath = jr.split(key, 5)
         if self.fused:
-            out = self.spatial_conv(x)
+            out = self.spatial_conv(x, inference=inference, key=key_spatial)
         else:
-            out = self.inverted_conv(x)
-            out = self.depth_conv(out)
-        out = self.point_conv(out)
-
-        out = self.dropout(out, inference=inference, key=key_dropout)
+            out = self.inverted_conv(x, inference=inference, key=key_inverted)
+            out = self.depth_conv(out, inference=inference, key=key_depth)
+        out = self.point_conv(out, inference=inference, key=key_point)
 
         if self.residual:
             out = self.drop_path(x, out, inference=inference, key=key_droppath)
