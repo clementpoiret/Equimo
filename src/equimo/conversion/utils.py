@@ -36,10 +36,11 @@ def convert_params_from_torch(
     replace_cfg: Dict[str, str],
     expand_cfg: Dict[str, list],
     squeeze_cfg: Dict[str, int | None],
-    whitelist: list[str],
+    torch_whitelist: list[str],
+    jax_whitelist: list[str],
     strict: bool = True,
     source: Literal["torchhub", "timm", "custom"] = "torchhub",
-    torch_hub_cfg: Optional[list[str]] = None,
+    torch_hub_cfg: Optional[dict] = None,
     torch_model=None,
     timm_cfg: Optional[list] = None,
     return_torch: bool = False,
@@ -49,14 +50,15 @@ def convert_params_from_torch(
 
     Args:
         jax_model (eqx.Module): A preexisting Jax model corresponding to the checkpoint to download.
-        torch_hub_cfg (Tuple[str]): Arguments passed to `torch.hub.load()`.
+        torch_hub_cfg (dict): Arguments passed to `torch.hub.load()`.
         replace_cfg (Dict[str, str]): Rename parameters from key to value.
         expand_cfg (Dict[str, list]): Config to reshape params, see `expand_torch_tensor`
         sqeeze_cfg (Dict[str, int|None]): Config to squeeze tensors, opposite of expand.
-        whitelist (Set[str]): Parameters to exclude from format conversion.
+        torch_whitelist (Set[str]): Parameters to exclude from format conversion.
+        jax_whitelist (Set[str]): Parameters to exclude from format conversion.
         strict (bool): Whether to crash on missing parameters one of the models.
         source (str): Torch Hub or timm.
-        torch_hub_cfg (Optional[list]): args to pass to `torch.hub.load`.
+        torch_hub_cfg (dict): args to pass to `torch.hub.load`.
         torch_model [torch.nn.Module]: Custom torch model
         timm_cfg (Optional[list]): args to pass to `timm.create_model`.
         return_torch (bool): Return both jax and torch models.
@@ -79,7 +81,7 @@ def convert_params_from_torch(
                 raise ValueError(
                     "The `torchhub` source is selected but `torch_hub_cfg` is None."
                 )
-            torch_model = torch.hub.load(*torch_hub_cfg)
+            torch_model = torch.hub.load(**torch_hub_cfg)
         case "timm":
             if timm_cfg is None:
                 raise ValueError(
@@ -107,12 +109,20 @@ def convert_params_from_torch(
 
         if param_path not in torch_params:
             _msg = f"{param_path} ({shape}) not found in PyTorch model."
-            if strict:
+            if strict and param_path not in jax_whitelist:
                 logger.error(_msg)
                 raise AttributeError(_msg)
 
-            logger.warning(f"{_msg} Appending `None` to flat param list.")
-            torch_params_flat.append(None)
+            if param_path in jax_whitelist:
+                p = param
+                logger.warning(
+                    f"{_msg} Appending original parameters to flat param list because of `jax_whitelist`."
+                )
+            else:
+                p = None
+                logger.warning(f"{_msg} Appending `None` to flat param list.")
+
+            torch_params_flat.append(p)
             continue
 
         logger.info(f"Converting {param_path}...")
@@ -137,7 +147,7 @@ def convert_params_from_torch(
         logger.warning(
             f"PyTorch parameters `{path}` ({param.shape}) were not converted."
         )
-        if strict and path not in whitelist:
+        if strict and path not in torch_whitelist:
             _msg = f"The PyTorch model contains parameters ({path}) that do not have a Jax counterpart."
             logger.error(_msg)
             raise AttributeError(_msg)
@@ -152,10 +162,11 @@ def convert_torch_to_equinox(
     replace_cfg: dict = {},
     expand_cfg: dict = {},
     squeeze_cfg: dict = {},
-    whitelist: list[str] = [],
+    torch_whitelist: list[str] = [],
+    jax_whitelist: list[str] = [],
     strict: bool = True,
     source: Literal["torchhub", "timm"] = "torchhub",
-    torch_hub_cfg: Optional[list[str]] = None,
+    torch_hub_cfg: Optional[dict] = None,
     torch_model=None,
     timm_cfg: Optional[list] = None,
     return_torch: bool = False,
@@ -168,10 +179,11 @@ def convert_torch_to_equinox(
         replace_cfg: Dict of parameter name replacements
         expand_cfg: Dict of dimensions to expand
         squeeze_cfg: Dict of dimensions to squeeze
-        whitelist: List of parameters to keep from JAX model
+        torch_whitelist: List of parameters allowed to be in PT model but not in Jax
+        jax_whitelist: List of parameters allowed to be in Jax model but not in PT
         strict: Wether to raise an issue if not all weights are converted
         source (str): Torch Hub or timm.
-        torch_hub_cfg: [repo, model_name] for torch.hub.load
+        torch_hub_cfg (dict): torch.hub.load config
         torch_model [torch.nn.Module]: Custom torch model
         timm_cfg (Optional[list]): args to pass to `timm.create_model`.
         return_torch (bool): Return both jax and torch models.
@@ -186,7 +198,8 @@ def convert_torch_to_equinox(
             replace_cfg,
             expand_cfg,
             squeeze_cfg,
-            whitelist,
+            torch_whitelist,
+            jax_whitelist,
             strict,
             source,
             torch_hub_cfg,
@@ -204,7 +217,8 @@ def convert_torch_to_equinox(
             replace_cfg,
             expand_cfg,
             squeeze_cfg,
-            whitelist,
+            torch_whitelist,
+            jax_whitelist,
             strict,
             source,
             torch_hub_cfg,
