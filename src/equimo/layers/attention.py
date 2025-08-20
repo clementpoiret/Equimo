@@ -1766,6 +1766,8 @@ class RFAttention(eqx.Module):
 
 
 class RFAttentionBlock(eqx.Module):
+    residual: bool = eqx.field(static=True)
+
     context_module: RFAttention
     local_module: MBConv
     drop_path1: DropPathAdd
@@ -1789,9 +1791,11 @@ class RFAttentionBlock(eqx.Module):
         local_drop: float = 0.0,
         drop_path: float | List[float] = 0.0,
         residual_mbconv: bool = False,
+        residual: bool = True,
         **kwargs,
     ):
         key_context, key_local = jr.split(key, 2)
+        self.residual = residual
 
         if isinstance(drop_path, list):
             if len(drop_path) != 2:
@@ -1841,20 +1845,15 @@ class RFAttentionBlock(eqx.Module):
         key_context, key_local, key_dr1, key_dr2 = jr.split(key, 4)
 
         # TODO: some prenorm?
-        x = self.drop_path1(
-            x,
-            self.context_module(x, inference=inference, key=key_context),
-            inference=inference,
-            key=key_dr1,
-        )
-        x = self.drop_path2(
-            x,
-            self.local_module(x, inference=inference, key=key_local),
-            inference=inference,
-            key=key_dr2,
-        )
+        x1 = self.context_module(x, inference=inference, key=key_context)
+        if self.residual:
+            x1 = self.drop_path1(x, x1, inference=inference, key=key_dr1)
 
-        return x
+        x2 = self.local_module(x, inference=inference, key=key_local)
+        if self.residual:
+            x2 = self.drop_path2(x1, x2, inference=inference, key=key_dr2)
+
+        return x2
 
 
 class ConvAttention(eqx.Module):
