@@ -1,3 +1,4 @@
+import math
 from typing import Any, Literal, Optional, Tuple
 
 import equinox as eqx
@@ -6,6 +7,148 @@ import jax.numpy as jnp
 import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
+
+
+class LearnedPosEmbed(eqx.Module):
+    weight: jax.Array
+
+    dim: int = eqx.field(static=True)
+    embed_size: int = eqx.field(static=True)
+    num_prefix_tokens: int = eqx.field(static=True)
+    num_embedded_prefix_tokens: int = eqx.field(static=True)
+    no_embed_class: bool = eqx.field(static=True)
+    pos_embed_reg_tokens: bool = eqx.field(static=True)
+
+    antialias: bool = eqx.field(static=True, default=True)
+
+    def resample(
+        self,
+        *,
+        new_size: tuple[int, int],
+        dim: int,
+        num_embedded_prefix_tokens: int,
+        old_size: tuple[int, int] | None,
+        interpolation: str = "bicubic",
+    ) -> jax.Array:
+        """Resample positional embeddings for different input sizes.
+
+        Args:
+            new_size: Target size (height, width)
+            dim: Dimensionality of the sequence
+            num_embedded_prefix_tokens: To include cls and reg tokens
+            old_size: Original size (height, width), computed if None
+            interpolation: Interpolation method
+
+        Returns:
+            Resampled positional embeddings
+        """
+        pe = self.weight
+        prev_dtype = pe.dtype
+        H, W = new_size
+        dim = self.dim if dim is None else dim
+        num_embedded_prefix_tokens = (
+            self.num_embedded_prefix_tokens
+            if num_embedded_prefix_tokens is None
+            else num_embedded_prefix_tokens
+        )
+
+        tgt_len = H * W + num_embedded_prefix_tokens
+        if (
+            (tgt_len == pe.shape[0])
+            and (old_size is not None)
+            and (H == W == old_size[0])
+        ):
+            return pe
+
+        if old_size is None:
+            L = pe.shape[0] - num_embedded_prefix_tokens
+            hw = int(math.sqrt(L))
+            old_size = (hw, hw)
+
+        prefix = pe[:num_embedded_prefix_tokens] if num_embedded_prefix_tokens else None
+        grid = pe[num_embedded_prefix_tokens:].astype(jnp.float32)
+        grid = rearrange(grid, "(h w) d -> h w d", h=old_size[0], w=old_size[1])
+        grid = jax.image.resize(
+            grid, (H, W, dim), method=interpolation, antialias=self.antialias
+        )
+        grid = rearrange(grid, "h w d -> (h w) d").astype(prev_dtype)
+        if prefix is not None:
+            grid = jnp.concatenate([prefix, grid], axis=0)
+        return grid
+
+    def __call__(
+        self,
+        x: jax.Array,
+        *,
+        cls_token: Optional[jax.Array],
+        reg_tokens: Optional[jax.Array],
+        dynamic_img_size: bool,
+        interpolation: str = "bicubic",
+    ) -> jax.Array:
+        """Compose tokens and add positional embeddings.
+
+        Inputs:
+        - x:
+          - If dynamic_img_size: shape (C, H, W) from PatchEmbedding(flatten=False)
+          - Else: shape ((H*W), C) from PatchEmbedding(flatten=True)
+        - cls_token: shape (1, dim) or None
+        - reg_tokens: shape (R, dim) or None
+        - dynamic_img_size: whether x is spatial or already flattened
+
+        Returns:
+        - Token sequence with positional information and optional prefix tokens.
+        """
+        if dynamic_img_size:
+            C, H, W = x.shape
+            assert C == self.dim, f"Channel dim mismatch: {C} vs {self.dim}"
+            pos_embed = self.resample(
+                new_size=(H, W),
+                old_size=(self.embed_size, self.embed_size),
+                interpolation=interpolation,
+            )
+            x = rearrange(x, "c h w -> (h w) c")
+        else:
+            pos_embed = self.weight
+
+        to_cat = []
+        if cls_token is not None:
+            # Expect (1, dim)
+            assert cls_token.shape[-1] == self.dim and cls_token.shape[0] == 1
+            to_cat.append(cls_token)
+        if reg_tokens is not None:
+            # Expect (R, dim)
+            assert reg_tokens.ndim == 2 and reg_tokens.shape[-1] == self.dim
+            to_cat.append(reg_tokens)
+
+        # Branching exactly mirrors your current _pos_embed logic
+        if self.no_embed_class:
+            # Add pos to patches only; then prepend any prefix tokens (cls/reg)
+            x = x + pos_embed
+            if to_cat:
+                x = jnp.concatenate(to_cat + [x], axis=0)
+
+        elif self.pos_embed_reg_tokens:
+            # Prefix tokens are included in the positional grid length; concat first, then add
+            if to_cat:
+                x = jnp.concatenate(to_cat + [x], axis=0)
+            x = x + pos_embed
+
+        else:
+            # Only class token is embedded with patches; reg tokens (if any) are inserted after
+            # the class token and before the patch tokens.
+            # Note: this branch assumes that if reg_tokens are used, a cls_token exists too.
+            if cls_token is None and reg_tokens is not None:
+                raise ValueError(
+                    "Configuration invalid: reg_tokens without cls_token when pos_embed_reg_tokens=False "
+                    "and no_embed_class=False."
+                )
+            x = jnp.concatenate(to_cat[:1] + [x], axis=0)  # cat cls_token if present
+            x = x + pos_embed
+            if reg_tokens is not None:
+                # Insert reg_tokens between cls and patch tokens
+                x = jnp.concatenate([x[:1], reg_tokens, x[1:]], axis=0)
+
+        return x
 
 
 class PosEmbMLPSwinv1D(eqx.Module):

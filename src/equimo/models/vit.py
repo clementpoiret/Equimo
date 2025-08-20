@@ -1,5 +1,4 @@
-import math
-from typing import Callable, List, Literal, Optional, Tuple
+from typing import Callable, List, Literal, Optional
 
 import equinox as eqx
 import jax
@@ -18,7 +17,7 @@ from equimo.layers.attention import (
 from equimo.layers.ffn import Mlp, get_ffn
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
-from equimo.layers.posemb import PosCNN
+from equimo.layers.posemb import LearnedPosEmbed, PosCNN
 from equimo.utils import pool_sd, to_list
 
 
@@ -142,10 +141,10 @@ class VisionTransformer(eqx.Module):
     """
 
     patch_embed: PatchEmbedding
-    pos_embed: jnp.ndarray
-    cls_token: jnp.ndarray | None
-    reg_tokens: jnp.ndarray | None
-    mask_token: jnp.ndarray | None
+    pos_embed: LearnedPosEmbed
+    cls_token: jax.Array | None
+    reg_tokens: jax.Array | None
+    mask_token: jax.Array | None
     blocks: List[eqx.Module]
     pos_drop: eqx.nn.Dropout
     norm: eqx.Module
@@ -180,6 +179,7 @@ class VisionTransformer(eqx.Module):
         class_token: bool = True,
         no_embed_class: bool = False,
         reg_tokens: int = 4,
+        rope_pos_embed: bool = False,
         pos_embed_reg_tokens: bool = False,
         pos_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
@@ -252,7 +252,16 @@ class VisionTransformer(eqx.Module):
             self.num_embedded_prefix_tokens += 1
             self.embed_len = self.num_patches + 1
 
-        self.pos_embed = jr.normal(key_posemb, (self.embed_len, dim))
+        self.pos_embed = LearnedPosEmbed(
+            weight=jr.normal(key_posemb, (self.embed_len, dim)),
+            dim=dim,
+            embed_size=self.embed_size,
+            num_prefix_tokens=self.num_prefix_tokens,
+            num_embedded_prefix_tokens=self.num_embedded_prefix_tokens,
+            no_embed_class=self.no_embed_class,
+            pos_embed_reg_tokens=self.pos_embed_reg_tokens,
+            antialias=interpolate_antialias,
+        )
         self.pos_drop = eqx.nn.Dropout(pos_drop_rate)
 
         if drop_path_uniform:
@@ -296,107 +305,6 @@ class VisionTransformer(eqx.Module):
             else eqx.nn.Identity()
         )
 
-    def resample_pos_embed(
-        self,
-        pos_embed: Float[Array, "embed_len dim"],
-        new_size: Tuple[int, int],
-        old_size: Optional[Tuple[int, int]] = None,
-        interpolation: str = "bicubic",
-        antialias: bool = True,
-    ):
-        """Resample positional embeddings for different input sizes.
-
-        Args:
-            pos_embed: Original positional embeddings
-            new_size: Target size (height, width)
-            old_size: Original size (height, width), computed if None
-            interpolation: Interpolation method
-            antialias: Whether to use antialiasing
-
-        Returns:
-            Resampled positional embeddings
-        """
-        previous_dtype = pos_embed.dtype
-
-        num_new_tokens = new_size[0] * new_size[1] + self.num_embedded_prefix_tokens
-
-        if num_new_tokens == self.embed_len and new_size[0] == new_size[1]:
-            return pos_embed
-
-        if old_size is None:
-            hw = int(math.sqrt(self.num_patches))
-            old_size = hw, hw
-
-        prefix_embed = (
-            pos_embed[: self.num_embedded_prefix_tokens]
-            if self.num_embedded_prefix_tokens
-            else None
-        )
-        pos_embed = pos_embed[self.num_embedded_prefix_tokens :].astype("float32")
-
-        pos_embed = rearrange(
-            pos_embed, "(h w) d -> h w d", h=old_size[0], w=old_size[1]
-        )
-        pos_embed = jax.image.resize(
-            pos_embed,
-            (new_size[0], new_size[1], self.dim),
-            method=interpolation,
-            antialias=antialias,
-        )
-        pos_embed = rearrange(pos_embed, "h w d -> (h w) d").astype(previous_dtype)
-
-        if prefix_embed is not None:
-            pos_embed = jnp.concatenate([prefix_embed, pos_embed], axis=0)
-
-        return pos_embed
-
-    def _pos_embed(self, x: Float[Array, "..."], h: int, w: int):
-        """Add positional embeddings to input features.
-
-        Args:
-            x: Input features
-            h: Height of feature map
-            w: Width of feature map
-
-        Returns:
-            Features with positional embeddings and tokens added
-        """
-        if self.pos_embed is None:
-            return rearrange(x, "c h w -> (h w) c")
-
-        if self.dynamic_img_size:
-            C, H, W = x.shape
-            pos_embed = self.resample_pos_embed(
-                self.pos_embed, new_size=(H, W), antialias=self.antialias
-            )
-            x = rearrange(x, "c h w -> (h w) c")
-        else:
-            pos_embed = self.pos_embed
-
-        to_cat = []
-        if self.cls_token is not None:
-            to_cat.append(self.cls_token)
-        if self.reg_tokens is not None:
-            to_cat.append(self.reg_tokens)
-
-        if self.no_embed_class:
-            x = x + pos_embed
-            if to_cat:
-                x = jnp.concatenate(to_cat + [x], axis=0)
-        elif self.pos_embed_reg_tokens:
-            if to_cat:
-                x = jnp.concatenate(to_cat + [x], axis=0)
-            x = x + pos_embed
-        else:
-            x = jnp.concatenate(to_cat[:1] + [x], axis=0)  # cat cls_token
-            x = x + pos_embed
-            if self.reg_tokens is not None:
-                x = jnp.concatenate(
-                    [x[:1], to_cat[1], x[1:]], axis=0
-                )  # insert reg_tokens in between
-
-        return x
-
     def features(
         self,
         x: Float[Array, "channels height width"],
@@ -431,8 +339,12 @@ class VisionTransformer(eqx.Module):
                 value = self.mask_token
             x = jnp.where(mask, x, value.astype(x.dtype))
 
-        # TODO: Decompose in multiple fns
-        x = self._pos_embed(x, h=self.embed_size, w=self.embed_size)
+        x = self.pos_embed(
+            x,
+            cls_token=self.cls_token,
+            reg_tokens=self.reg_tokens,
+            dynamic_img_size=self.dynamic_img_size,
+        )
 
         for blk, key_block in zip(self.blocks, block_subkeys):
             x = blk(x, inference=inference, key=key_block, **kwargs)
