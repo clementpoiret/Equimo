@@ -1403,3 +1403,294 @@ def finalize_ghostnet(model: eqx.Module) -> eqx.Module:
 
     is_g_module = lambda m: isinstance(m, GenericGhostModule)
     return jax.tree_util.tree_map(_finalize_leaf, model, is_leaf=is_g_module)
+
+
+class PartialConv2d(eqx.Module):
+    """Partial 2D convolution on the channel dimension.
+
+    This layer applies a standard 2D convolution only to the first `C // n_dim`
+    input channels and leaves the remaining channels untouched (identity). It
+    follows the "partial convolution" idea used to increase throughput by
+    reducing compute on a subset of channels while preserving overall tensor
+    shape, as explored in [1].
+
+    References:
+      [1]. Chen et al., "Run, Don't Walk: Chasing Higher FLOPS for Faster Neural
+           Networks" [arXiv:2303.03667](https://arxiv.org/abs/2303.03667).
+
+    Implementation details:
+    - Let `C` be `in_channels` and `c = C // n_dim`. Only the first `c`
+      channels are convolved with a `Conv2d(c, c, ...)`. The remaining
+      `C - c` channels are forwarded unchanged.
+    - The forward pass uses a functional "update-slice" pattern
+      (`x.at[:c, ...].set(y1)`), which compiles to an efficient
+      `dynamic_update_slice` under XLA. With JIT buffer donation, this can be
+      performed in-place by the compiler.
+    - Spatial dimensions must be preserved by the convolution so that the
+      updated slice matches the input slice shape (e.g., use `stride=1` and
+      `padding="SAME"`). If spatial dimensions change, the slice update will
+      fail with a shape error.
+
+    Attributes
+    - dim: Number of channels to be convolved, computed as `in_channels // n_dim`.
+           This is treated as a static field for compilation stability.
+    - conv: The underlying `eqx.nn.Conv2d(c, c, ...)` applied to the first `c`
+            channels.
+
+    Notes
+    - FLOPs reduction is approximately `c / C = 1 / n_dim` relative to a full
+      convolution with the same kernel.
+    """
+
+    dim: int = eqx.field(static=True)
+
+    conv: eqx.nn.Conv2d
+
+    def __init__(
+        self,
+        in_channels: int,
+        n_dim: int,
+        *,
+        key: PRNGKeyArray,
+        kernel_size: int = 3,
+        padding: str | int = "SAME",
+        use_bias: bool = False,
+        **kwargs,
+    ):
+        """
+        Initialize a PartialConv2d layer.
+
+        Parameters
+        - in_channels: Total number of input channels `C`.
+        - n_dim: Divisor used to determine the number of convolved channels.
+                 The layer will convolve `C // n_dim` channels and leave the
+                 remaining channels untouched. Must be > 0, and
+                 `C // n_dim` must be >= 1 for a meaningful layer.
+        - key: PRNG key used to initialize the underlying convolution weights.
+        - kernel_size: Convolution kernel size (passed to `eqx.nn.Conv2d`).
+        - padding: Convolution padding (passed to `eqx.nn.Conv2d`). Use
+                   `"SAME"` to preserve spatial dimensions with `stride=1`.
+                   Integer or other forms supported by `eqx.nn.Conv2d` are also
+                   accepted, but must preserve H and W for the slice update.
+        - use_bias: Whether to include a bias term in the underlying convolution.
+        - **kwargs: Forwarded to `eqx.nn.Conv2d` (e.g., `dilation`, `groups`).
+        """
+        self.dim = in_channels // n_dim
+        assert self.dim >= 1, "in_channels // n_dim must be >= 1"
+        assert self.dim <= in_channels, (
+            "Computed convolved channels exceed total channels"
+        )
+
+        if isinstance(padding, str):
+            assert padding.upper() == "SAME", (
+                'When padding is a string, it must be "SAME"'
+            )
+        else:
+            # If padding is numeric, ensure it preserves H, W for stride=1
+            # For Conv2d with dilation d and kernel k, effective kernel is k_eff = (k - 1) * d + 1.
+            # Output H' = H + 2*pad - k_eff + 1; preserving H requires k_eff odd and pad = k_eff // 2.
+            dilation = kwargs.get("dilation", 1)
+            if isinstance(dilation, (tuple, list)):
+                # Require isotropic dilation for simplicity
+                assert len(dilation) == 2 and dilation[0] == dilation[1], (
+                    "dilation must be an int or an equal pair"
+                )
+                dilation = dilation[0]
+            assert isinstance(dilation, int) and dilation >= 1, (
+                "dilation must be a positive int"
+            )
+            assert isinstance(kernel_size, int) and kernel_size >= 1, (
+                "kernel_size must be a positive int"
+            )
+
+            k_eff = (kernel_size - 1) * dilation + 1
+            assert isinstance(padding, int) and padding >= 0, (
+                "padding must be a non-negative int"
+            )
+            assert k_eff % 2 == 1 and padding == k_eff // 2, (
+                "Integer padding must preserve spatial size: require effective kernel odd and "
+                f"padding == ((kernel_size-1)*dilation+1)//2; got k_eff={k_eff}, padding={padding}"
+            )
+
+        self.conv = eqx.nn.Conv2d(
+            in_channels=self.dim,
+            out_channels=self.dim,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=padding,
+            use_bias=use_bias,
+            key=key,
+            **kwargs,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        *args,
+        **kwargs,
+    ) -> Float[Array, "channels height width"]:
+        c = self.dim
+        x1 = x[:c, :, :]
+        y1 = self.conv(x1)
+
+        return x.at[:c, :, :].set(y1)
+
+
+class FasterNetBlock(eqx.Module):
+    """
+    FasterNet-style residual block with Partial Convolution-based spatial mixing
+    and pointwise MLP, adapted to Equinox/JAX.
+
+    Structure
+    - Spatial mixing: `PartialConv2d` applies a 3×3 convolution to the first
+      `C // n_dim` channels and leaves the remaining channels unchanged. This
+      reduces compute while keeping the tensor shape intact. See [1].
+    - Channel MLP: two pointwise (1*1) convolutions expand and then project
+      channels (`C -> mlp_ratio*C -> C`), with normalization and activation
+      in between.
+    - Regularization: includes dropout after the MLP and optional stochastic
+      depth (DropPath) on the residual branch.
+    - Residual: optional residual connection `y = x + DropPath(MLP(SpatialMix(x)))`.
+
+    Shape invariants
+    - Input: `[channels, height, width]`
+    - Output: `[channels, height, width]` (same spatial and channel dimensions)
+
+    References
+    - [1] Chen et al., "Run, Don't Walk: Chasing Higher FLOPS for Faster Neural
+          Networks" [arXiv:2303.03667](https://arxiv.org/abs/2303.03667).
+
+    Attributes
+    - residual: Whether to use a residual connection with stochastic depth.
+    - spatial_mixing: `PartialConv2d` performing partial 3×3 spatial mixing.
+    - pw_conv1: Pointwise convolution expanding channels to `mlp_ratio * C`.
+    - pw_conv2: Pointwise convolution projecting channels back to `C`.
+    - norm: Normalization layer applied on the expanded channels.
+    - act: Activation applied after normalization (defaults to identity if none).
+    - dropout: Dropout applied after the MLP.
+    - drop_path: Stochastic depth module for residual addition.
+    """
+
+    residual: bool = eqx.field(static=True)
+
+    spatial_mixing: eqx.nn.Conv2d
+    pw_conv1: eqx.nn.Conv2d
+    pw_conv2: eqx.nn.Conv2d
+    norm: eqx.Module
+    act: eqx.Module
+    dropout: eqx.nn.Dropout
+    drop_path: DropPathAdd
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        key: PRNGKeyArray,
+        n_dim: int = 4,
+        mlp_ratio: int = 3,
+        kernel_size: int = 3,
+        padding: str | int = "SAME",
+        norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
+        norm_max_group: int = 32,
+        act_layer: Callable | None = None,
+        dropout: float = 0.0,
+        drop_path: float = 0.0,
+        norm_kwargs: dict = {},
+        residual: bool = True,
+        **kwargs,
+    ):
+        """
+        Initialize a FasterNetBlock.
+
+        Parameters
+        - in_channels: Number of input/output channels `C`.
+        - key: PRNG key used to initialize submodules. Internally split for
+          spatial mixing and pointwise convolutions.
+        - n_dim: Divisor determining the fraction of channels convolved by
+          `PartialConv2d`; the convolved channels are `C // n_dim`.
+        - mlp_ratio: Expansion ratio for the MLP (1×1 convs): hidden size is
+          `mlp_ratio * C`.
+        - kernel_size: Kernel size for the spatial mixing convolution (passed
+          to `PartialConv2d`).
+        - padding: Padding for the spatial mixing convolution. Use `"SAME"`
+          to preserve spatial dimensions.
+        - norm_layer: Normalization constructor applied on the expanded
+          channels. If `eqx.nn.GroupNorm`, the number of groups is chosen as
+          the largest power-of-two divisor of `hidden_channels` not exceeding
+          `norm_max_group`. If `None`, uses identity.
+        - norm_max_group: Maximum group count when using `GroupNorm`.
+        - act_layer: Callable used to construct an activation function. If
+          `None`, uses identity. Passed to `eqx.nn.Lambda`.
+        - dropout: Dropout probability applied after the MLP branch.
+        - drop_path: Stochastic depth probability on the residual branch.
+        - norm_kwargs: Extra keyword arguments forwarded to the normalization
+          layer constructor.
+        - residual: Whether to add the residual connection (with DropPath).
+        - **kwargs: Reserved for future extensions; forwarded where applicable.
+
+        Notes
+        - The block preserves `[H, W]`. Ensure `PartialConv2d` is configured
+          to preserve spatial dimensions (e.g., `"SAME"` padding).
+        - When `norm_layer` is not `GroupNorm`, it should accept the channel
+          count as its first argument.
+        - The same input/output channel count `C` is used throughout the block.
+        """
+
+        key_sm, key_pw1, key_pw2 = jr.split(key, 3)
+        self.residual = residual
+
+        self.spatial_mixing = PartialConv2d(
+            in_channels=in_channels, n_dim=n_dim, key=key_sm
+        )
+
+        hidden_channels = mlp_ratio * in_channels
+        self.pw_conv1 = eqx.nn.Conv2d(
+            in_channels,
+            hidden_channels,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            use_bias=False,
+            key=key_pw1,
+        )
+        self.pw_conv2 = eqx.nn.Conv2d(
+            hidden_channels,
+            in_channels,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            use_bias=False,
+            key=key_pw2,
+        )
+
+        if norm_layer is not None:
+            if norm_layer == eqx.nn.GroupNorm:
+                num_groups = nearest_power_of_2_divisor(hidden_channels, norm_max_group)
+                self.norm = eqx.nn.GroupNorm(num_groups, hidden_channels, **norm_kwargs)
+            else:
+                self.norm = norm_layer(hidden_channels, **norm_kwargs)
+        else:
+            self.norm = eqx.nn.Identity()
+
+        self.dropout = eqx.nn.Dropout(dropout)
+        self.drop_path = DropPathAdd(drop_path)
+        self.act = eqx.nn.Lambda(act_layer) if act_layer else eqx.nn.Identity()
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        key_dropout, key_droppath = jr.split(key, 2)
+        x1 = self.spatial_mixing(x)
+        out = self.dropout(
+            self.pw_conv2(self.act(self.norm(self.pw_conv1(x1)))),
+            inference=inference,
+            key=key_dropout,
+        )
+
+        if self.residual:
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+
+        return out
