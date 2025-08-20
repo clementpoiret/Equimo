@@ -245,11 +245,32 @@ def load_model(
     return model
 
 
+def _center_crop_square(array: jnp.ndarray) -> jnp.ndarray:
+    """Center-crop a HxW(xC) array to a square of side min(H, W).
+
+    Args:
+        array: jnp.ndarray with shape (H, W) or (H, W, C).
+
+    Returns:
+        Center-cropped array with shape (M, M) or (M, M, C) where M = min(H, W).
+    """
+    if array.ndim < 2:
+        raise ValueError("Input array must have at least 2 dimensions (H, W[, C]).")
+    h, w = array.shape[:2]
+    if h == w:
+        return array
+    m = min(h, w)
+    top = (h - m) // 2
+    left = (w - m) // 2
+    return array[top : top + m, left : left + m, ...]
+
+
 def load_image(
     path: str,
     mean: Optional[list[float]] = None,
     std: Optional[list[float]] = None,
     size: Optional[int] = None,
+    center_crop: bool = False,
 ):
     """Load an image and perform minor preprocessing.
 
@@ -258,6 +279,7 @@ def load_image(
         mean (list, optional): Channel mean for normalization.
         std (list, optional): Channel std for normalization.
         size (int, optional): Size to which resize the image.
+        center_crop (bool, optional): If True, center-crop to square prior to resizing.
 
     Returns:
         jnp.array: The loaded image.
@@ -275,6 +297,10 @@ def load_image(
         pil_image = Image.open(image_bytes)
 
         array = jnp.array(pil_image).astype(jnp.float32) / 255.0
+
+        if center_crop:
+            array = _center_crop_square(array)
+
         if size is not None:
             array = jax.image.resize(array, (size, size, 3), method="bilinear")
 
