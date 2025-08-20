@@ -1,6 +1,6 @@
 import math
 import operator
-from typing import Callable, Literal, Optional, Sequence, Tuple
+from typing import Callable, Literal, Optional, Sequence, Tuple, Union
 
 import equinox as eqx
 import jax
@@ -11,6 +11,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.dropout import DropPathAdd
 from equimo.layers.norm import LayerScale
+from equimo.layers.squeeze_excite import SEModule
 from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
 
@@ -1046,31 +1047,50 @@ class UIB(eqx.Module):
 
 
 class GenericGhostModule(eqx.Module):
-    """Modded module for the GhostNet v3 model.
+    """GhostNet v3-like module with GroupNorm and training-time branch fusion.
 
+    - Uses shared GroupNorm after linear summations (keeps GN's batch-size robustness).
+    - Preserves the linear pre-norm structure of the reference:
+      primary:   [skip (identity) + scale(1x1) + Σ conv_k] → GN → act
+      cheap:     [skip (identity, when ratio=2) + scale(1x1 depthwise) + Σ depthwise conv_k] → GN → act
+    - Provides test-time fusion into single Conv2d layers (still followed by GN+act).
 
-    It differs from the original implementation because it shares the same norm
-    ayers accross multiple parallel branches to allow using other norm layers
-    while still fusing convolutions at test-time.
+    Input/Output convention: (C, H, W).
     """
 
+    # Static configuration
     mode: Literal["original", "shortcut"] = eqx.field(static=True)
     out_channels: int = eqx.field(static=True)
     num_conv_branches: int = eqx.field(static=True)
+    kernel_size: int = eqx.field(static=True)
+    dw_size: int = eqx.field(static=True)
+    stride: int = eqx.field(static=True)
+    primary_has_skip: bool = eqx.field(static=True)
+    primary_has_scale: bool = eqx.field(static=True)
+    cheap_has_skip: bool = eqx.field(static=True)
+    cheap_has_scale: bool = eqx.field(static=True)
+
+    # Runtime flags
     inference: bool
 
+    # Inference
     primary_conv: eqx.nn.Conv2d
     cheap_operation: eqx.nn.Conv2d
 
+    # Training
     primary_rpr_conv: list[eqx.nn.Conv2d]
+    primary_rpr_scale: eqx.nn.Conv2d | eqx.nn.Identity
     primary_shared_norm: eqx.nn.GroupNorm
     primary_activation: Callable
-    cheap_rpr_scale: eqx.nn.Conv2d | eqx.nn.Identity
-    cheap_rpr_skip: eqx.nn.Conv2d | eqx.nn.Identity
+
     cheap_rpr_conv: list[eqx.nn.Conv2d]
+    cheap_rpr_scale: eqx.nn.Conv2d | eqx.nn.Identity
     cheap_shared_norm: eqx.nn.GroupNorm
     cheap_activation: Callable
+
     short_conv: eqx.nn.Identity | eqx.nn.Sequential
+    pool2: eqx.nn.AvgPool2d
+    gate_scale: float = eqx.field(static=True)
 
     def __init__(
         self,
@@ -1086,8 +1106,9 @@ class GenericGhostModule(eqx.Module):
         mode: Literal["original", "shortcut"] = "original",
         key: PRNGKeyArray,
     ):
-        key_primary, key_cheap, key_crs, key_skip, key_s1, key_s2, key_s3 = jr.split(
-            key, 7
+        # Key management
+        key_primary, key_cheap, key_pscale, key_cscale, key_s1, key_s2, key_s3 = (
+            jr.split(key, 7)
         )
         key_ps = jr.split(key_primary, num_conv_branches)
         key_cs = jr.split(key_cheap, num_conv_branches)
@@ -1095,10 +1116,22 @@ class GenericGhostModule(eqx.Module):
         init_channels = math.ceil(out_channels / ratio)
         new_channels = init_channels * (ratio - 1)
 
+        primary_has_skip = (in_channels == init_channels) and (stride == 1)
+        primary_has_scale = kernel_size > 1
+        cheap_has_skip = init_channels == new_channels
+        cheap_has_scale = dw_size > 1
+
         self.inference = False
         self.mode = mode
         self.num_conv_branches = num_conv_branches
         self.out_channels = out_channels
+        self.kernel_size = kernel_size  # MOD
+        self.dw_size = dw_size  # MOD
+        self.stride = stride  # MOD
+        self.primary_has_skip = primary_has_skip  # MOD
+        self.primary_has_scale = primary_has_scale  # MOD
+        self.cheap_has_skip = cheap_has_skip  # MOD
+        self.cheap_has_scale = cheap_has_scale  # MOD
 
         # Those are actually placeholders, updated at each epoch, only used at inference time
         self.primary_conv = eqx.nn.Conv2d(
@@ -1107,20 +1140,22 @@ class GenericGhostModule(eqx.Module):
             kernel_size=kernel_size,
             stride=stride,
             padding=kernel_size // 2,
+            use_bias=False,
             key=key_primary,
         )
         self.cheap_operation = eqx.nn.Conv2d(
             in_channels=init_channels,
             out_channels=new_channels,
             kernel_size=dw_size,
-            stride=stride,
+            stride=1,  # MOD
             padding=dw_size // 2,
-            groups=1,
+            groups=init_channels,
+            use_bias=False,
             key=key_cheap,
         )
 
+        # Primary training branches
         init_num_groups = nearest_power_of_2_divisor(init_channels, 32)
-        # TODO: test with some dropout?
         self.primary_rpr_conv = [
             eqx.nn.Conv2d(
                 in_channels=in_channels,
@@ -1128,44 +1163,56 @@ class GenericGhostModule(eqx.Module):
                 kernel_size=kernel_size,
                 stride=stride,
                 padding=kernel_size // 2,
+                use_bias=False,
                 key=key_ps[i],
             )
             for i in range(num_conv_branches)
         ]
+        self.primary_rpr_scale = (
+            eqx.nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=init_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                use_bias=False,
+                key=key_pscale,
+            )
+            if primary_has_scale
+            else eqx.nn.Identity()
+        )
         self.primary_shared_norm = eqx.nn.GroupNorm(init_num_groups, init_channels)
         self.primary_activation = act_layer
 
-        self.cheap_rpr_scale = eqx.nn.Conv2d(
-            in_channels=init_channels,
-            out_channels=new_channels,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            groups=1,
-            key=key_crs,
-        )
-        self.cheap_rpr_skip = eqx.nn.Conv2d(
-            init_channels,
-            new_channels,
-            kernel_size=1,
-            stride=stride,
-            padding=0,
-            groups=1,
-            key=key_skip,
-        )
+        # Cheap training branches (depthwise)
+        newchannels_num_groups = nearest_power_of_2_divisor(new_channels, 32)
         self.cheap_rpr_conv = [
             eqx.nn.Conv2d(
                 in_channels=init_channels,
                 out_channels=new_channels,
                 kernel_size=dw_size,
-                stride=stride,
+                stride=1,
                 padding=dw_size // 2,
-                groups=1,
+                groups=init_channels,
+                use_bias=False,
                 key=key_cs[i],
             )
             for i in range(self.num_conv_branches)
         ]
-        newchannels_num_groups = nearest_power_of_2_divisor(new_channels, 32)
+        self.cheap_rpr_scale = (
+            eqx.nn.Conv2d(
+                in_channels=init_channels,
+                out_channels=new_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                groups=init_channels,
+                use_bias=False,
+                key=key_cscale,
+            )
+            if cheap_has_scale
+            else eqx.nn.Identity()
+        )
         self.cheap_shared_norm = eqx.nn.GroupNorm(newchannels_num_groups, new_channels)
         self.cheap_activation = act_layer
 
@@ -1211,29 +1258,39 @@ class GenericGhostModule(eqx.Module):
             else eqx.nn.Identity()
         )
 
-    def training_features(self, x):
-        x1 = jax.tree_util.tree_reduce(
-            operator.add, [conv(x) for conv in self.primary_rpr_conv]
+        self.pool2 = eqx.nn.AvgPool2d(
+            kernel_size=2, stride=2, padding=0, use_ceil=False
         )
-        x1 = self.primary_activation(self.primary_shared_norm(x1))
+        self.gate_scale = 1.0
 
-        cheap_branches = [self.cheap_rpr_skip(x1), self.cheap_rpr_scale(x1)] + [
-            conv(x1) for conv in self.cheap_rpr_conv
-        ]
+    def training_features(self, x):
+        # Primary path pre-norm linear sum
+        terms = []
+        if self.primary_has_skip:
+            terms.append(x)  # identity
+        if not isinstance(self.primary_rpr_scale, eqx.nn.Identity):
+            terms.append(self.primary_rpr_scale(x))
+        terms.extend(conv(x) for conv in self.primary_rpr_conv)
+        x1_sum = jax.tree_util.tree_reduce(operator.add, terms)
+        x1 = self.primary_activation(self.primary_shared_norm(x1_sum))
 
-        x2 = jax.tree_util.tree_reduce(operator.add, cheap_branches)
-        x2 = self.cheap_activation(self.cheap_shared_norm(x2))
+        # Cheap path pre-norm linear sum
+        cheap_terms = []
+        if self.cheap_has_skip:
+            cheap_terms.append(x1)  # identity
+        if not isinstance(self.cheap_rpr_scale, eqx.nn.Identity):
+            cheap_terms.append(self.cheap_rpr_scale(x1))
+        cheap_terms.extend(conv(x1) for conv in self.cheap_rpr_conv)
+        x2_sum = jax.tree_util.tree_reduce(operator.add, cheap_terms)
+        x2 = self.cheap_activation(self.cheap_shared_norm(x2_sum))
 
         out = jnp.concatenate([x1, x2], axis=0)
-
         return out
 
     def inference_features(self, x):
         x1 = self.primary_activation(self.primary_shared_norm(self.primary_conv(x)))
         x2 = self.cheap_activation(self.cheap_shared_norm(self.cheap_operation(x1)))
-
         out = jnp.concatenate([x1, x2], axis=0)
-
         return out
 
     def __call__(
@@ -1242,24 +1299,14 @@ class GenericGhostModule(eqx.Module):
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
     ):
-        # key_p, key_c = jr.split(key, 2)
-        # key_ps = jr.split(key_p, self.num_conv_branches)
-        # key_cs = jr.split(key_c, self.num_conv_branches)
-
-        if self.inference:
-            out = self.inference_features(x)
-        else:
-            out = self.training_features(x)
+        use_inference = self.inference if inference is None else inference
+        out = self.inference_features(x) if use_inference else self.training_features(x)
 
         if self.mode == "shortcut":
-            res = self.short_conv(reduce(x, "c (h 2) (w 2) -> c h w", reduction="mean"))
+            res = self.short_conv(self.pool2(x))
             gating_signal = jax.image.resize(
-                image=jax.nn.sigmoid(res),
-                shape=(
-                    res.shape[0],
-                    out.shape[1],
-                    out.shape[2],
-                ),  # (channels, height, width)
+                image=jax.nn.sigmoid(res / self.gate_scale),
+                shape=(res.shape[0], out.shape[1], out.shape[2]),
                 method="nearest",
             )
             out = out[: self.out_channels, :, :] * gating_signal
@@ -1267,142 +1314,393 @@ class GenericGhostModule(eqx.Module):
         return out
 
 
-def update_fused_ghostmodule(
-    module: GenericGhostModule,
-) -> GenericGhostModule:
+class GhostBottleneck(eqx.Module):
+    """Ghost bottleneck with optional SE and re-parameterizable depthwise stage."""
+
+    # Static config
+    stride: int = eqx.field(static=True)
+    dw_kernel_size: int = eqx.field(static=True)
+    use_shortcut_mode_in_ghost1: bool = eqx.field(static=True)
+    allow_identity_residual: bool = eqx.field(static=True)
+
+    inference: bool
+
+    ghost1: "GenericGhostModule"
+    ghost2: "GenericGhostModule"
+
+    dw_conv: eqx.nn.Conv2d | eqx.nn.Identity
+    dw_rpr_conv: list[eqx.nn.Conv2d]  # depthwise conv branches (no bias)
+    dw_rpr_scale: eqx.nn.Conv2d | eqx.nn.Identity  # optional 1x1 depthwise (no bias)
+    dw_shared_norm: eqx.nn.GroupNorm | eqx.nn.Identity
+
+    se: eqx.Module | eqx.nn.Identity
+
+    shortcut: eqx.nn.Sequential | eqx.nn.Identity
+
+    def __init__(
+        self,
+        in_channels: int,
+        mid_channels: int,
+        out_channels: int,
+        *,
+        dw_kernel_size: int = 3,
+        stride: int = 1,
+        act_layer: Callable = jax.nn.relu,
+        se_ratio: float = 0.0,
+        layer_id: Optional[int] = None,
+        use_shortcut_mode_in_ghost1: bool = True,
+        allow_identity_residual: bool = True,
+        key: PRNGKeyArray,
+    ):
+        self.stride = stride
+        self.dw_kernel_size = dw_kernel_size
+        self.inference = False
+        self.allow_identity_residual = allow_identity_residual
+
+        self.use_shortcut_mode_in_ghost1 = use_shortcut_mode_in_ghost1
+
+        k_g1, k_g2, k_dw_main, k_dw_scale, k_sc1, k_sc2 = jr.split(key, 6)
+        k_dw_list = jr.split(k_dw_main, 3)
+
+        # ghost1 (expansion)
+        self.ghost1 = GenericGhostModule(
+            in_channels=in_channels,
+            out_channels=mid_channels,
+            kernel_size=1,
+            ratio=2,
+            dw_size=dw_kernel_size,
+            stride=1 if self.use_shortcut_mode_in_ghost1 else 1,
+            act_layer=act_layer,
+            num_conv_branches=3,
+            mode="shortcut" if self.use_shortcut_mode_in_ghost1 else "original",
+            key=k_g1,
+        )
+
+        # Depthwise stage (only if stride > 1)
+        if stride > 1:
+            # Training-time branches (depthwise, no bias); no activation; shared GN after sum
+            self.dw_rpr_conv = [
+                eqx.nn.Conv2d(
+                    in_channels=mid_channels,
+                    out_channels=mid_channels,
+                    kernel_size=dw_kernel_size,
+                    stride=stride,
+                    padding=(dw_kernel_size - 1) // 2,
+                    groups=mid_channels,
+                    use_bias=False,
+                    key=k_dw_list[i],
+                )
+                for i in range(3)
+            ]
+            # Optional scale branch (1x1, depthwise, stride=stride)
+            self.dw_rpr_scale = (
+                eqx.nn.Conv2d(
+                    in_channels=mid_channels,
+                    out_channels=mid_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    padding=0,
+                    groups=mid_channels,
+                    use_bias=False,
+                    key=k_dw_scale,
+                )
+                if dw_kernel_size > 1
+                else eqx.nn.Identity()
+            )
+            # Shared GroupNorm
+            num_groups_dw = nearest_power_of_2_divisor(mid_channels, 32)
+            self.dw_shared_norm = eqx.nn.GroupNorm(num_groups_dw, mid_channels)
+
+            # Inference fused depthwise conv (weights filled by update)
+            self.dw_conv = eqx.nn.Conv2d(
+                in_channels=mid_channels,
+                out_channels=mid_channels,
+                kernel_size=dw_kernel_size,
+                stride=stride,
+                padding=(dw_kernel_size - 1) // 2,
+                groups=mid_channels,
+                use_bias=False,
+                key=k_dw_main,
+            )
+        else:
+            # No depthwise stage when stride == 1
+            self.dw_rpr_conv = []
+            self.dw_rpr_scale = eqx.nn.Identity()
+            self.dw_shared_norm = eqx.nn.Identity()
+            self.dw_conv = eqx.nn.Identity()
+
+        # SE
+        if se_ratio is not None and se_ratio > 0.0:
+            # Use provided SEModule with rd_ratio=se_ratio
+            self.se = SEModule(dim=mid_channels, rd_ratio=se_ratio, key=k_sc1)
+        else:
+            self.se = eqx.nn.Identity()
+
+        # ghost2 (projection)
+        self.ghost2 = GenericGhostModule(
+            in_channels=mid_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            ratio=2,
+            dw_size=dw_kernel_size,
+            stride=1,
+            act_layer=act_layer,
+            num_conv_branches=3,
+            mode="original",
+            key=k_g2,
+        )
+
+        # Shortcut
+        if (in_channels == out_channels) and (stride == 1):
+            self.shortcut = eqx.nn.Identity()
+        else:
+            num_groups_sc_in = nearest_power_of_2_divisor(in_channels, 32)
+            num_groups_sc_out = nearest_power_of_2_divisor(out_channels, 32)
+            self.shortcut = eqx.nn.Sequential(
+                [
+                    eqx.nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=in_channels,
+                        kernel_size=dw_kernel_size,
+                        stride=stride,
+                        padding=(dw_kernel_size - 1) // 2,
+                        groups=in_channels,
+                        use_bias=False,
+                        key=k_sc1,
+                    ),
+                    eqx.nn.GroupNorm(num_groups_sc_in, in_channels),
+                    eqx.nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=out_channels,
+                        kernel_size=1,
+                        stride=1,
+                        padding=0,
+                        use_bias=False,
+                        key=k_sc2,
+                    ),
+                    eqx.nn.GroupNorm(num_groups_sc_out, out_channels),
+                ]
+            )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        *,
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        use_inference = self.inference if inference is None else inference
+        k_g1, k_g2 = jr.split(key, 2)
+
+        residual = x
+
+        x = self.ghost1(x, key=k_g1, inference=use_inference)
+
+        if self.stride > 1:
+            if use_inference:
+                x = self.dw_shared_norm(self.dw_conv(x))
+            else:
+                terms = []
+                if not isinstance(self.dw_rpr_scale, eqx.nn.Identity):
+                    terms.append(self.dw_rpr_scale(x))
+                terms.extend(conv(x) for conv in self.dw_rpr_conv)
+                x = self.dw_shared_norm(jax.tree_util.tree_reduce(operator.add, terms))
+
+        x = self.se(x)
+
+        x = self.ghost2(x, key=k_g2, inference=use_inference)
+
+        if not isinstance(self.shortcut, eqx.nn.Identity):
+            x += self.shortcut(residual)
+        elif self.allow_identity_residual:
+            x += residual
+
+        return x
+
+
+def _pad_kernel_to_target(kernel: Array, target_size: tuple[int, int]) -> Array:
+    kh, kw = kernel.shape[-2], kernel.shape[-1]
+    th, tw = target_size
+    if (kh, kw) == (th, tw):
+        return kernel
+    pad_h = (th - kh) // 2
+    pad_w = (tw - kw) // 2
+    padding_config = [
+        (0, 0),  # out_channels
+        (0, 0),  # in_channels_per_group
+        (pad_h, pad_h),  # height
+        (pad_w, pad_w),  # width
+    ]
+    return jnp.pad(kernel, padding_config, mode="constant", constant_values=0)
+
+
+def _make_identity_kernel_standard(out_ch: int, in_ch: int, kh: int, kw: int) -> Array:
+    """Identity kernel for standard conv (groups=1). Only valid if out_ch == in_ch."""
+    assert out_ch == in_ch, "Standard identity requires out_ch == in_ch."
+    k = jnp.zeros((out_ch, in_ch, kh, kw))
+    cy, cx = kh // 2, kw // 2
+    idx = jnp.arange(out_ch)
+    k = k.at[idx, idx, cy, cx].set(1.0)
+    return k
+
+
+def _make_identity_kernel_depthwise(out_ch: int, in_ch: int, kh: int, kw: int) -> Array:
+    """Identity kernel for depthwise conv with channel multiplier m = out_ch // in_ch."""
+    assert out_ch % in_ch == 0, "Depthwise identity requires out_ch multiple of in_ch."
+    m = out_ch // in_ch  # channel multiplier
+    k = jnp.zeros((out_ch, 1, kh, kw))
+    cy, cx = kh // 2, kw // 2
+    # For identity skip, we only use this when m==1 (ratio=2). Keep generic for clarity.
+    for c in range(in_ch):
+        for r in range(m):
+            k = k.at[c * m + r, 0, cy, cx].set(1.0)
+    return k
+
+
+def _update_ghostmodule(module: GenericGhostModule) -> GenericGhostModule:
     """
-    Fuses the weights of parallel training branches into single inference convolutions.
-
-    This function should be called after training and before switching the model
-    to inference mode. It operates on a single GenericGhostModule.
-
-    Args:
-        module: An instance of GenericGhostModule with trained weights.
-
-    Returns:
-        A new GenericGhostModule with the `primary_conv` and `cheap_operation`
-        weights updated for inference.
+    Fuses the training branches into the inference convolutions (weights only).
+    Keeps GroupNorms; no bias is fused (bias is redundant with GN's affine).
     """
-    # Aggregate weights
-    primary_weights = jax.tree_util.tree_reduce(
+    if not isinstance(module, GenericGhostModule):
+        return module
+
+    # Fuse primary
+    primary_w = jax.tree_util.tree_reduce(
         operator.add, [conv.weight for conv in module.primary_rpr_conv]
     )
-
-    # Aggregate biases (if they exist)
-    primary_biases = None
-    if module.primary_rpr_conv[0].bias is not None:
-        primary_biases = jax.tree_util.tree_reduce(
-            operator.add, [conv.bias for conv in module.primary_rpr_conv]
+    if not isinstance(module.primary_rpr_scale, eqx.nn.Identity):
+        target_k = module.primary_conv.weight.shape[-2:]
+        scale_w = _pad_kernel_to_target(module.primary_rpr_scale.weight, target_k)
+        primary_w = primary_w + scale_w
+    if module.primary_has_skip:
+        kh, kw = module.primary_conv.weight.shape[-2:]
+        id_w = _make_identity_kernel_standard(
+            module.primary_conv.out_channels, module.primary_conv.in_channels, kh, kw
         )
+        primary_w = primary_w + id_w
+    fused_primary = eqx.tree_at(lambda c: c.weight, module.primary_conv, primary_w)
 
-    # Create the new fused primary convolution layer
-    fused_primary_conv = eqx.tree_at(
-        lambda conv: (conv.weight, conv.bias),
-        module.primary_conv,
-        (primary_weights, primary_biases),
-    )
-
-    # The cheap operation fuses the skip, scale, and depthwise-like conv branches.
-    target_kernel_size = module.cheap_rpr_conv[0].weight.shape[-2:]
-
-    def pad_kernel_to_target(kernel: Array, target_size: tuple[int, int]) -> Array:
-        current_size = kernel.shape[-2:]
-        if current_size == target_size:
-            return kernel
-
-        pad_h = (target_size[0] - current_size[0]) // 2
-        pad_w = (target_size[1] - current_size[1]) // 2
-
-        # JAX padding format: ((before, after), (before, after), ...)
-        padding_config = [
-            (0, 0),  # out_channels
-            (0, 0),  # in_channels
-            (pad_h, pad_h),  # height
-            (pad_w, pad_w),  # width
-        ]
-        return jnp.pad(kernel, padding_config, "constant", constant_values=0)
-
-    # Pad the 1x1 kernels from the scale and skip branches.
-    padded_scale_weight = pad_kernel_to_target(
-        module.cheap_rpr_scale.weight, target_kernel_size
-    )
-    padded_skip_weight = pad_kernel_to_target(
-        module.cheap_rpr_skip.weight, target_kernel_size
-    )
-
-    # Sum the main cheap convolution weights.
-    cheap_conv_weights = jax.tree_util.tree_reduce(
+    # Fuse cheap (depthwise)
+    cheap_w = jax.tree_util.tree_reduce(
         operator.add, [conv.weight for conv in module.cheap_rpr_conv]
     )
+    if not isinstance(module.cheap_rpr_scale, eqx.nn.Identity):
+        target_k = module.cheap_operation.weight.shape[-2:]
+        scale_w = _pad_kernel_to_target(module.cheap_rpr_scale.weight, target_k)
+        cheap_w = cheap_w + scale_w
+    if module.cheap_has_skip:
+        init_ch = module.primary_conv.out_channels
+        new_ch = module.cheap_operation.out_channels
+        kh, kw = module.cheap_operation.weight.shape[-2:]
+        if new_ch == init_ch:
+            id_w = _make_identity_kernel_depthwise(new_ch, init_ch, kh, kw)
+            cheap_w = cheap_w + id_w
+    fused_cheap = eqx.tree_at(lambda c: c.weight, module.cheap_operation, cheap_w)
 
-    # Sum all weights: main convs + padded scale + padded skip.
-    fused_cheap_weights = cheap_conv_weights + padded_scale_weight + padded_skip_weight
-
-    fused_cheap_biases = None
-    if module.cheap_rpr_conv[0].bias is not None:
-        cheap_conv_biases = jax.tree_util.tree_reduce(
-            operator.add, [conv.bias for conv in module.cheap_rpr_conv]
-        )
-        scale_bias = module.cheap_rpr_scale.bias
-        skip_bias = module.cheap_rpr_skip.bias
-        fused_cheap_biases = cheap_conv_biases + scale_bias + skip_bias
-
-    fused_cheap_operation = eqx.tree_at(
-        lambda conv: (conv.weight, conv.bias),
-        module.cheap_operation,
-        (fused_cheap_weights, fused_cheap_biases),
-    )
-
-    module = eqx.tree_at(lambda m: m.primary_conv, module, fused_primary_conv)
-    module = eqx.tree_at(lambda m: m.cheap_operation, module, fused_cheap_operation)
+    # Install fused convs
+    module = eqx.tree_at(lambda m: m.primary_conv, module, fused_primary)
+    module = eqx.tree_at(lambda m: m.cheap_operation, module, fused_cheap)
 
     return module
 
 
-def update_ghostnet(model: eqx.Module) -> eqx.Module:
-    """
-    Update the inference layers of a GhostNet-like model.
-    Useful for intermediary evals.
-    """
+def _finalize_ghostmodule(module: "GenericGhostModule") -> "GenericGhostModule":
+    """Finalize a GenericGhostModule for inference."""
+    if not isinstance(module, GenericGhostModule):
+        return module
+    fused = _update_ghostmodule(module)
+    # Drop training-only branches and switch to inference
+    fused = eqx.tree_at(lambda m: m.primary_rpr_conv, fused, list())
+    fused = eqx.tree_at(lambda m: m.cheap_rpr_conv, fused, list())
+    fused = eqx.tree_at(lambda m: m.primary_rpr_scale, fused, eqx.nn.Identity())
+    fused = eqx.tree_at(lambda m: m.cheap_rpr_scale, fused, eqx.nn.Identity())
+    fused = eqx.tree_at(lambda m: m.inference, fused, True)
+    return fused
 
-    def _update_leaf(module: GenericGhostModule) -> GenericGhostModule:
-        if not isinstance(module, GenericGhostModule):
-            return module
-        return update_fused_ghostmodule(module)
 
-    is_g_module = lambda m: isinstance(m, GenericGhostModule)
-    return jax.tree_util.tree_map(_update_leaf, model, is_leaf=is_g_module)
+def _update_ghostbottleneck(module: "GhostBottleneck") -> "GhostBottleneck":
+    """Fuse depthwise stage and nested GhostModules for a GhostBottleneck."""
+    if not isinstance(module, GhostBottleneck):
+        return module
 
-
-def finalize_ghostnet(model: eqx.Module) -> eqx.Module:
-    """
-    Finalizes a trained GhostNet-like model for inference.
-
-    This function recursively traverses the model and for each GenericGhostModule:
-    1. Fuses the parallel convolutional branches.
-    2. Replaces the training-only branches with Identity layers.
-    """
-
-    def _finalize_leaf(module: GenericGhostModule) -> GenericGhostModule:
-        if not isinstance(module, GenericGhostModule):
-            return module
-
-        fused_module = update_fused_ghostmodule(module)
-
-        # identity_list = [eqx.nn.Identity()] * len(module.primary_rpr_conv)
-        final_module = eqx.tree_at(lambda m: m.primary_rpr_conv, fused_module, list())
-        final_module = eqx.tree_at(lambda m: m.cheap_rpr_conv, final_module, list())
-        final_module = eqx.tree_at(
-            lambda m: m.cheap_rpr_scale, final_module, eqx.nn.Identity()
+    # Fuse depthwise stage (if present)
+    if module.stride > 1 and len(module.dw_rpr_conv) > 0:
+        dw_w = jax.tree_util.tree_reduce(
+            operator.add, [conv.weight for conv in module.dw_rpr_conv]
         )
-        final_module = eqx.tree_at(
-            lambda m: m.cheap_rpr_skip, final_module, eqx.nn.Identity()
-        )
+        if not isinstance(module.dw_rpr_scale, eqx.nn.Identity):
+            target_k = module.dw_conv.weight.shape[-2:]
+            scale_w = _pad_kernel_to_target(module.dw_rpr_scale.weight, target_k)
+            dw_w = dw_w + scale_w
+        fused_dw = eqx.tree_at(lambda c: c.weight, module.dw_conv, dw_w)
+        module = eqx.tree_at(lambda m: m.dw_conv, module, fused_dw)
 
-        return final_module
+    # Update nested GhostModules
+    module = eqx.tree_at(lambda m: m.ghost1, module, _update_ghostmodule(module.ghost1))
+    module = eqx.tree_at(lambda m: m.ghost2, module, _update_ghostmodule(module.ghost2))
+    return module
 
-    is_g_module = lambda m: isinstance(m, GenericGhostModule)
-    return jax.tree_util.tree_map(_finalize_leaf, model, is_leaf=is_g_module)
+
+def _finalize_ghostbottleneck(module: "GhostBottleneck") -> "GhostBottleneck":
+    """Finalize a GhostBottleneck for inference."""
+    if not isinstance(module, GhostBottleneck):
+        return module
+
+    fused = _update_ghostbottleneck(module)
+
+    # Drop depthwise training branches
+    if fused.stride > 1:
+        fused = eqx.tree_at(lambda m: m.dw_rpr_conv, fused, list())
+        fused = eqx.tree_at(lambda m: m.dw_rpr_scale, fused, eqx.nn.Identity())
+
+    # Finalize nested GhostModules
+    fused = eqx.tree_at(lambda m: m.ghost1, fused, _finalize_ghostmodule(fused.ghost1))
+    fused = eqx.tree_at(lambda m: m.ghost2, fused, _finalize_ghostmodule(fused.ghost2))
+
+    # Switch to inference
+    fused = eqx.tree_at(lambda m: m.inference, fused, True)
+    return fused
+
+
+def update_ghostnet(
+    model: eqx.Module | Union["GenericGhostModule", "GhostBottleneck"],
+) -> eqx.Module | Union["GenericGhostModule", "GhostBottleneck"]:
+    """
+    Recursively fuse training branches for both GenericGhostModule and GhostBottleneck.
+    Keeps GroupNorm layers; no bias fusion.
+    """
+
+    def _update_leaf(m):
+        if isinstance(m, GenericGhostModule):
+            return _update_ghostmodule(m)
+        if isinstance(m, GhostBottleneck):
+            return _update_ghostbottleneck(m)
+        return m
+
+    is_leaf = lambda m: isinstance(m, (GenericGhostModule, GhostBottleneck))
+    return jax.tree_util.tree_map(_update_leaf, model, is_leaf=is_leaf)
+
+
+def finalize_ghostnet(
+    model: eqx.Module | Union["GenericGhostModule", "GhostBottleneck"],
+) -> eqx.Module | Union["GenericGhostModule", "GhostBottleneck"]:
+    """
+    Recursively finalize both GenericGhostModule and GhostBottleneck for inference:
+    - Fuse training branches.
+    - Remove training-only branches.
+    - Switch to inference path.
+    """
+
+    def _finalize_leaf(m):
+        if isinstance(m, GenericGhostModule):
+            return _finalize_ghostmodule(m)
+        if isinstance(m, GhostBottleneck):
+            return _finalize_ghostbottleneck(m)
+        return m
+
+    is_leaf = lambda m: isinstance(m, (GenericGhostModule, GhostBottleneck))
+    return jax.tree_util.tree_map(_finalize_leaf, model, is_leaf=is_leaf)
 
 
 class PartialConv2d(eqx.Module):
