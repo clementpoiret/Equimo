@@ -24,10 +24,10 @@ class LearnedPosEmbed(eqx.Module):
     def resample(
         self,
         *,
-        new_size: tuple[int, int],
-        dim: int,
-        num_embedded_prefix_tokens: int,
-        old_size: tuple[int, int] | None,
+        new_size: Tuple[int, int],
+        dim: int | None = None,
+        num_embedded_prefix_tokens: int | None = None,
+        old_size: Optional[Tuple[int, int]] = None,
         interpolation: str = "bicubic",
     ) -> jax.Array:
         """Resample positional embeddings for different input sizes.
@@ -452,15 +452,15 @@ class RoPE(eqx.Module):
 class DinoRoPE(eqx.Module):
     """Axial RoPE that produces per-position sin/cos for later rotation of features.
 
-    - Enforces embed_dim % (4 * num_heads) == 0.
+    - Enforces dim % (4 * num_heads) == 0.
     - Periods can be specified via `base` or `min_period` + `max_period` (mutually exclusive).
     - Coordinates are normalized to [-1, 1] according to `normalize_coords`.
     - Optional training-time augmentations: shift, jitter (log-uniform per-axis), rescale (log-uniform shared).
-    - Returns (sin, cos) with shape [H*W, D_head], where D_head = embed_dim // num_heads.
+    - Returns (sin, cos) with shape [H*W, D_head], where D_head = dim // num_heads.
 
     Parameters
     ----------
-    embed_dim: int
+    dim: int
         Total embedding dimension (across heads).
     num_heads: int
         Number of attention heads.
@@ -497,7 +497,7 @@ class DinoRoPE(eqx.Module):
 
     def __init__(
         self,
-        embed_dim: int,
+        dim: int,
         *,
         num_heads: int,
         base: Optional[float] = 100.0,
@@ -509,8 +509,8 @@ class DinoRoPE(eqx.Module):
         rescale_coords: Optional[float] = None,
         dtype: jnp.dtype = jnp.float32,
     ):
-        if embed_dim % (4 * num_heads) != 0:
-            raise ValueError("embed_dim must be divisible by 4 * num_heads.")
+        if dim % (4 * num_heads) != 0:
+            raise ValueError("dim must be divisible by 4 * num_heads.")
         both_periods = (min_period is not None) and (max_period is not None)
         if (base is None and not both_periods) or (base is not None and both_periods):
             raise ValueError(
@@ -525,7 +525,7 @@ class DinoRoPE(eqx.Module):
         self.rescale_coords = rescale_coords
         self.dtype = dtype
 
-        self.D_head = embed_dim // num_heads
+        self.D_head = dim // num_heads
         D_quarter = self.D_head // 4
 
         if base is not None:
