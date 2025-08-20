@@ -329,6 +329,7 @@ class AttentionBlock(eqx.Module):
         ffn_layer: eqx.Module = Mlp,
         ffn_bias: bool = True,
         ffn_norm: bool = False,
+        ffn_kwargs: dict = {},
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
         post_attention_norm: bool = False,
         init_values: float | None = None,
@@ -382,6 +383,7 @@ class AttentionBlock(eqx.Module):
             bias=ffn_bias,
             eps=eps,
             key=key_mlp,
+            **ffn_kwargs,
         )
 
         self.drop_path1 = DropPathAdd(dr1)
