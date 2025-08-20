@@ -483,6 +483,9 @@ class DinoRoPE(eqx.Module):
     -----
     - The `periods` buffer is persistent (part of the tree) and not trainable; we
       stop gradients on it inside `__call__`.
+    - I had to separate `dtype` and `periods_dtype`. For some obscure reasons, I faced cases
+      with the reference PyTorch impl. where `periods` were computed in bfloat16 (wanted behavior),
+      but subsequent computations (coords, angles, cos, sin) were at a float32 precision.
     """
 
     D_head: int = eqx.field(static=True)
@@ -507,6 +510,7 @@ class DinoRoPE(eqx.Module):
         shift_coords: Optional[float] = None,
         jitter_coords: Optional[float] = None,
         rescale_coords: Optional[float] = None,
+        periods_dtype: jnp.dtype = jnp.bfloat16,
         dtype: jnp.dtype = jnp.float32,
     ):
         if dim % (4 * num_heads) != 0:
@@ -530,36 +534,38 @@ class DinoRoPE(eqx.Module):
 
         if base is not None:
             denom = self.D_head // 2
-            k = jnp.arange(D_quarter, dtype=dtype)
+            k = jnp.arange(D_quarter, dtype=periods_dtype)
             periods = base ** (2.0 * k / float(denom))
         else:
             # Geometric progression from min_period to max_period (inclusive endpoints behavior per torch linspace)
             assert min_period is not None and max_period is not None
             base_ratio = max_period / min_period
-            exponents = jnp.linspace(0.0, 1.0, D_quarter, dtype=dtype)
+            exponents = jnp.linspace(0.0, 1.0, D_quarter, dtype=periods_dtype)
             periods = base_ratio**exponents  # in [1, base_ratio]
             periods = periods / base_ratio  # in [1/base_ratio, 1]
             periods = periods * max_period  # in [min_period, max_period]
-            periods = periods.astype(dtype)
+            periods = periods.astype(periods_dtype)
 
         # Persistent buffer (will be copied with the tree; we stop gradients in __call__)
-        self.periods = periods
+        self.periods = periods.astype(dtype)
 
     def _make_coords(self, H: int, W: int) -> jnp.ndarray:
         """Create normalized coords in [-1, 1], shape [H*W, 2], dtype=self.dtype."""
         dtype = self.dtype
+        # WARNING: I removed `dtype=dtype` in those jnp.arange fns because it was
+        # creating a discrepancy w/ dinov3 pytorch impl.
 
         if self.normalize_coords == "max":
             denom = float(max(H, W))
-            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / denom  # [H]
-            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / denom  # [W]
+            coords_h = jnp.arange(0.5, H, step=1.0) / denom  # [H]
+            coords_w = jnp.arange(0.5, W, step=1.0) / denom  # [W]
         elif self.normalize_coords == "min":
             denom = float(min(H, W))
-            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / denom
-            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / denom
+            coords_h = jnp.arange(0.5, H, step=1.0) / denom
+            coords_w = jnp.arange(0.5, W, step=1.0) / denom
         else:  # "separate"
-            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / float(H)
-            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / float(W)
+            coords_h = jnp.arange(0.5, H, step=1.0) / float(H)
+            coords_w = jnp.arange(0.5, W, step=1.0) / float(W)
 
         hh, ww = jnp.meshgrid(coords_h, coords_w, indexing="ij")  # [H, W]
         coords = jnp.stack([hh, ww], axis=-1).reshape(H * W, 2)  # [HW, 2]
@@ -567,14 +573,14 @@ class DinoRoPE(eqx.Module):
 
         return coords.astype(dtype)
 
-    def __call__(
+    def get_sincos(
         self,
         *,
         H: int,
         W: int,
         key: jax.Array,
         inference: Optional[bool] = None,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> Tuple[jax.Array, jax.Array]:
         """Compute (sin, cos) with shapes [H*W, D_head].
 
         If `inference is False`, training-time augmentations may be applied
@@ -632,6 +638,7 @@ class DinoRoPE(eqx.Module):
 
         cos = jnp.cos(angles).astype(dtype)  # [HW, D_head]
         sin = jnp.sin(angles).astype(dtype)  # [HW, D_head]
+
         return sin, cos
 
 

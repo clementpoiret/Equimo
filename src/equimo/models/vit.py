@@ -17,7 +17,7 @@ from equimo.layers.attention import (
 from equimo.layers.ffn import Mlp, get_ffn
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
-from equimo.layers.posemb import LearnedPosEmbed, PosCNN
+from equimo.layers.posemb import DinoRoPE, LearnedPosEmbed, PosCNN
 from equimo.utils import pool_sd, to_list
 
 
@@ -141,7 +141,7 @@ class VisionTransformer(eqx.Module):
     """
 
     patch_embed: PatchEmbedding
-    pos_embed: LearnedPosEmbed
+    pos_embed: LearnedPosEmbed | DinoRoPE
     cls_token: jax.Array | None
     reg_tokens: jax.Array | None
     mask_token: jax.Array | None
@@ -159,6 +159,7 @@ class VisionTransformer(eqx.Module):
     num_embedded_prefix_tokens: int = eqx.field(static=True)
     no_embed_class: bool = eqx.field(static=True)
     pos_embed_reg_tokens: bool = eqx.field(static=True)
+    use_rope_pos_embed: bool = eqx.field(static=True)
     embed_len: int = eqx.field(static=True)
     dynamic_img_size: bool = eqx.field(static=True)
     antialias: bool = eqx.field(static=True)
@@ -179,7 +180,15 @@ class VisionTransformer(eqx.Module):
         class_token: bool = True,
         no_embed_class: bool = False,
         reg_tokens: int = 4,
-        rope_pos_embed: bool = False,
+        use_rope_pos_embed: bool = False,
+        rope_pos_embed_base: float = 100.0,
+        rope_pos_embed_min_period: Optional[float] = None,
+        rope_pos_embed_max_period: Optional[float] = None,
+        rope_pos_embed_normalize_coords: Literal["min", "max", "separate"] = "separate",
+        rope_pos_embed_shift_coords: Optional[float] = None,
+        rope_pos_embed_jitter_coords: Optional[float] = None,
+        rope_pos_embed_rescale_coords: Optional[float] = None,
+        rope_pos_embed_dtype: jnp.dtype = jnp.float32,
         pos_embed_reg_tokens: bool = False,
         pos_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
@@ -218,6 +227,7 @@ class VisionTransformer(eqx.Module):
         self.pos_embed_reg_tokens = pos_embed_reg_tokens
         self.global_pool = global_pool
         self.embed_size = img_size // patch_size
+        self.use_rope_pos_embed = use_rope_pos_embed
 
         block = get_attention_block(block)
         attn_layer = get_attention(attn_layer)
@@ -252,16 +262,34 @@ class VisionTransformer(eqx.Module):
             self.num_embedded_prefix_tokens += 1
             self.embed_len = self.num_patches + 1
 
-        self.pos_embed = LearnedPosEmbed(
-            weight=jr.normal(key_posemb, (self.embed_len, dim)),
-            dim=dim,
-            embed_size=self.embed_size,
-            num_prefix_tokens=self.num_prefix_tokens,
-            num_embedded_prefix_tokens=self.num_embedded_prefix_tokens,
-            no_embed_class=self.no_embed_class,
-            pos_embed_reg_tokens=self.pos_embed_reg_tokens,
-            antialias=interpolate_antialias,
-        )
+        if use_rope_pos_embed:
+            if not isinstance(num_heads, int):
+                raise ValueError(
+                    "RoPE pos embedding currently requires a static number of heads."
+                )
+            self.pos_embed = DinoRoPE(
+                dim=dim,
+                num_heads=num_heads,
+                base=rope_pos_embed_base,
+                min_period=rope_pos_embed_min_period,
+                max_period=rope_pos_embed_max_period,
+                normalize_coords=rope_pos_embed_normalize_coords,
+                shift_coords=rope_pos_embed_shift_coords,
+                jitter_coords=rope_pos_embed_jitter_coords,
+                rescale_coords=rope_pos_embed_rescale_coords,
+                dtype=rope_pos_embed_dtype,
+            )
+        else:
+            self.pos_embed = LearnedPosEmbed(
+                weight=jr.normal(key_posemb, (self.embed_len, dim)),
+                dim=dim,
+                embed_size=self.embed_size,
+                num_prefix_tokens=self.num_prefix_tokens,
+                num_embedded_prefix_tokens=self.num_embedded_prefix_tokens,
+                no_embed_class=self.no_embed_class,
+                pos_embed_reg_tokens=self.pos_embed_reg_tokens,
+                antialias=interpolate_antialias,
+            )
         self.pos_drop = eqx.nn.Dropout(pos_drop_rate)
 
         if drop_path_uniform:
@@ -324,7 +352,7 @@ class VisionTransformer(eqx.Module):
         Returns:
             Processed feature tensor
         """
-        key_posdrop, *block_subkeys = jr.split(key, len(self.blocks) + 1)
+        key_pos, *block_subkeys = jr.split(key, len(self.blocks) + 1)
         x = self.patch_embed(x)
 
         if mask is not None:
@@ -339,15 +367,45 @@ class VisionTransformer(eqx.Module):
                 value = self.mask_token
             x = jnp.where(mask, x, value.astype(x.dtype))
 
-        x = self.pos_embed(
-            x,
-            cls_token=self.cls_token,
-            reg_tokens=self.reg_tokens,
-            dynamic_img_size=self.dynamic_img_size,
-        )
+        if self.use_rope_pos_embed:
+            # In models like Dinov3, RoPE is not applied here, but in self attention blocks
+            # It means that we have to dumbly cat prefix token and flattened x manually
+            _, H, W = x.shape
+            if inference:
+                rope_sincos = self.pos_embed.get_sincos(
+                    H=H, W=W, inference=inference, key=key_pos
+                )
+            x = jnp.concatenate(
+                [
+                    self.cls_token,
+                    self.reg_tokens,
+                    rearrange(x, "c h w -> (h w) c"),
+                ],
+                axis=0,
+            )
+        else:
+            # TODO: pos drop
+            rope_sincos = None
+            x = self.pos_embed(
+                x,
+                cls_token=self.cls_token,
+                reg_tokens=self.reg_tokens,
+                dynamic_img_size=self.dynamic_img_size,
+            )
 
         for blk, key_block in zip(self.blocks, block_subkeys):
-            x = blk(x, inference=inference, key=key_block, **kwargs)
+            if self.use_rope_pos_embed and not inference:
+                key_pos, key_rope = jr.split(key_pos, 2)
+                rope_sincos = (
+                    self.pos_embed.get_sincos(
+                        H=H, W=W, inference=inference, key=key_rope
+                    )
+                    if self.use_rope_pos_embed
+                    else None
+                )
+            x = blk(
+                x, rope_sincos=rope_sincos, inference=inference, key=key_block, **kwargs
+            )
 
         return x
 
