@@ -148,6 +148,17 @@ def test_reduceformer():
     assert len(y_hat) == 10
 
 
+def test_dinov3():
+    """Test creation and inference of a ReduceFormer model."""
+    key = jr.PRNGKey(42)
+
+    x = jnp.ones((3, 64, 64))
+    model = load_model(cls="vit", identifier="dinov3_vits16_pretrain_lvd1689m")
+    y_hat = model(x, key=key)
+
+    assert jnp.abs(y_hat[0] - -0.25373647) < 1e-6
+
+
 def test_fused_reduceformer():
     """Test creation and inference of a ReduceFormer model with fused mbconv."""
     key = jr.PRNGKey(42)
