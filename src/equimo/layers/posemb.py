@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Any, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -296,13 +296,200 @@ class RoPE(eqx.Module):
         x_complex = x_reshaped[..., 0] + 1j * x_reshaped[..., 1]
 
         # Apply rotation
-        rotations_complex = self.rotations[..., 0] + 1j * self.rotations[..., 1]
+        rotations_ng = jax.lax.stop_gradient(self.rotations)
+        rotations_complex = rotations_ng[..., 0] + 1j * rotations_ng[..., 1]
         pe_x = rotations_complex * x_complex
 
         # Convert back to real representation
         pe_x_real = jnp.stack([pe_x.real, pe_x.imag], axis=-1)
 
         return pe_x_real.reshape(*x.shape).astype(dtype)
+
+
+class DinoRoPE(eqx.Module):
+    """Axial RoPE that produces per-position sin/cos for later rotation of features.
+
+    - Enforces embed_dim % (4 * num_heads) == 0.
+    - Periods can be specified via `base` or `min_period` + `max_period` (mutually exclusive).
+    - Coordinates are normalized to [-1, 1] according to `normalize_coords`.
+    - Optional training-time augmentations: shift, jitter (log-uniform per-axis), rescale (log-uniform shared).
+    - Returns (sin, cos) with shape [H*W, D_head], where D_head = embed_dim // num_heads.
+
+    Parameters
+    ----------
+    embed_dim: int
+        Total embedding dimension (across heads).
+    num_heads: int
+        Number of attention heads.
+    base: float | None
+        Period base. Mutually exclusive with (min_period, max_period).
+    min_period, max_period: float | None
+        Range for geometric periods. Mutually exclusive with base.
+    normalize_coords: {"min", "max", "separate"}
+        Normalization scheme mapping pixel centers to [-1, 1].
+    shift_coords: float | None
+        If set and training, add uniform shift in [-shift_coords, +shift_coords] per axis.
+    jitter_coords: float | None
+        If set and training, multiply each axis by log-uniform in [1/jitter_coords, jitter_coords].
+    rescale_coords: float | None
+        If set and training, multiply both axes by a shared log-uniform in [1/rescale_coords, rescale_coords].
+    dtype: jnp.dtype | None
+        Computation/output dtype. Defaults to float32.
+
+    Notes
+    -----
+    - The `periods` buffer is persistent (part of the tree) and not trainable; we
+      stop gradients on it inside `__call__`.
+    """
+
+    D_head: int = eqx.field(static=True)
+    normalize_coords: Literal["min", "max", "separate"] = eqx.field(static=True)
+    shift_coords: Optional[float] = eqx.field(static=True)
+    jitter_coords: Optional[float] = eqx.field(static=True)
+    rescale_coords: Optional[float] = eqx.field(static=True)
+    dtype: jnp.dtype = eqx.field(static=True)
+
+    # Persistent, non-trainable buffer
+    periods: Float[Array, "..."]
+
+    def __init__(
+        self,
+        embed_dim: int,
+        *,
+        num_heads: int,
+        base: Optional[float] = 100.0,
+        min_period: Optional[float] = None,
+        max_period: Optional[float] = None,
+        normalize_coords: Literal["min", "max", "separate"] = "separate",
+        shift_coords: Optional[float] = None,
+        jitter_coords: Optional[float] = None,
+        rescale_coords: Optional[float] = None,
+        dtype: jnp.dtype = jnp.float32,
+    ):
+        if embed_dim % (4 * num_heads) != 0:
+            raise ValueError("embed_dim must be divisible by 4 * num_heads.")
+        both_periods = (min_period is not None) and (max_period is not None)
+        if (base is None and not both_periods) or (base is not None and both_periods):
+            raise ValueError(
+                "Either `base` or `min_period`+`max_period` must be provided (mutually exclusive)."
+            )
+        if normalize_coords not in ("min", "max", "separate"):
+            raise ValueError(f"Unknown normalize_coords: {normalize_coords}")
+
+        self.normalize_coords = normalize_coords
+        self.shift_coords = shift_coords
+        self.jitter_coords = jitter_coords
+        self.rescale_coords = rescale_coords
+        self.dtype = dtype
+
+        self.D_head = embed_dim // num_heads
+        D_quarter = self.D_head // 4
+
+        if base is not None:
+            denom = self.D_head // 2
+            k = jnp.arange(D_quarter, dtype=dtype)
+            periods = base ** (2.0 * k / float(denom))
+        else:
+            # Geometric progression from min_period to max_period (inclusive endpoints behavior per torch linspace)
+            assert min_period is not None and max_period is not None
+            base_ratio = max_period / min_period
+            exponents = jnp.linspace(0.0, 1.0, D_quarter, dtype=dtype)
+            periods = base_ratio**exponents  # in [1, base_ratio]
+            periods = periods / base_ratio  # in [1/base_ratio, 1]
+            periods = periods * max_period  # in [min_period, max_period]
+            periods = periods.astype(dtype)
+
+        # Persistent buffer (will be copied with the tree; we stop gradients in __call__)
+        self.periods = periods
+
+    def _make_coords(self, H: int, W: int) -> jnp.ndarray:
+        """Create normalized coords in [-1, 1], shape [H*W, 2], dtype=self.dtype."""
+        dtype = self.dtype
+
+        if self.normalize_coords == "max":
+            denom = float(max(H, W))
+            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / denom  # [H]
+            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / denom  # [W]
+        elif self.normalize_coords == "min":
+            denom = float(min(H, W))
+            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / denom
+            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / denom
+        else:  # "separate"
+            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / float(H)
+            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / float(W)
+
+        hh, ww = jnp.meshgrid(coords_h, coords_w, indexing="ij")  # [H, W]
+        coords = jnp.stack([hh, ww], axis=-1).reshape(H * W, 2)  # [HW, 2]
+        coords = 2.0 * coords - 1.0  # [0,1] -> [-1,1]
+
+        return coords.astype(dtype)
+
+    def __call__(
+        self,
+        *,
+        H: int,
+        W: int,
+        key: jax.Array,
+        inference: Optional[bool] = None,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        """Compute (sin, cos) with shapes [H*W, D_head].
+
+        If `inference is False`, training-time augmentations may be applied
+        depending on configuration. If `inference is True`, no augmentations
+        are applied. If `inference is None`, defaults to training mode
+        (augmentations applied when configured).
+        """
+        k_shift, k_jitter, k_rescale = jax.random.split(key, 3)
+
+        dtype = self.dtype
+        D_head = self.D_head
+        D_quarter = D_head // 4
+
+        coords = self._make_coords(H, W)  # [HW, 2]
+
+        # Shift
+        if not inference and (self.shift_coords is not None):
+            shift_hw = jax.random.uniform(
+                k_shift, shape=(2,), minval=-self.shift_coords, maxval=self.shift_coords
+            ).astype(dtype)
+            coords = coords + shift_hw[None, :]
+
+        # Jitter (log-uniform per-axis)
+        if not inference and (self.jitter_coords is not None):
+            if self.jitter_coords <= 0:
+                raise ValueError("jitter_coords must be > 0.")
+            jitter_max = jnp.log(jnp.asarray(self.jitter_coords, dtype=dtype))
+            jitter_min = -jitter_max
+            jitter_hw = jax.random.uniform(
+                k_jitter, shape=(2,), minval=jitter_min, maxval=jitter_max
+            )
+            jitter_hw = jnp.exp(jitter_hw).astype(dtype)  # in [1/jitter, jitter]
+            coords = coords * jitter_hw[None, :]
+
+        # Rescale (log-uniform shared across both axes)
+        if not inference and (self.rescale_coords is not None):
+            if self.rescale_coords <= 0:
+                raise ValueError("rescale_coords must be > 0.")
+            rescale_max = jnp.log(jnp.asarray(self.rescale_coords, dtype=dtype))
+            rescale_min = -rescale_max
+            rescale = jax.random.uniform(
+                k_rescale, shape=(1,), minval=rescale_min, maxval=rescale_max
+            )
+            rescale = jnp.exp(rescale).astype(dtype)  # in [1/rescale, rescale]
+            coords = coords * rescale  # broadcast to both axes
+
+        # Angles
+        # angles: [HW, 2, D_quarter] where periods: [D_quarter]
+        periods = jax.lax.stop_gradient(self.periods).astype(dtype)
+        angles = (2.0 * jnp.pi * coords[:, :, None]) / periods[
+            None, None, :
+        ]  # [HW, 2, D_quarter]
+        angles = angles.reshape(angles.shape[0], 2 * D_quarter)  # [HW, D_head//2]
+        angles = jnp.tile(angles, reps=(1, 2))  # [HW, D_head]
+
+        cos = jnp.cos(angles).astype(dtype)  # [HW, D_head]
+        sin = jnp.sin(angles).astype(dtype)  # [HW, D_head]
+        return sin, cos
 
 
 class PosCNN(eqx.Module):
