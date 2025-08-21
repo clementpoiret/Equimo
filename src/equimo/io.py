@@ -25,7 +25,7 @@ def save_model(
     path: Path,
     model: eqx.Module,
     model_config: dict,
-    torch_hub_cfg: list[str] = [],
+    torch_hub_cfg: list[str] | dict = {},
     timm_cfg: list = [],
     compression: bool = True,
 ):

@@ -1,3 +1,4 @@
+import math
 from typing import Any, Literal, Optional, Tuple
 
 import equinox as eqx
@@ -6,6 +7,148 @@ import jax.numpy as jnp
 import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
+
+
+class LearnedPosEmbed(eqx.Module):
+    weight: jax.Array
+
+    dim: int = eqx.field(static=True)
+    embed_size: int = eqx.field(static=True)
+    num_prefix_tokens: int = eqx.field(static=True)
+    num_embedded_prefix_tokens: int = eqx.field(static=True)
+    no_embed_class: bool = eqx.field(static=True)
+    pos_embed_reg_tokens: bool = eqx.field(static=True)
+
+    antialias: bool = eqx.field(static=True, default=True)
+
+    def resample(
+        self,
+        *,
+        new_size: Tuple[int, int],
+        dim: int | None = None,
+        num_embedded_prefix_tokens: int | None = None,
+        old_size: Optional[Tuple[int, int]] = None,
+        interpolation: str = "bicubic",
+    ) -> jax.Array:
+        """Resample positional embeddings for different input sizes.
+
+        Args:
+            new_size: Target size (height, width)
+            dim: Dimensionality of the sequence
+            num_embedded_prefix_tokens: To include cls and reg tokens
+            old_size: Original size (height, width), computed if None
+            interpolation: Interpolation method
+
+        Returns:
+            Resampled positional embeddings
+        """
+        pe = self.weight
+        prev_dtype = pe.dtype
+        H, W = new_size
+        dim = self.dim if dim is None else dim
+        num_embedded_prefix_tokens = (
+            self.num_embedded_prefix_tokens
+            if num_embedded_prefix_tokens is None
+            else num_embedded_prefix_tokens
+        )
+
+        tgt_len = H * W + num_embedded_prefix_tokens
+        if (
+            (tgt_len == pe.shape[0])
+            and (old_size is not None)
+            and (H == W == old_size[0])
+        ):
+            return pe
+
+        if old_size is None:
+            L = pe.shape[0] - num_embedded_prefix_tokens
+            hw = int(math.sqrt(L))
+            old_size = (hw, hw)
+
+        prefix = pe[:num_embedded_prefix_tokens] if num_embedded_prefix_tokens else None
+        grid = pe[num_embedded_prefix_tokens:].astype(jnp.float32)
+        grid = rearrange(grid, "(h w) d -> h w d", h=old_size[0], w=old_size[1])
+        grid = jax.image.resize(
+            grid, (H, W, dim), method=interpolation, antialias=self.antialias
+        )
+        grid = rearrange(grid, "h w d -> (h w) d").astype(prev_dtype)
+        if prefix is not None:
+            grid = jnp.concatenate([prefix, grid], axis=0)
+        return grid
+
+    def __call__(
+        self,
+        x: jax.Array,
+        *,
+        cls_token: Optional[jax.Array],
+        reg_tokens: Optional[jax.Array],
+        dynamic_img_size: bool,
+        interpolation: str = "bicubic",
+    ) -> jax.Array:
+        """Compose tokens and add positional embeddings.
+
+        Inputs:
+        - x:
+          - If dynamic_img_size: shape (C, H, W) from PatchEmbedding(flatten=False)
+          - Else: shape ((H*W), C) from PatchEmbedding(flatten=True)
+        - cls_token: shape (1, dim) or None
+        - reg_tokens: shape (R, dim) or None
+        - dynamic_img_size: whether x is spatial or already flattened
+
+        Returns:
+        - Token sequence with positional information and optional prefix tokens.
+        """
+        if dynamic_img_size:
+            C, H, W = x.shape
+            assert C == self.dim, f"Channel dim mismatch: {C} vs {self.dim}"
+            pos_embed = self.resample(
+                new_size=(H, W),
+                old_size=(self.embed_size, self.embed_size),
+                interpolation=interpolation,
+            )
+            x = rearrange(x, "c h w -> (h w) c")
+        else:
+            pos_embed = self.weight
+
+        to_cat = []
+        if cls_token is not None:
+            # Expect (1, dim)
+            assert cls_token.shape[-1] == self.dim and cls_token.shape[0] == 1
+            to_cat.append(cls_token)
+        if reg_tokens is not None:
+            # Expect (R, dim)
+            assert reg_tokens.ndim == 2 and reg_tokens.shape[-1] == self.dim
+            to_cat.append(reg_tokens)
+
+        # Branching exactly mirrors your current _pos_embed logic
+        if self.no_embed_class:
+            # Add pos to patches only; then prepend any prefix tokens (cls/reg)
+            x = x + pos_embed
+            if to_cat:
+                x = jnp.concatenate(to_cat + [x], axis=0)
+
+        elif self.pos_embed_reg_tokens:
+            # Prefix tokens are included in the positional grid length; concat first, then add
+            if to_cat:
+                x = jnp.concatenate(to_cat + [x], axis=0)
+            x = x + pos_embed
+
+        else:
+            # Only class token is embedded with patches; reg tokens (if any) are inserted after
+            # the class token and before the patch tokens.
+            # Note: this branch assumes that if reg_tokens are used, a cls_token exists too.
+            if cls_token is None and reg_tokens is not None:
+                raise ValueError(
+                    "Configuration invalid: reg_tokens without cls_token when pos_embed_reg_tokens=False "
+                    "and no_embed_class=False."
+                )
+            x = jnp.concatenate(to_cat[:1] + [x], axis=0)  # cat cls_token if present
+            x = x + pos_embed
+            if reg_tokens is not None:
+                # Insert reg_tokens between cls and patch tokens
+                x = jnp.concatenate([x[:1], reg_tokens, x[1:]], axis=0)
+
+        return x
 
 
 class PosEmbMLPSwinv1D(eqx.Module):
@@ -309,15 +452,15 @@ class RoPE(eqx.Module):
 class DinoRoPE(eqx.Module):
     """Axial RoPE that produces per-position sin/cos for later rotation of features.
 
-    - Enforces embed_dim % (4 * num_heads) == 0.
+    - Enforces dim % (4 * num_heads) == 0.
     - Periods can be specified via `base` or `min_period` + `max_period` (mutually exclusive).
     - Coordinates are normalized to [-1, 1] according to `normalize_coords`.
     - Optional training-time augmentations: shift, jitter (log-uniform per-axis), rescale (log-uniform shared).
-    - Returns (sin, cos) with shape [H*W, D_head], where D_head = embed_dim // num_heads.
+    - Returns (sin, cos) with shape [H*W, D_head], where D_head = dim // num_heads.
 
     Parameters
     ----------
-    embed_dim: int
+    dim: int
         Total embedding dimension (across heads).
     num_heads: int
         Number of attention heads.
@@ -340,6 +483,9 @@ class DinoRoPE(eqx.Module):
     -----
     - The `periods` buffer is persistent (part of the tree) and not trainable; we
       stop gradients on it inside `__call__`.
+    - I had to separate `dtype` and `periods_dtype`. For some obscure reasons, I faced cases
+      with the reference PyTorch impl. where `periods` were computed in bfloat16 (wanted behavior),
+      but subsequent computations (coords, angles, cos, sin) were at a float32 precision.
     """
 
     D_head: int = eqx.field(static=True)
@@ -354,7 +500,7 @@ class DinoRoPE(eqx.Module):
 
     def __init__(
         self,
-        embed_dim: int,
+        dim: int,
         *,
         num_heads: int,
         base: Optional[float] = 100.0,
@@ -364,10 +510,11 @@ class DinoRoPE(eqx.Module):
         shift_coords: Optional[float] = None,
         jitter_coords: Optional[float] = None,
         rescale_coords: Optional[float] = None,
+        periods_dtype: jnp.dtype = jnp.bfloat16,
         dtype: jnp.dtype = jnp.float32,
     ):
-        if embed_dim % (4 * num_heads) != 0:
-            raise ValueError("embed_dim must be divisible by 4 * num_heads.")
+        if dim % (4 * num_heads) != 0:
+            raise ValueError("dim must be divisible by 4 * num_heads.")
         both_periods = (min_period is not None) and (max_period is not None)
         if (base is None and not both_periods) or (base is not None and both_periods):
             raise ValueError(
@@ -382,41 +529,43 @@ class DinoRoPE(eqx.Module):
         self.rescale_coords = rescale_coords
         self.dtype = dtype
 
-        self.D_head = embed_dim // num_heads
+        self.D_head = dim // num_heads
         D_quarter = self.D_head // 4
 
         if base is not None:
             denom = self.D_head // 2
-            k = jnp.arange(D_quarter, dtype=dtype)
+            k = jnp.arange(D_quarter, dtype=periods_dtype)
             periods = base ** (2.0 * k / float(denom))
         else:
             # Geometric progression from min_period to max_period (inclusive endpoints behavior per torch linspace)
             assert min_period is not None and max_period is not None
             base_ratio = max_period / min_period
-            exponents = jnp.linspace(0.0, 1.0, D_quarter, dtype=dtype)
+            exponents = jnp.linspace(0.0, 1.0, D_quarter, dtype=periods_dtype)
             periods = base_ratio**exponents  # in [1, base_ratio]
             periods = periods / base_ratio  # in [1/base_ratio, 1]
             periods = periods * max_period  # in [min_period, max_period]
-            periods = periods.astype(dtype)
+            periods = periods.astype(periods_dtype)
 
         # Persistent buffer (will be copied with the tree; we stop gradients in __call__)
-        self.periods = periods
+        self.periods = periods.astype(dtype)
 
     def _make_coords(self, H: int, W: int) -> jnp.ndarray:
         """Create normalized coords in [-1, 1], shape [H*W, 2], dtype=self.dtype."""
         dtype = self.dtype
+        # WARNING: I removed `dtype=dtype` in those jnp.arange fns because it was
+        # creating a discrepancy w/ dinov3 pytorch impl.
 
         if self.normalize_coords == "max":
             denom = float(max(H, W))
-            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / denom  # [H]
-            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / denom  # [W]
+            coords_h = jnp.arange(0.5, H, step=1.0) / denom  # [H]
+            coords_w = jnp.arange(0.5, W, step=1.0) / denom  # [W]
         elif self.normalize_coords == "min":
             denom = float(min(H, W))
-            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / denom
-            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / denom
+            coords_h = jnp.arange(0.5, H, step=1.0) / denom
+            coords_w = jnp.arange(0.5, W, step=1.0) / denom
         else:  # "separate"
-            coords_h = jnp.arange(0.5, H, step=1.0, dtype=dtype) / float(H)
-            coords_w = jnp.arange(0.5, W, step=1.0, dtype=dtype) / float(W)
+            coords_h = jnp.arange(0.5, H, step=1.0) / float(H)
+            coords_w = jnp.arange(0.5, W, step=1.0) / float(W)
 
         hh, ww = jnp.meshgrid(coords_h, coords_w, indexing="ij")  # [H, W]
         coords = jnp.stack([hh, ww], axis=-1).reshape(H * W, 2)  # [HW, 2]
@@ -424,14 +573,14 @@ class DinoRoPE(eqx.Module):
 
         return coords.astype(dtype)
 
-    def __call__(
+    def get_sincos(
         self,
         *,
         H: int,
         W: int,
         key: jax.Array,
         inference: Optional[bool] = None,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    ) -> Tuple[jax.Array, jax.Array]:
         """Compute (sin, cos) with shapes [H*W, D_head].
 
         If `inference is False`, training-time augmentations may be applied
@@ -489,6 +638,7 @@ class DinoRoPE(eqx.Module):
 
         cos = jnp.cos(angles).astype(dtype)  # [HW, D_head]
         sin = jnp.sin(angles).astype(dtype)  # [HW, D_head]
+
         return sin, cos
 
 
