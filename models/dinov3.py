@@ -124,6 +124,7 @@ configs = {
         "reg_tokens": 4,
         "mlp_ratio": 3.0,
         "untie_global_and_local_cls_norm": True,
+        "ffn_layer": "swiglu",
         "ffn_kwargs": {"align_to": 64},
     },
     "dinov3_vitl16_pretrain_sat493m": {
@@ -141,6 +142,7 @@ configs = {
         "reg_tokens": 4,
         "mlp_ratio": 3.0,
         "untie_global_and_local_cls_norm": True,
+        "ffn_layer": "swiglu",
         "ffn_kwargs": {"align_to": 64},
     },
 }
@@ -226,8 +228,7 @@ def main():
                 dinov3.features(jax_arr, inference=True, key=key),
                 torch_model.forward_features(torch_arr)["x_prenorm"],
             )
-            < 5e-4
-        ), f"Conversion error: {err}"
+        ) < 5e-4, f"Conversion error: {err}"
 
         save_path = Path(f"~/.cache/equimo/dinov3/{name}").expanduser()
         save_model(
