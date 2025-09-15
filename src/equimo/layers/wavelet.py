@@ -68,6 +68,7 @@ class HWDConv(eqx.Module):
     pre_norm: eqx.nn.GroupNorm
     proj: eqx.nn.Conv2d
     act: Callable
+    dropout: eqx.nn.Dropout
 
     def __init__(
         self,
@@ -78,6 +79,7 @@ class HWDConv(eqx.Module):
         use_bias: bool = False,
         act: Callable = jax.nn.relu,
         mode: Literal["h_discard", "accurate"] = "accurate",
+        dropout: float = 0.0,
         key: PRNGKeyArray,
     ):
         self.mode = mode
@@ -103,8 +105,10 @@ class HWDConv(eqx.Module):
         )
         self.act = act
 
+        self.dropout = eqx.nn.Dropout(dropout)
+
     def __call__(
-        self, x: Array, *, key: Optional["jax.Array"] = None, inference: bool = False
+        self, x: Array, *, key: PRNGKeyArray, inference: bool = False
     ) -> Array:
         LL, HL, LH, HH = haar_dwt_split(x, dtype=x.dtype)  # each (C, H/2, W/2)
 
@@ -117,5 +121,7 @@ class HWDConv(eqx.Module):
 
         y = self.proj(y)  # (out_ch, H/2, W/2)
         y = self.act(y)
+
+        y = self.dropout(y, inference=inference, key=key)
 
         return y
