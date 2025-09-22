@@ -166,7 +166,7 @@ wheels = [
 
 [[package]]
 name = "equimo"
-version = "0.4.1"
+version = "0.4.6a3"
 source = { virtual = "." }
 dependencies = [
     { name = "einops" },

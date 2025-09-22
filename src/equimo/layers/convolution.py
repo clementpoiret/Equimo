@@ -1125,13 +1125,13 @@ class GenericGhostModule(eqx.Module):
         self.mode = mode
         self.num_conv_branches = num_conv_branches
         self.out_channels = out_channels
-        self.kernel_size = kernel_size  # MOD
-        self.dw_size = dw_size  # MOD
-        self.stride = stride  # MOD
-        self.primary_has_skip = primary_has_skip  # MOD
-        self.primary_has_scale = primary_has_scale  # MOD
-        self.cheap_has_skip = cheap_has_skip  # MOD
-        self.cheap_has_scale = cheap_has_scale  # MOD
+        self.kernel_size = kernel_size
+        self.dw_size = dw_size
+        self.stride = stride
+        self.primary_has_skip = primary_has_skip
+        self.primary_has_scale = primary_has_scale
+        self.cheap_has_skip = cheap_has_skip
+        self.cheap_has_scale = cheap_has_scale
 
         # Those are actually placeholders, updated at each epoch, only used at inference time
         self.primary_conv = eqx.nn.Conv2d(
@@ -1147,7 +1147,7 @@ class GenericGhostModule(eqx.Module):
             in_channels=init_channels,
             out_channels=new_channels,
             kernel_size=dw_size,
-            stride=1,  # MOD
+            stride=1,
             padding=dw_size // 2,
             groups=init_channels,
             use_bias=False,
@@ -1309,8 +1309,6 @@ class GenericGhostModule(eqx.Module):
             operand=x,
         )
 
-        shortcut_pred = bool(self.mode == "shortcut")
-
         def _shortcut_branch(ox):
             out_, x_ = ox
             res = self.short_conv(self.pool2(x_))
@@ -1319,10 +1317,10 @@ class GenericGhostModule(eqx.Module):
                 shape=(res.shape[0], out_.shape[1], out_.shape[2]),
                 method="nearest",
             )
-            return out_[: self.out_channels, :, :] * gating
+            return out_[: self.out_channels, :, :] * gating[: self.out_channels, :, :]
 
         out = jax.lax.cond(
-            shortcut_pred,
+            self.mode == "shortcut",
             _shortcut_branch,
             lambda ox: ox[0],
             operand=(out, x),
