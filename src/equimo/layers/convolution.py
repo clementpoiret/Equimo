@@ -1300,16 +1300,33 @@ class GenericGhostModule(eqx.Module):
         inference: Optional[bool] = None,
     ):
         use_inference = self.inference if inference is None else inference
-        out = self.inference_features(x) if use_inference else self.training_features(x)
+        use_inference = jnp.asarray(use_inference, dtype=bool)
 
-        if self.mode == "shortcut":
-            res = self.short_conv(self.pool2(x))
-            gating_signal = jax.image.resize(
+        out = jax.lax.cond(
+            use_inference,
+            lambda x_: self.inference_features(x_),
+            lambda x_: self.training_features(x_),
+            operand=x,
+        )
+
+        shortcut_pred = bool(self.mode == "shortcut")
+
+        def _shortcut_branch(ox):
+            out_, x_ = ox
+            res = self.short_conv(self.pool2(x_))
+            gating = jax.image.resize(
                 image=jax.nn.sigmoid(res / self.gate_scale),
-                shape=(res.shape[0], out.shape[1], out.shape[2]),
+                shape=(res.shape[0], out_.shape[1], out_.shape[2]),
                 method="nearest",
             )
-            out = out[: self.out_channels, :, :] * gating_signal
+            return out_[: self.out_channels, :, :] * gating
+
+        out = jax.lax.cond(
+            shortcut_pred,
+            _shortcut_branch,
+            lambda ox: ox[0],
+            operand=(out, x),
+        )
 
         return out
 
@@ -1347,7 +1364,6 @@ class GhostBottleneck(eqx.Module):
         stride: int = 1,
         act_layer: Callable = jax.nn.relu,
         se_ratio: float = 0.0,
-        layer_id: Optional[int] = None,
         use_shortcut_mode_in_ghost1: bool = True,
         allow_identity_residual: bool = True,
         key: PRNGKeyArray,
@@ -1490,30 +1506,41 @@ class GhostBottleneck(eqx.Module):
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         use_inference = self.inference if inference is None else inference
-        k_g1, k_g2 = jr.split(key, 2)
+        use_inference = jax.numpy.asarray(use_inference, dtype=bool)
 
+        k_g1, k_g2 = jr.split(key, 2)
         residual = x
 
         x = self.ghost1(x, key=k_g1, inference=use_inference)
 
         if self.stride > 1:
-            if use_inference:
-                x = self.dw_shared_norm(self.dw_conv(x))
-            else:
-                terms = []
-                if not isinstance(self.dw_rpr_scale, eqx.nn.Identity):
-                    terms.append(self.dw_rpr_scale(x))
-                terms.extend(conv(x) for conv in self.dw_rpr_conv)
-                x = self.dw_shared_norm(jax.tree_util.tree_reduce(operator.add, terms))
+            x = jax.lax.cond(
+                use_inference,
+                lambda y: self.dw_shared_norm(self.dw_conv(y)),
+                lambda y: self.dw_shared_norm(
+                    jax.tree_util.tree_reduce(
+                        operator.add,
+                        (
+                            (
+                                []
+                                if isinstance(self.dw_rpr_scale, eqx.nn.Identity)
+                                else [self.dw_rpr_scale(y)]
+                            )
+                            + [conv(y) for conv in self.dw_rpr_conv]
+                        ),
+                    )
+                ),
+                operand=x,
+            )
 
         x = self.se(x)
 
         x = self.ghost2(x, key=k_g2, inference=use_inference)
 
         if not isinstance(self.shortcut, eqx.nn.Identity):
-            x += self.shortcut(residual)
+            x = x + self.shortcut(residual)
         elif self.allow_identity_residual:
-            x += residual
+            x = x + residual
 
         return x
 
