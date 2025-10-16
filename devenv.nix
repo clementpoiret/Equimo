@@ -10,7 +10,7 @@ in
   packages = with pkgs; [ python312 ];
 
   env = {
-    UV_PYTHON = "${pkgs.python312}/bin/python";
+    # UV_PYTHON = "${pkgs.python312}/bin/python";
     LD_LIBRARY_PATH = lib.makeLibraryPath buildInputs;
   };
 
