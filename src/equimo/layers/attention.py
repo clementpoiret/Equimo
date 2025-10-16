@@ -356,8 +356,8 @@ class AttentionBlock(eqx.Module):
         self.norm = norm_layer(dim, eps=eps)
 
         if init_values:
-            self.ls1 = LayerScale(dim, init_values=init_values)
-            self.ls2 = LayerScale(dim, init_values=init_values)
+            self.ls1 = LayerScale(dim, axis=1, init_values=init_values)
+            self.ls2 = LayerScale(dim, axis=1, init_values=init_values)
         else:
             self.ls1 = self.ls2 = eqx.nn.Identity()
 
@@ -538,8 +538,8 @@ class HATBlock(eqx.Module):
         self.norm2 = norm_layer(dim, eps=eps)
 
         if init_values:
-            self.ls1 = LayerScale(dim, init_values=init_values)
-            self.ls2 = LayerScale(dim, init_values=init_values)
+            self.ls1 = LayerScale(dim, axis=1, init_values=init_values)
+            self.ls2 = LayerScale(dim, axis=1, init_values=init_values)
         else:
             self.ls1 = self.ls2 = eqx.nn.Identity()
 
@@ -611,17 +611,17 @@ class HATBlock(eqx.Module):
                 dim, rank=2, seq_len=cr_tokens_total, key=key_hatposemb
             )
             self.hat_ls1 = (
-                LayerScale(dim, init_values=init_values)
+                LayerScale(dim, axis=1, init_values=init_values)
                 if init_values
                 else eqx.nn.Identity()
             )
             self.hat_ls2 = (
-                LayerScale(dim, init_values=init_values)
+                LayerScale(dim, axis=1, init_values=init_values)
                 if init_values
                 else eqx.nn.Identity()
             )
             self.hat_ls3 = (
-                LayerScale(dim, init_values=init_values)
+                LayerScale(dim, axis=1, init_values=init_values)
                 if init_values
                 else eqx.nn.Identity()
             )
@@ -1425,8 +1425,8 @@ class PartialFormerBlock(eqx.Module):
         self.norm2 = norm_layer(dim, eps=eps)
 
         if init_values:
-            self.ls1 = LayerScale(dim, init_values=init_values)
-            self.ls2 = LayerScale(dim, init_values=init_values)
+            self.ls1 = LayerScale(dim, axis=1, init_values=init_values)
+            self.ls2 = LayerScale(dim, axis=1, init_values=init_values)
         else:
             self.ls1 = self.ls2 = eqx.nn.Identity()
 
