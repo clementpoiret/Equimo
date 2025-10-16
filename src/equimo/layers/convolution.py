@@ -39,7 +39,7 @@ class ConvBlock(eqx.Module):
     norm2: eqx.Module
     drop_path1: DropPathAdd
     act: Callable
-    ls1: LayerScale | None
+    ls1: LayerScale | eqx.nn.Identity
 
     def __init__(
         self,
@@ -103,18 +103,11 @@ class ConvBlock(eqx.Module):
         dpr = drop_path[0] if isinstance(drop_path, list) else float(drop_path)
         self.drop_path1 = DropPathAdd(dpr)
 
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else None
-
-    def permute(
-        self, x: Float[Array, "channels height width"]
-    ) -> Float[Array, "height width channels"]:
-        return rearrange(x, "c h w -> h w c")
-
-    def depermute(
-        self,
-        x: Float[Array, "height width channels"],
-    ) -> Float[Array, "channels height width"]:
-        return rearrange(x, "h w c -> c h w")
+        self.ls1 = (
+            LayerScale(dim, init_values=init_values)
+            if init_values
+            else eqx.nn.Identity()
+        )
 
     def __call__(
         self,
@@ -124,8 +117,7 @@ class ConvBlock(eqx.Module):
     ) -> Float[Array, "channels height width"]:
         x2 = self.act(self.norm1(self.conv1(x)))
         x2 = self.norm2(self.conv2(x2))
-        if self.ls1 is not None:
-            x2 = self.depermute(jax.vmap(jax.vmap(self.ls1))(self.permute(x2)))
+        x2 = self.ls1(x2)
 
         return self.drop_path1(x, x2, inference=inference, key=key)
 
@@ -2247,7 +2239,7 @@ class ATConvBlock(eqx.Module):
         glu_dwconv: bool = False,
         use_bias: bool = True,
         dropout: float = 0.0,
-        drop_path: float | Tuple[float, float] = 0.0,
+        drop_path: float | list[float] = 0.0,
         use_layer_scale: bool = True,
         key: PRNGKeyArray,
     ):
@@ -2280,9 +2272,19 @@ class ATConvBlock(eqx.Module):
         self.norm1 = eqx.nn.LayerNorm(in_channels)
         self.norm2 = eqx.nn.LayerNorm(in_channels)
 
-        dpr = drop_path[0] if isinstance(drop_path, list) else float(drop_path)
-        self.drop_path1 = DropPathAdd(dpr)
-        self.drop_path2 = DropPathAdd(dpr)
+        if isinstance(drop_path, list):
+            if len(drop_path) != 2:
+                raise AssertionError(
+                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                )
+            dr1, dr2 = drop_path
+            dr1 = float(dr1)
+            dr2 = float(dr2)
+        else:
+            dr1 = dr2 = float(drop_path)
+
+        self.drop_path1 = DropPathAdd(dr1)
+        self.drop_path2 = DropPathAdd(dr2)
 
     def __call__(
         self,
