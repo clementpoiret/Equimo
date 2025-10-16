@@ -2017,3 +2017,87 @@ class FasterNetBlock(eqx.Module):
             out = self.drop_path(x, out, inference=inference, key=key_droppath)
 
         return out
+
+
+class GLUConv(eqx.Module):
+    conv1: eqx.nn.Conv2d
+    conv2: eqx.nn.Conv2d
+    dwconv: eqx.nn.Conv2d | eqx.nn.Identity
+    norm: eqx.nn.GroupNorm | eqx.nn.Identity
+    act: Callable
+    dr1: eqx.nn.Dropout
+    dr2: eqx.nn.Dropout
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        *,
+        glu_norm: bool = True,
+        glu_dwconv: bool = False,
+        act_layer: Callable = jax.nn.gelu,
+        dropout: float = 0.0,
+        key: PRNGKeyArray,
+    ):
+        key_conv1, key_conv2, key_dwconv = jr.split(key, 3)
+
+        self.conv1 = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=hidden_channels * 2,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=True,
+            key=key_conv1,
+        )
+        self.conv2 = eqx.nn.Conv2d(
+            in_channels=hidden_channels,
+            out_channels=in_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=True,
+            key=key_conv2,
+        )
+        self.dwconv = (
+            eqx.nn.Conv2d(
+                in_channels=hidden_channels,
+                out_channels=hidden_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                groups=hidden_channels,
+                use_bias=True,
+                key=key_dwconv,
+            )
+            if glu_dwconv
+            else eqx.nn.Identity()
+        )
+
+        num_groups = nearest_power_of_2_divisor(in_channels, 32)
+        self.norm = (
+            eqx.nn.GroupNorm(num_groups, hidden_channels)
+            if glu_norm
+            else eqx.nn.Identity()
+        )
+
+        self.act = act_layer
+        self.dr1 = eqx.nn.Dropout(dropout)
+        self.dr2 = eqx.nn.Dropout(dropout)
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        key_dr1, key_dr2 = jr.split(key, 2)
+
+        x, v = jnp.split(self.conv1(x), 2)
+
+        x = self.norm(self.act(self.dwconv(x)) * v)
+        x = self.dr1(x, inference=inference, key=key_dr1)
+        x = self.conv2(x)
+        x = self.dr2(x, inference=inference, key=key_dr2)
+
+        return x
