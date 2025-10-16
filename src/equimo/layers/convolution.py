@@ -2101,3 +2101,126 @@ class GLUConv(eqx.Module):
         x = self.dr2(x, inference=inference, key=key_dr2)
 
         return x
+
+
+class ATConv(eqx.Module):
+    """
+    Attentive Convolution (ATConv) layer that generates per-sample, per-channel 3×3 dynamic kernels
+    and applies them as a depthwise grouped 2D convolution with linear-time cost, capturing adaptive
+    routing and lateral inhibition principles identified as key advantages of self-attention over static
+    convolutions[1].
+
+    The operator first projects features, synthesizes a per-channel HWIO kernel from pooled spatial
+    summaries, subtracts a learnable fraction of its channel-wise mean to induce inhibition, then
+    performs a depthwise convolution followed by a 1×1 projection, matching the reference design
+    that unifies attention-like expressivity with convolutional efficiency[1].
+
+    Referencea:
+        [1]. Yu, et al., Attentive Convolution: Unifying the Expressivity of Self-Attention with Convolutional
+             Efficiency. 2025. arXiv:2510.20092
+    """
+
+    kernel_size: int = eqx.field(static=True)
+    padding: int = eqx.field(static=True)
+
+    x_proj: eqx.nn.Conv2d
+    proj: eqx.nn.Conv2d
+    kernel_proj: eqx.nn.Conv2d
+    kernel_act: Callable
+    kernel_gen: eqx.nn.Linear
+    pool: eqx.nn.AdaptiveAvgPool1d
+    difference_control: jax.Array
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        kernel_size: int = 3,
+        act_layer: Callable = jax.nn.gelu,
+        use_bias: bool = True,
+        key: PRNGKeyArray,
+    ):
+        key_xproj, key_proj, key_kp, key_kg = jr.split(key, 4)
+
+        self.kernel_size = kernel_size
+        k2 = kernel_size**2
+        self.padding = kernel_size // 2
+
+        self.x_proj = eqx.nn.Conv2d(
+            in_channels,
+            in_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=use_bias,
+            key=key_xproj,
+        )
+        self.proj = eqx.nn.Conv2d(
+            in_channels,
+            in_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=use_bias,
+            key=key_proj,
+        )
+        self.kernel_proj = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=use_bias,
+            key=key_kp,
+        )
+        self.kernel_act = act_layer
+        self.kernel_gen = eqx.nn.Linear(k2, k2, use_bias=use_bias, key=key_kg)
+        self.pool = eqx.nn.AdaptiveAvgPool1d(target_shape=k2)
+        self.difference_control = jnp.zeros((1, 1, 1, in_channels))
+
+    def _generate_kernels(
+        self, x: Float[Array, "channels height width"]
+    ) -> Float[Array, "k k 1 channels"]:
+        kernels = self.kernel_proj(x)
+        kernels = self.pool(rearrange(kernels, "c h w -> c (h w)"))
+        kernels = self.kernel_act(kernels)
+        kernels = jax.vmap(self.kernel_gen)(kernels)
+        kernels = rearrange(
+            kernels, "c (k1 k2) -> k1 k2 1 c", k1=self.kernel_size, k2=self.kernel_size
+        )
+
+        return kernels
+
+    def _apply_kernel_difference(
+        self, kernels: Float[Array, "channels k k"]
+    ) -> Float[Array, "channels k k"]:
+        mean_kernels = kernels.mean(axis=(0, 1, 2), keepdims=True)
+        factor = jax.nn.sigmoid(self.difference_control)
+
+        return kernels - factor * mean_kernels
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        kernels = self._generate_kernels(x)
+        kernels = self._apply_kernel_difference(kernels)
+
+        x = self.x_proj(x)
+        C, H, W = x.shape
+        x = jax.lax.conv_general_dilated(
+            x[None, ...],  # (N, C, H, W)
+            kernels,  # (H, W, I=1, O=C)
+            window_strides=(1, 1),
+            padding=((self.padding, self.padding), (self.padding, self.padding)),
+            lhs_dilation=None,
+            rhs_dilation=None,
+            dimension_numbers=("NCHW", "HWIO", "NCHW"),
+            feature_group_count=C,  # depthwise
+        )[0]
+
+        x = self.proj(x)
+
+        return x
