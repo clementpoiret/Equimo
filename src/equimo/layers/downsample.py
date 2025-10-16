@@ -12,19 +12,31 @@ from equimo.utils import nearest_power_of_2_divisor
 
 
 class ConvNormDownsampler(eqx.Module):
+    """A module that performs spatial downsampling using strided convolution.
+
+    This module reduces spatial dimensions (height and width) by a factor of 2
+    while optionally increasing the channel dimension. Uses a 3x3 strided
+    convolution for downsampling.
+
+    Attributes:
+        reduction: Convolutional layer that performs the downsampling
+    """
+
     downsampler: eqx.nn.Sequential
 
     def __init__(
         self,
         in_channels: int,
-        out_channels: int,
         *,
+        out_channels: int | None = None,
         act_layer: Callable = jax.nn.gelu,
         use_bias: bool = False,
         use_norm: bool = True,
         mode: Literal["double", "simple"] = "simple",
         key: PRNGKeyArray,
     ):
+        out_channels = out_channels if out_channels else 2 * in_channels
+
         match mode:
             case "simple":
                 self.downsampler = eqx.nn.Sequential(
@@ -80,63 +92,6 @@ class ConvNormDownsampler(eqx.Module):
 
     def __call__(self, x, *args, **kwargs):
         return self.downsampler(x)
-
-
-class StridedConvDownsampler(eqx.Module):
-    """A module that performs spatial downsampling using strided convolution.
-
-    This module reduces spatial dimensions (height and width) by a factor of 2
-    while optionally increasing the channel dimension. Uses a 3x3 strided
-    convolution for downsampling.
-
-    Attributes:
-        reduction: Convolutional layer that performs the downsampling
-    """
-
-    reduction: eqx.Module
-
-    def __init__(
-        self,
-        in_channels: int,
-        *,
-        out_channels: int | None = None,
-        key: PRNGKeyArray,
-    ):
-        """Initialize the Downsampler.
-
-        Args:
-            dim: Number of input channels
-            key: PRNG key for initialization
-            keep_dim: If True, maintains channel dimension; if False, doubles it
-                     (default: False)
-        """
-        out_channels = out_channels if out_channels else 2 * in_channels
-        self.reduction = eqx.nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            use_bias=False,
-            key=key,
-        )
-
-    def __call__(
-        self,
-        x: Float[Array, "channels height width"],
-        *args,
-        **kwargs,
-    ) -> Float[Array, "new_channels new_height new_width"]:
-        """Apply downsampling to the input tensor.
-
-        Args:
-            x: Input tensor of shape (channels, height, width)
-
-        Returns:
-            Downsampled tensor with halved spatial dimensions and potentially
-            doubled channels depending on keep_dim parameter
-        """
-        return self.reduction(x)
 
 
 class PWSEDownsampler(eqx.Module):
