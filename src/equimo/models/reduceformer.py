@@ -14,7 +14,7 @@ from equimo.layers.norm import get_norm
 
 
 class BlockChunk(eqx.Module):
-    blocks: list[DSConv | MBConv | RFAttentionBlock]
+    blocks: Tuple[DSConv | MBConv | RFAttentionBlock, ...]
 
     def __init__(
         self,
@@ -126,7 +126,7 @@ class BlockChunk(eqx.Module):
                         )
                     )
 
-        self.blocks = blocks
+        self.blocks = tuple(blocks)
 
     def __call__(
         self,
@@ -148,7 +148,7 @@ class BlockChunk(eqx.Module):
 class ReduceFormer(eqx.Module):
     conv_stem: SingleConvBlock
     block_stem: BlockChunk
-    blocks: list[BlockChunk]
+    blocks: Tuple[BlockChunk, ...]
     head: eqx.nn.Linear | eqx.nn.Identity
 
     def __init__(
@@ -220,7 +220,7 @@ class ReduceFormer(eqx.Module):
             key=key_block_stem,
         )
 
-        self.blocks = [
+        self.blocks = tuple(
             BlockChunk(
                 in_channels=widths[i - 1] if i > 0 else width_stem,
                 out_channels=widths[i],
@@ -240,7 +240,7 @@ class ReduceFormer(eqx.Module):
             for i, (depth, block_type, key_block) in enumerate(
                 zip(depths, block_types, key_blocks)
             )
-        ]
+        )
 
         self.head = (
             eqx.nn.Linear(

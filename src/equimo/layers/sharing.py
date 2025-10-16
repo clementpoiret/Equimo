@@ -1,5 +1,5 @@
 import math
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -72,8 +72,8 @@ class LayerSharing(eqx.Module):
 
     repeat: int = eqx.field(static=True)
 
-    loras: List[LoRA]
-    dropouts: List[eqx.nn.Dropout]
+    loras: Tuple[LoRA, ...]
+    dropouts: Tuple[eqx.nn.Dropout, ...]
     f: eqx.Module
 
     def __init__(
@@ -93,8 +93,8 @@ class LayerSharing(eqx.Module):
         keys = jr.split(key, repeat)
         self.repeat = repeat
 
-        self.dropouts = [eqx.nn.Dropout(drop_rate) for i in range(self.repeat)]
-        self.loras = [
+        self.dropouts = tuple(eqx.nn.Dropout(drop_rate) for i in range(self.repeat))
+        self.loras = tuple(
             LoRA(
                 in_features=dim,
                 out_features=dim,
@@ -103,7 +103,7 @@ class LayerSharing(eqx.Module):
                 key=keys[i],
             )
             for i in range(self.repeat)
-        ]
+        )
 
         self.f = f
 

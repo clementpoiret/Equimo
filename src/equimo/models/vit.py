@@ -1,4 +1,4 @@
-from typing import Callable, List, Literal, Optional
+from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -39,7 +39,7 @@ class BlockChunk(eqx.Module):
     downsampler_contains_dropout: bool = eqx.field(static=True)
 
     posemb: eqx.Module
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module]
     downsample: eqx.Module
 
     def __init__(
@@ -84,7 +84,7 @@ class BlockChunk(eqx.Module):
         for i in range(depth):
             config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
             blocks.append(block(**config, key=block_subkeys[i]))
-        self.blocks = blocks
+        self.blocks = tuple(blocks)
 
         self.downsample = downsampler(dim=dim, **downsampler_kwargs, key=key_ds)
 
@@ -145,7 +145,7 @@ class VisionTransformer(eqx.Module):
     cls_token: jax.Array | None
     reg_tokens: jax.Array | None
     mask_token: jax.Array | None
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     pos_drop: eqx.nn.Dropout
     norm: eqx.Module
     local_cls_norm: eqx.Module | None
@@ -171,8 +171,8 @@ class VisionTransformer(eqx.Module):
         in_channels: int,
         dim: int,
         patch_size: int,
-        num_heads: int | List[int],
-        depths: List[int],
+        num_heads: int | list[int],
+        depths: list[int],
         *,
         key: PRNGKeyArray,
         use_mask_token: bool = False,
@@ -304,7 +304,7 @@ class VisionTransformer(eqx.Module):
         dims = to_list(dim, n_chunks)
         num_heads = to_list(num_heads, n_chunks)
         attn_layer = to_list(attn_layer, n_chunks)
-        self.blocks = [
+        self.blocks = tuple(
             BlockChunk(
                 block=block,
                 dim=dims[i],
@@ -328,7 +328,7 @@ class VisionTransformer(eqx.Module):
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
-        ]
+        )
 
         self.norm = norm_layer(dim, eps=eps)
 

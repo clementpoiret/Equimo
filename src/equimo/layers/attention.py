@@ -1671,7 +1671,7 @@ class RFAttention(eqx.Module):
     eps: float = eqx.field(static=True)
 
     qkv: eqx.nn.Conv2d
-    aggreg: list[eqx.nn.Conv2d]
+    aggreg: Tuple[eqx.nn.Conv2d, ...]
     proj: SingleConvBlock
 
     def __init__(
@@ -1709,7 +1709,7 @@ class RFAttention(eqx.Module):
             use_bias=use_bias,
             key=key_qkv,
         )
-        self.aggreg = [
+        self.aggreg = tuple(
             eqx.nn.Conv2d(
                 in_channels=3 * total_dim,
                 out_channels=3 * total_dim,
@@ -1720,7 +1720,7 @@ class RFAttention(eqx.Module):
                 use_bias=use_bias,
             )
             for scale in scales
-        ]
+        )
         # TODO: test different normalizations
         self.proj = SingleConvBlock(
             in_channels=self.total_dim,

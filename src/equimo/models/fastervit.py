@@ -1,4 +1,4 @@
-from typing import Callable, List, Literal, Optional
+from typing import Callable, List, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -157,7 +157,7 @@ class BlockChunk(eqx.Module):
     window_size: bool = eqx.field(static=True)
     do_gt: bool = eqx.field(static=True)
 
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     downsample: eqx.Module
     global_tokenizer: Optional[TokenInitializer]
 
@@ -195,7 +195,7 @@ class BlockChunk(eqx.Module):
             k for k, v in kwargs.items() if isinstance(v, list) and len(v) == depth
         ]
 
-        self.blocks = []
+        blocks = []
         for i in range(depth):
             config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
 
@@ -210,7 +210,7 @@ class BlockChunk(eqx.Module):
                 }
 
             wrapper = LayerSharingWithCT if self.is_hat else LayerSharing
-            self.blocks.append(
+            blocks.append(
                 wrapper(
                     dim=kwargs.get("dim"),
                     f=block(**config, key=block_subkeys[i]),
@@ -218,6 +218,7 @@ class BlockChunk(eqx.Module):
                     key=block_subkeys[i],
                 ),
             )
+        self.blocks = tuple(blocks)
 
         self.downsample = downsampler(dim=kwargs.get("dim"), key=key_ds)
 
@@ -331,7 +332,7 @@ class FasterViT(eqx.Module):
     """
 
     patch_embed: ConvPatchEmbed
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     norm: eqx.Module
     head: eqx.Module
 
@@ -398,7 +399,7 @@ class FasterViT(eqx.Module):
         hat = to_list(hat, n_chunks)
         attn_layer = to_list(attn_layer, n_chunks)
         window_size = to_list(window_size, n_chunks)
-        self.blocks = [
+        self.blocks = tuple(
             BlockChunk(
                 block=ConvBlock if i < 2 else HATBlock,
                 repeat=repeat,
@@ -427,7 +428,7 @@ class FasterViT(eqx.Module):
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
-        ]
+        )
 
         num_features = int(dim * 2 ** (len(depths) - 1))
         self.norm = norm_layer(num_features)

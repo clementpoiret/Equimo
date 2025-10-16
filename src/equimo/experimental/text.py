@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 import equinox as eqx
@@ -136,7 +136,7 @@ class Transformer(eqx.Module):
         blocks: A list of `AttentionBlock` instances forming the transformer stack.
     """
 
-    blocks: list[AttentionBlock]
+    blocks: Tuple[AttentionBlock, ...]
 
     def __init__(
         self,
@@ -164,7 +164,7 @@ class Transformer(eqx.Module):
 
         act_layer = get_act(act_layer)
 
-        self.blocks = [
+        self.blocks = tuple(
             AttentionBlock(
                 dim=dim,
                 num_heads=num_heads,
@@ -173,7 +173,7 @@ class Transformer(eqx.Module):
                 key=keys[i],
             )
             for i in range(depth)
-        ]
+        )
 
     def __call__(
         self,

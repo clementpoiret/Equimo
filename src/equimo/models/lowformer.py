@@ -15,7 +15,7 @@ from equimo.layers.norm import get_norm
 
 class BlockChunk(eqx.Module):
     residuals: list[bool] = eqx.field(static=True)
-    blocks: list[DSConv | MBConv | LowFormerBlock]
+    blocks: Tuple[DSConv | MBConv | LowFormerBlock, ...]
 
     def __init__(
         self,
@@ -123,7 +123,7 @@ class BlockChunk(eqx.Module):
                     )
                 residuals.append(False)
 
-        self.blocks = blocks
+        self.blocks = tuple(blocks)
         self.residuals = residuals
 
     def __call__(
@@ -146,7 +146,7 @@ class BlockChunk(eqx.Module):
 
 class LowFormer(eqx.Module):
     input_stem: eqx.nn.Sequential
-    blocks: list[BlockChunk]
+    blocks: Tuple[BlockChunk, ...]
     head: eqx.nn.Linear | eqx.nn.Identity
 
     def __init__(
@@ -220,7 +220,7 @@ class LowFormer(eqx.Module):
             ]
         )
 
-        self.blocks = [
+        self.blocks = tuple(
             BlockChunk(
                 in_channels=widths[i - 1] if i > 0 else width_stem,
                 out_channels=widths[i],
@@ -241,7 +241,7 @@ class LowFormer(eqx.Module):
             for i, (depth, att_stride, block_type, key_block) in enumerate(
                 zip(depths, att_strides, block_types, key_blocks)
             )
-        ]
+        )
 
         self.head = (
             eqx.nn.Linear(

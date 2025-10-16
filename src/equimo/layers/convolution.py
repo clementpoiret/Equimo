@@ -409,7 +409,7 @@ class C2f(eqx.Module):
 
     conv1: SingleConvBlock
     conv2: SingleConvBlock
-    blocks: list[ConvBottleneck]
+    blocks: Tuple[ConvBottleneck, ...]
 
     def __init__(
         self,
@@ -445,7 +445,7 @@ class C2f(eqx.Module):
             key=key_conv2,
         )
 
-        self.blocks = [
+        self.blocks = tuple(
             ConvBottleneck(
                 in_channels=self.hidden_channels,
                 out_channels=self.hidden_channels,
@@ -456,7 +456,7 @@ class C2f(eqx.Module):
                 key=key_blocks[i],
             )
             for i in range(n)
-        ]
+        )
 
     def __call__(
         self,
@@ -589,7 +589,7 @@ class C3k2(eqx.Module):
 
     conv1: SingleConvBlock
     conv2: SingleConvBlock
-    blocks: list[ConvBottleneck] | list[C3k]
+    blocks: Tuple[ConvBottleneck, ...] | Tuple[C3k, ...]
 
     def __init__(
         self,
@@ -627,7 +627,7 @@ class C3k2(eqx.Module):
         )
 
         if c3k:
-            self.blocks = [
+            self.blocks = tuple(
                 C3k(
                     in_channels=self.hidden_channels,
                     out_channels=self.hidden_channels,
@@ -637,9 +637,9 @@ class C3k2(eqx.Module):
                     key=key_blocks[i],
                 )
                 for i in range(n)
-            ]
+            )
         else:
-            self.blocks = [
+            self.blocks = tuple(
                 ConvBottleneck(
                     in_channels=self.hidden_channels,
                     out_channels=self.hidden_channels,
@@ -648,7 +648,7 @@ class C3k2(eqx.Module):
                     key=key_blocks[i],
                 )
                 for i in range(n)
-            ]
+            )
 
     def __call__(
         self,
@@ -1078,12 +1078,12 @@ class GenericGhostModule(eqx.Module):
     cheap_operation: eqx.nn.Conv2d
 
     # Training
-    primary_rpr_conv: list[eqx.nn.Conv2d]
+    primary_rpr_conv: Tuple[eqx.nn.Conv2d, ...]
     primary_rpr_scale: eqx.nn.Conv2d | eqx.nn.Identity
     primary_shared_norm: eqx.nn.GroupNorm
     primary_activation: Callable
 
-    cheap_rpr_conv: list[eqx.nn.Conv2d]
+    cheap_rpr_conv: Tuple[eqx.nn.Conv2d, ...]
     cheap_rpr_scale: eqx.nn.Conv2d | eqx.nn.Identity
     cheap_shared_norm: eqx.nn.GroupNorm
     cheap_activation: Callable
@@ -1156,7 +1156,7 @@ class GenericGhostModule(eqx.Module):
 
         # Primary training branches
         init_num_groups = nearest_power_of_2_divisor(init_channels, 32)
-        self.primary_rpr_conv = [
+        self.primary_rpr_conv = tuple(
             eqx.nn.Conv2d(
                 in_channels=in_channels,
                 out_channels=init_channels,
@@ -1167,7 +1167,7 @@ class GenericGhostModule(eqx.Module):
                 key=key_ps[i],
             )
             for i in range(num_conv_branches)
-        ]
+        )
         self.primary_rpr_scale = (
             eqx.nn.Conv2d(
                 in_channels=in_channels,
@@ -1186,7 +1186,7 @@ class GenericGhostModule(eqx.Module):
 
         # Cheap training branches (depthwise)
         newchannels_num_groups = nearest_power_of_2_divisor(new_channels, 32)
-        self.cheap_rpr_conv = [
+        self.cheap_rpr_conv = tuple(
             eqx.nn.Conv2d(
                 in_channels=init_channels,
                 out_channels=new_channels,
@@ -1198,7 +1198,7 @@ class GenericGhostModule(eqx.Module):
                 key=key_cs[i],
             )
             for i in range(self.num_conv_branches)
-        ]
+        )
         self.cheap_rpr_scale = (
             eqx.nn.Conv2d(
                 in_channels=init_channels,
@@ -1344,7 +1344,7 @@ class GhostBottleneck(eqx.Module):
     ghost2: "GenericGhostModule"
 
     dw_conv: eqx.nn.Conv2d | eqx.nn.Identity
-    dw_rpr_conv: list[eqx.nn.Conv2d]  # depthwise conv branches (no bias)
+    dw_rpr_conv: Tuple[eqx.nn.Conv2d, ...]  # depthwise conv branches (no bias)
     dw_rpr_scale: eqx.nn.Conv2d | eqx.nn.Identity  # optional 1x1 depthwise (no bias)
     dw_shared_norm: eqx.nn.GroupNorm | eqx.nn.Identity
 
@@ -1393,7 +1393,7 @@ class GhostBottleneck(eqx.Module):
         # Depthwise stage (only if stride > 1)
         if stride > 1:
             # Training-time branches (depthwise, no bias); no activation; shared GN after sum
-            self.dw_rpr_conv = [
+            self.dw_rpr_conv = tuple(
                 eqx.nn.Conv2d(
                     in_channels=mid_channels,
                     out_channels=mid_channels,
@@ -1405,7 +1405,7 @@ class GhostBottleneck(eqx.Module):
                     key=k_dw_list[i],
                 )
                 for i in range(3)
-            ]
+            )
             # Optional scale branch (1x1, depthwise, stride=stride)
             self.dw_rpr_scale = (
                 eqx.nn.Conv2d(

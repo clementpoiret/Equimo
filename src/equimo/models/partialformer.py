@@ -98,7 +98,7 @@ class BlockChunk(eqx.Module):
     downsampler_contains_dropout: bool = eqx.field(static=True)
 
     posemb: eqx.Module
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     downsample: eqx.Module
     qa_proj: eqx.Module
     qa_drop: eqx.Module
@@ -247,7 +247,7 @@ class PartialFormer(eqx.Module):
     qa_token: jnp.ndarray
     patch_embed: Stem
     pos_drop: eqx.nn.Dropout
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     norm: eqx.Module
     head: eqx.Module
 

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -43,7 +43,7 @@ class Vssd(eqx.Module):
 
     patch_embed: eqx.Module
     pos_drop: eqx.Module
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     head: eqx.Module
 
     def __init__(
@@ -60,12 +60,12 @@ class Vssd(eqx.Module):
         patch_size: int = 4,
         depths: List[int] = [2, 4, 12, 4],
         num_heads: List[int] = [2, 4, 8, 16],
-        attentions_layers: List[eqx.Module] | eqx.Module = [
+        attentions_layers: Tuple[eqx.Module, ...] | eqx.Module = (
             Mamba2Mixer,
             Mamba2Mixer,
             Mamba2Mixer,
             Attention,
-        ],
+        ),
         drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
@@ -118,8 +118,8 @@ class Vssd(eqx.Module):
         )
 
         num_heads = to_list(num_heads, n_chunks)
-        attentions_layers = to_list(attentions_layers, n_chunks)
-        self.blocks = [
+        attentions_layers = tuple(to_list(attentions_layers, n_chunks))
+        self.blocks = tuple(
             BlockChunk(
                 block=MllaBlock,
                 repeat=repeat,
@@ -142,7 +142,7 @@ class Vssd(eqx.Module):
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
-        ]
+        )
 
         self.norm = eqx.nn.LayerNorm(self.num_features)
         self.head = (

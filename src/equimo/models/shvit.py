@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -240,7 +240,7 @@ class SHViT(eqx.Module):
     """
 
     patch_embed: eqx.nn.Sequential
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     head: eqx.Module
 
     def __init__(
@@ -316,7 +316,7 @@ class SHViT(eqx.Module):
         qk_dims = to_list(qk_dim, n_chunks)
         pdims = to_list(pdim, n_chunks)
         block_types = to_list(block_type, n_chunks)
-        self.blocks = [
+        self.blocks = tuple(
             BlockChunk(
                 block=BasicBlock,
                 repeat=repeat,
@@ -334,7 +334,7 @@ class SHViT(eqx.Module):
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
-        ]
+        )
 
         self.norm = eqx.nn.LayerNorm(dims[-1])
         self.head = (

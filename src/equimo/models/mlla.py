@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -38,7 +38,7 @@ class Mlla(eqx.Module):
 
     patch_embed: eqx.Module
     pos_drop: eqx.Module
-    blocks: List[eqx.Module]
+    blocks: Tuple[eqx.Module, ...]
     head: eqx.Module
 
     def __init__(
@@ -52,7 +52,7 @@ class Mlla(eqx.Module):
         patch_size: int = 4,
         depths: List[int] = [2, 2, 6, 2],
         num_heads: List[int] = [3, 6, 12, 24],
-        attentions_layers: List[eqx.Module] | eqx.Module = LinearAttention,
+        attentions_layers: Tuple[eqx.Module, ...] | eqx.Module = LinearAttention,
         drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
@@ -101,8 +101,8 @@ class Mlla(eqx.Module):
         )
 
         num_heads = to_list(num_heads, n_chunks)
-        attentions_layers = to_list(attentions_layers, n_chunks)
-        self.blocks = [
+        attentions_layers = tuple(to_list(attentions_layers, n_chunks))
+        self.blocks = tuple(
             BlockChunk(
                 block=MllaBlock,
                 repeat=repeat,
@@ -124,7 +124,7 @@ class Mlla(eqx.Module):
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
-        ]
+        )
 
         self.norm = eqx.nn.LayerNorm(self.num_features)
         self.head = (
