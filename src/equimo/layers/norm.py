@@ -53,37 +53,51 @@ class RMSNormGated(eqx.Module):
 
 
 class LayerScale(eqx.Module):
-    """Layer scaling module for stabilizing deep networks.
+    """Layer scaling with per-channel learnable scale.
 
-    Implements learnable scaling factors for each feature dimension, initialized
-    to a small value. This helps stabilize training in deep networks by initially
-    dampening the contribution of each layer.
-
-    Attributes:
-        gamma: Learnable scale parameters of size dim
+    Supports inputs with channel-first layout. Set `axis` to the channel
+    dimension (e.g., 0 for (C, H, W), 1 for (N, C, H, W)).
     """
 
-    gamma: Float[Array, "dim"]
+    gamma: Float[Array, "C"]
+    axis: int = eqx.field(static=True)
 
-    def __init__(self, dim: int, init_values: float):
+    def __init__(
+        self, dim: int, init_values: float = 1e-6, axis: int = 0, dtype=jnp.float32
+    ):
         """Initialize LayerScale.
 
         Args:
-            dim: Dimension of the input features
-            init_values: Initial value for all scaling factors
+            dim: Number of channels (size of the channel dimension).
+            init_values: Initial scale value for all channels (typically small, e.g., 1e-6).
+            axis: Index of the channel dimension in the input.
+            dtype: Data type for the scale parameters.
         """
-        self.gamma = jnp.repeat(init_values, dim)
+        self.gamma = jnp.full((dim,), init_values, dtype=dtype)
+        self.axis = axis
 
-    def __call__(self, x: Float[Array, "dim"]):
-        """Apply layer scaling to input tensor.
+    def __call__(self, x: Float[Array, "..."]) -> Float[Array, "..."]:
+        """Apply per-channel scaling.
 
         Args:
-            x: Input tensor of shape (dim,)
+            x: Input tensor. The size along `axis` must equal `dim`.
 
         Returns:
-            Scaled tensor of same shape as input
+            Scaled tensor, same shape as `x`.
         """
-        return x * self.gamma
+        # Validate channel dimension
+        if x.shape[self.axis] != self.gamma.shape[0]:
+            raise ValueError(
+                f"Channel mismatch: x.shape[{self.axis}]={x.shape[self.axis]} "
+                f"but gamma.shape[0]={self.gamma.shape[0]}"
+            )
+
+        # Broadcast gamma across non-channel dimensions
+        shape = [1] * x.ndim
+        shape[self.axis] = self.gamma.shape[0]
+        scale = self.gamma.reshape(shape)
+
+        return x * scale
 
 
 class DyT(eqx.Module):
