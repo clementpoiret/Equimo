@@ -77,8 +77,8 @@ class BlockChunk(eqx.Module):
                             out_channels=out_channels,
                             stride=stride if i == 0 else 1,
                             use_bias=use_bias,
-                            norm_layers=norm_layer,
-                            act_layers=(act_layer, None)
+                            norm_layer=norm_layer,
+                            act_layer=(act_layer, None)
                             if block == DSConv
                             else (act_layer, act_layer, None),
                             **config,
@@ -96,8 +96,8 @@ class BlockChunk(eqx.Module):
                         out_channels,
                         stride=2,  # TODO: make downsampling optional
                         expand_ratio=attention_expand_ratio,
-                        norm_layers=(None, None, norm_layer),
-                        act_layers=(act_layer, act_layer, None),
+                        norm_layer=(None, None, norm_layer),
+                        act_layer=(act_layer, act_layer, None),
                         use_bias=(True, True, False),
                         fuse=fuse_mbconv,
                         key=key,
@@ -115,7 +115,7 @@ class BlockChunk(eqx.Module):
                             act_layer=act_layer,
                             norm_layer=norm_layer,
                             expand_ratio=expand_ratio,
-                            mbconv_norm_layers=(None, None, norm_layer),
+                            mbconv_norm_layer=(None, None, norm_layer),
                             mbconv_act_layers=(act_layer, act_layer, None),
                             fuse_mbconv=fuse_mbconv,
                             key=block_subkeys[i],

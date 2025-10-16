@@ -682,10 +682,10 @@ class MBConv(eqx.Module):
         stride: int = 1,
         use_bias: Tuple[bool, ...] | bool = False,
         expand_ratio: float = 6.0,
-        norm_layers: Tuple[eqx.Module | None, ...]
+        norm_layer: Tuple[eqx.Module | None, ...]
         | eqx.Module
         | None = eqx.nn.GroupNorm,
-        act_layers: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        act_layer: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
         fuse: bool = False,
         fuse_threshold: int = 256,
         fuse_group: bool = False,
@@ -697,23 +697,23 @@ class MBConv(eqx.Module):
     ):
         key_inverted, key_depth, key_point = jr.split(key, 3)
 
-        if not isinstance(norm_layers, Tuple):
-            norm_layers = (norm_layers,) * 3
-        if not isinstance(act_layers, Tuple):
-            act_layers = (act_layers,) * 3
+        if not isinstance(norm_layer, Tuple):
+            norm_layer = (norm_layer,) * 3
+        if not isinstance(act_layer, Tuple):
+            act_layer = (act_layer,) * 3
         if isinstance(use_bias, bool):
             use_bias: Tuple = (use_bias,) * 3
         if len(use_bias) != 3:
             raise ValueError(
                 f"`use_bias` should be a Tuple of length 3, got: {len(use_bias)}"
             )
-        if len(norm_layers) != 3:
+        if len(norm_layer) != 3:
             raise ValueError(
-                f"`norm_layers` should be a Tuple of length 3, got: {len(norm_layers)}"
+                f"`norm_layer` should be a Tuple of length 3, got: {len(norm_layer)}"
             )
-        if len(act_layers) != 3:
+        if len(act_layer) != 3:
             raise ValueError(
-                f"`act_layers` should be a Tuple of length 3, got: {len(act_layers)}"
+                f"`act_layer` should be a Tuple of length 3, got: {len(act_layer)}"
             )
 
         # Ensure shapes are the same between input and output
@@ -732,8 +732,8 @@ class MBConv(eqx.Module):
                 out_channels=mid_channels,
                 kernel_size=1,
                 stride=1,
-                norm_layer=norm_layers[0],
-                act_layer=act_layers[0],
+                norm_layer=norm_layer[0],
+                act_layer=act_layer[0],
                 use_bias=use_bias[0],
                 padding="SAME",
                 key=key_inverted,
@@ -748,8 +748,8 @@ class MBConv(eqx.Module):
                 kernel_size=kernel_size,
                 stride=stride,
                 groups=mid_channels,
-                norm_layer=norm_layers[1],
-                act_layer=act_layers[1],
+                norm_layer=norm_layer[1],
+                act_layer=act_layer[1],
                 use_bias=use_bias[1],
                 padding="SAME",
                 key=key_depth,
@@ -766,8 +766,8 @@ class MBConv(eqx.Module):
                 groups=2
                 if fuse_group and fused_conv_groups == 1
                 else fused_conv_groups,
-                norm_layer=norm_layers[0],
-                act_layer=act_layers[0],
+                norm_layer=norm_layer[0],
+                act_layer=act_layer[0],
                 use_bias=use_bias[0],
                 padding="SAME",
                 key=key_depth,
@@ -780,8 +780,8 @@ class MBConv(eqx.Module):
             out_channels=out_channels,
             kernel_size=1,
             stride=1,
-            norm_layer=norm_layers[2],
-            act_layer=act_layers[2],
+            norm_layer=norm_layer[2],
+            act_layer=act_layer[2],
             use_bias=use_bias[2],
             padding="SAME",
             dropout=dropout,
@@ -827,10 +827,10 @@ class DSConv(eqx.Module):
         kernel_size: int = 3,
         stride: int = 1,
         use_bias: Tuple[bool, ...] | bool = False,
-        norm_layers: Tuple[eqx.Module | None, ...]
+        norm_layer: Tuple[eqx.Module | None, ...]
         | eqx.Module
         | None = eqx.nn.GroupNorm,
-        act_layers: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        act_layer: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
         residual: bool = False,
         dropout: float = 0.0,
         drop_path: float = 0.0,
@@ -838,23 +838,23 @@ class DSConv(eqx.Module):
     ):
         key_depth, key_point = jr.split(key, 2)
 
-        if not isinstance(norm_layers, Tuple):
-            norm_layers = (norm_layers,) * 2
-        if not isinstance(act_layers, Tuple):
-            act_layers = (act_layers,) * 2
+        if not isinstance(norm_layer, Tuple):
+            norm_layer = (norm_layer,) * 2
+        if not isinstance(act_layer, Tuple):
+            act_layer = (act_layer,) * 2
         if isinstance(use_bias, bool):
             use_bias: Tuple = (use_bias,) * 2
         if len(use_bias) != 2:
             raise ValueError(
                 f"`use_bias` should be a Tuple of length 2, got: {len(use_bias)}"
             )
-        if len(norm_layers) != 2:
+        if len(norm_layer) != 2:
             raise ValueError(
-                f"`norm_layers` should be a Tuple of length 2, got: {len(norm_layers)}"
+                f"`norm_layer` should be a Tuple of length 2, got: {len(norm_layer)}"
             )
-        if len(act_layers) != 2:
+        if len(act_layer) != 2:
             raise ValueError(
-                f"`act_layers` should be a Tuple of length 2, got: {len(act_layers)}"
+                f"`act_layer` should be a Tuple of length 2, got: {len(act_layer)}"
             )
 
         # Ensure shapes are the same between input and output
@@ -866,8 +866,8 @@ class DSConv(eqx.Module):
             kernel_size=kernel_size,
             stride=stride,
             groups=in_channels,
-            norm_layer=norm_layers[0],
-            act_layer=act_layers[0],
+            norm_layer=norm_layer[0],
+            act_layer=act_layer[0],
             use_bias=use_bias[0],
             padding="SAME",
             key=key_depth,
@@ -877,8 +877,8 @@ class DSConv(eqx.Module):
             out_channels=out_channels,
             kernel_size=1,
             stride=1,
-            norm_layer=norm_layers[1],
-            act_layer=act_layers[1],
+            norm_layer=norm_layer[1],
+            act_layer=act_layer[1],
             use_bias=use_bias[1],
             padding="SAME",
             key=key_point,
