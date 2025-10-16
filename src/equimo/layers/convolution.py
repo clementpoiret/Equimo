@@ -2315,3 +2315,307 @@ class ATConvBlock(eqx.Module):
         )
 
         return x
+
+
+class S2Mixer(eqx.Module):
+    """
+    Sparse Sampling Mixer (S2-Mixer) from FreeNet.
+
+    It samples multiple segments of partially continuous signals across spatial
+    and channel dimensions for convolutional processing using Sparse-wise
+    Convolutions (SWConv). It splits the input channels into mixed branches
+    and an identity branch. The mixed branches use dilated convolutions to
+    capture long-range dependencies efficiently.
+
+    Attributes:
+        mix_convs: Tuple of convolutional blocks for the mixing branches.
+        split_indices: Indices used to split the input tensor along the channel dimension.
+    """
+
+    mix_convs: Tuple[eqx.nn.Conv2d, ...]
+    split_indices: list[int] = eqx.field(static=True)
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        key: PRNGKeyArray,
+        sampling_ratio: float = 0.125,
+        kernel_sizes: Sequence[int] = [5, 7],
+        dilations: Sequence[int] = [2, 2],
+    ):
+        """
+        Args:
+            dim: Input channel dimension.
+            sampling_ratio: Ratio of channels used for each mixing branch.
+            kernel_sizes: Kernel sizes for the SWConvs (default: [5, 7]).
+            dilations: Dilation rates for the SWConvs (default: [2, 2]).
+        """
+        mix_dim = int(dim * sampling_ratio)
+        num_branches = len(kernel_sizes)
+
+        # Calculate split indices: [mix_dim, mix_dim*2, ...]
+        # The remainder will be the identity branch.
+        self.split_indices = [mix_dim * (i + 1) for i in range(num_branches)]
+
+        if self.split_indices[-1] > dim:
+            raise ValueError(
+                "Sampling ratio and number of branches exceed total channels."
+            )
+
+        keys = jr.split(key, num_branches)
+        mix_convs = []
+
+        for i, (k, d) in enumerate(zip(kernel_sizes, dilations)):
+            mix_convs.append(
+                eqx.nn.Conv2d(
+                    mix_dim,
+                    mix_dim,
+                    kernel_size=k,
+                    stride=1,
+                    dilation=d,
+                    padding="SAME",
+                    groups=mix_dim,
+                    use_bias=False,
+                    key=keys[i],
+                )
+            )
+        self.mix_convs = tuple(mix_convs)
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        # Split channels: [branch1_in, branch2_in, ..., identity_in]
+        splits = jnp.split(x, self.split_indices, axis=0)
+
+        outs = [conv(splits[i]) for i, conv in enumerate(self.mix_convs)]
+        # remaining identity channels
+        outs.append(splits[-1])
+
+        return jnp.concatenate(outs, axis=0)
+
+
+class ShiftNeck(eqx.Module):
+    """
+    ShiftNeck of the FreeNet model.
+
+    It takes an input tensor (channels=dim), generates a global bias
+    using a bottleneck MLP (reduction ratio 8), and adds this bias
+    to the original input.
+
+    Architecture:
+    Input -> GAP -> Reduce(1/8) -> Act -> Expand(8) -> Broadcast -> Add -> Output
+    """
+
+    reduce: eqx.nn.Conv2d
+    expand: eqx.nn.Conv2d
+    act: Callable
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        key: PRNGKeyArray,
+        reduction_ratio: int = 8,
+        act_layer: Callable = jax.nn.relu,
+    ):
+        """
+        Args:
+            dim: Input channel dimension (usually 2c in ShiftFFN).
+            reduction_ratio: Reduction factor for the bottleneck (default 8).
+        """
+        key_r, key_e = jr.split(key, 2)
+
+        hidden_dim = max(1, dim // reduction_ratio)
+
+        self.reduce = eqx.nn.Conv2d(
+            in_channels=dim,
+            out_channels=hidden_dim,
+            kernel_size=1,
+            use_bias=True,
+            key=key_r,
+        )
+
+        self.act = act_layer
+
+        self.expand = eqx.nn.Conv2d(
+            in_channels=hidden_dim,
+            out_channels=dim,
+            kernel_size=1,
+            use_bias=True,
+            key=key_e,
+        )
+
+    def __call__(self, x: Float[Array, "c h w"]) -> Float[Array, "c h w"]:
+        gap = jnp.mean(x, axis=(1, 2), keepdims=True)
+
+        bias = self.reduce(gap)
+        bias = self.act(bias)
+        bias = self.expand(bias)
+
+        return x + bias
+
+
+class ShiftFFN(eqx.Module):
+    """
+    Shift Feed-Forward Network (ShiftFFN) matching Diagram (d).
+
+    Flow:
+    1. Proj 2x: c -> 2c
+    2. Split:
+       - Branch A: Identity (2c)
+       - Branch B: ShiftNeck (2c -> 2c biased)
+    3. Concat: A + B -> 4c
+    4. Act
+    5. Proj 1/4x: 4c -> c
+    """
+
+    conv1: eqx.nn.Conv2d
+    shift_neck: ShiftNeck
+    conv2: eqx.nn.Conv2d
+    act: Callable
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        key: PRNGKeyArray,
+        expansion_ratio_first: int = 2,
+        neck_reduction_ratio: int = 8,
+        act_layer: Callable = jax.nn.gelu,
+    ):
+        key_c1, key_sn, key_c2 = jr.split(key, 3)
+
+        mid_channels = in_channels * expansion_ratio_first
+
+        self.conv1 = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=mid_channels,
+            kernel_size=1,
+            use_bias=True,
+            key=key_c1,
+        )
+
+        self.shift_neck = ShiftNeck(
+            dim=mid_channels,
+            reduction_ratio=neck_reduction_ratio,
+            act_layer=act_layer,
+            key=key_sn,
+        )
+
+        self.act = act_layer
+
+        self.conv2 = eqx.nn.Conv2d(
+            in_channels=mid_channels * 2,
+            out_channels=in_channels,
+            kernel_size=1,
+            use_bias=True,
+            key=key_c2,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        x_expanded = self.conv1(x)
+        x_biased = self.shift_neck(x_expanded)
+
+        x_cat = jnp.concatenate([x_expanded, x_biased], axis=0)
+        x_cat = self.act(x_cat)
+
+        x_out = self.conv2(x_cat)
+
+        return x_out
+
+
+class FreeNetBlock(eqx.Module):
+    """
+    FreeNet Block combining S2-Mixer and ShiftFFN.
+
+    Structure:
+    Input -> [S2-Mixer] -> [Norm] -> [ShiftFFN] -> Output
+
+    The authors explicitly mention eliminating the residual branch between
+    the token mixer and channel mixer to form a single shortcut branch.
+    Thus, the residual connection wraps the entire sequence.
+
+    Reference:
+        [1.] Yu, Hao, Haoyu Chen, Wei Peng, Xu Cheng, and Guoying Zhao. 2025.
+          “FreeNet: Liberating Depth-Wise Separable Operations for Building
+          Faster Mobile Vision Architectures.” in AAAI conference on artificial
+          intelligence (AAAI).
+    """
+
+    residual: bool = eqx.field(static=True)
+
+    mixer: S2Mixer
+    norm: eqx.Module
+    ffn: ShiftFFN
+    drop_path: DropPathAdd
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        key: PRNGKeyArray,
+        mixer_ratio: float = 0.125,
+        mixer_kernel_sizes: Sequence[int] = [5, 7],
+        mixer_dilations: Sequence[int] = [2, 2],
+        ffn_expansion: int = 2,
+        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        norm_kwargs: dict = {},
+        drop_path: float = 0.0,
+        act_layer: Callable = jax.nn.gelu,
+        residual: bool = True,
+    ):
+        key_mix, key_ffn = jr.split(key, 2)
+        self.residual = residual
+
+        self.mixer = S2Mixer(
+            dim=dim,
+            sampling_ratio=mixer_ratio,
+            kernel_sizes=mixer_kernel_sizes,
+            dilations=mixer_dilations,
+            key=key_mix,
+        )
+
+        if norm_layer == eqx.nn.GroupNorm:
+            num_groups = nearest_power_of_2_divisor(dim, 32)
+            self.norm = eqx.nn.GroupNorm(num_groups, dim, **norm_kwargs)
+        elif norm_layer is not None:
+            self.norm = norm_layer(dim, **norm_kwargs)
+        else:
+            self.norm = eqx.nn.Identity()
+
+        self.ffn = ShiftFFN(
+            in_channels=dim,
+            expansion_ratio_first=ffn_expansion,
+            act_layer=act_layer,
+            key=key_ffn,
+        )
+
+        self.drop_path = DropPathAdd(drop_path)
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        key_mix, key_ffn, key_dp = jr.split(key, 3)
+
+        out = self.ffn(
+            self.norm(self.mixer(x, key=key_mix, inference=inference)),
+            inference=inference,
+            key=key_ffn,
+        )
+
+        if self.residual:
+            out = self.drop_path(x, out, inference=inference, key=key_dp)
+
+        return out
