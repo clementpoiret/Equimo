@@ -2224,3 +2224,92 @@ class ATConv(eqx.Module):
         x = self.proj(x)
 
         return x
+
+
+class ATConvBlock(eqx.Module):
+    token_mixer: ATConv
+    channel_mixer: GLUConv
+    ls1: LayerScale | eqx.nn.Identity
+    ls2: LayerScale | eqx.nn.Identity
+    norm1: eqx.nn.LayerNorm
+    norm2: eqx.nn.LayerNorm
+    drop_path1: DropPathAdd
+    drop_path2: DropPathAdd
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        kernel_size: int = 3,
+        exp_rate: float = 4.0,
+        act_layer: Callable = jax.nn.gelu,
+        glu_norm: bool = True,
+        glu_dwconv: bool = False,
+        use_bias: bool = True,
+        dropout: float = 0.0,
+        drop_path: float | Tuple[float, float] = 0.0,
+        use_layer_scale: bool = True,
+        key: PRNGKeyArray,
+    ):
+        key_tm, key_cm = jr.split(key, 2)
+
+        hidden_features = int(in_channels * exp_rate)
+        # NOTE: slightly different from the original paper
+        glu_hidden_features = 32 * round(int(2 * hidden_features / 3) / 32)
+
+        self.token_mixer = ATConv(
+            in_channels,
+            kernel_size=kernel_size,
+            act_layer=act_layer,
+            use_bias=use_bias,
+            key=key_tm,
+        )
+        self.channel_mixer = GLUConv(
+            in_channels,
+            hidden_channels=glu_hidden_features,
+            glu_norm=glu_norm,
+            glu_dwconv=glu_dwconv,
+            act_layer=act_layer,
+            dropout=dropout,
+            key=key_cm,
+        )
+
+        self.ls1 = LayerScale(in_channels) if use_layer_scale else eqx.nn.Identity()
+        self.ls2 = LayerScale(in_channels) if use_layer_scale else eqx.nn.Identity()
+
+        self.norm1 = eqx.nn.LayerNorm(in_channels)
+        self.norm2 = eqx.nn.LayerNorm(in_channels)
+
+        dpr = drop_path[0] if isinstance(drop_path, list) else float(drop_path)
+        self.drop_path1 = DropPathAdd(dpr)
+        self.drop_path2 = DropPathAdd(dpr)
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        key_tm, key_cm, key_dr1, key_dr2 = jr.split(key, 4)
+
+        norm1 = jax.vmap(
+            jax.vmap(self.norm1, in_axes=1, out_axes=1), in_axes=1, out_axes=1
+        )
+        norm2 = jax.vmap(
+            jax.vmap(self.norm2, in_axes=1, out_axes=1), in_axes=1, out_axes=1
+        )
+
+        x = self.drop_path1(
+            x,
+            self.ls1(self.token_mixer(norm1(x), inference=inference, key=key_tm)),
+            inference=inference,
+            key=key_dr1,
+        )
+        x = self.drop_path2(
+            x,
+            self.ls2(self.channel_mixer(norm2(x), inference=inference, key=key_cm)),
+            inference=inference,
+            key=key_dr2,
+        )
+
+        return x
