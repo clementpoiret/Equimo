@@ -346,50 +346,47 @@ class SEPatchMerging(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
-        out_dim: int,
+        in_channels: int,
+        out_channels: int,
         *,
         key: PRNGKeyArray,
         norm_max_group: int = 32,
         **kwargs,
     ):
         key_conv1, key_conv2, key_conv3, key_se = jr.split(key, 4)
-        hidden_dim = int(dim * 4)
-        num_groups = nearest_power_of_2_divisor(hidden_dim, norm_max_group)
+        hidden_in_channels = int(in_channels * 4)
+        num_groups = nearest_power_of_2_divisor(hidden_in_channels, norm_max_group)
 
-        self.conv1 = eqx.nn.Conv(
-            num_spatial_dims=2,
-            in_channels=dim,
-            out_channels=hidden_dim,
+        self.conv1 = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=hidden_in_channels,
             kernel_size=1,
             stride=1,
             padding=0,
             key=key_conv1,
         )
-        self.norm1 = eqx.nn.GroupNorm(num_groups, hidden_dim)
-        self.conv2 = eqx.nn.Conv(
-            num_spatial_dims=2,
-            in_channels=hidden_dim,
-            out_channels=hidden_dim,
+        self.norm1 = eqx.nn.GroupNorm(num_groups, hidden_in_channels)
+        self.conv2 = eqx.nn.Conv2d(
+            in_channels=hidden_in_channels,
+            out_channels=hidden_in_channels,
             kernel_size=3,
             stride=2,
             padding=1,
             key=key_conv2,
         )
-        self.norm2 = eqx.nn.GroupNorm(num_groups, hidden_dim)
-        self.se = SEModule(hidden_dim, rd_ratio=1.0 / 4, key=key_se)
-        self.conv3 = eqx.nn.Conv(
-            num_spatial_dims=2,
-            in_channels=hidden_dim,
-            out_channels=out_dim,
+        self.norm2 = eqx.nn.GroupNorm(num_groups, hidden_in_channels)
+        self.se = SEModule(hidden_in_channels, rd_ratio=1.0 / 4, key=key_se)
+        self.conv3 = eqx.nn.Conv2d(
+            in_channels=hidden_in_channels,
+            out_channels=out_channels,
             kernel_size=1,
             stride=1,
             padding=0,
             key=key_conv3,
         )
         self.norm3 = eqx.nn.GroupNorm(
-            nearest_power_of_2_divisor(out_dim, norm_max_group),
-            out_dim,
+            nearest_power_of_2_divisor(out_channels, norm_max_group),
+            out_channels,
         )
 
     def __call__(self, x: Float[Array, "channels height width"]) -> Float[Array, "..."]:

@@ -50,7 +50,7 @@ class ConvBlock(eqx.Module):
         kernel_size: int = 3,
         stride: int = 1,
         padding: int = 1,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: Callable | None = jax.nn.gelu,
         norm_max_group: int = 32,
         drop_path: float = 0.0,
         init_values: float | None = None,
@@ -87,7 +87,7 @@ class ConvBlock(eqx.Module):
             key=key_conv1,
         )
         self.norm1 = eqx.nn.GroupNorm(num_groups1, hidden_dim)
-        self.act = act_layer
+        self.act = act_layer if act_layer is not None else eqx.nn.Identity()
         self.conv2 = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=hidden_dim,
