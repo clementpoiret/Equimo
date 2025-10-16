@@ -79,7 +79,7 @@ class HWDConv(eqx.Module):
         stride: int = 1,
         padding: str | int = "SAME",
         use_bias: bool = False,
-        act: Callable = jax.nn.relu,
+        act_layer: Callable = jax.nn.relu,
         mode: Literal["h_discard", "band_grouped", "accurate"] = "accurate",
         dropout: float = 0.0,
         key: PRNGKeyArray,
@@ -118,7 +118,7 @@ class HWDConv(eqx.Module):
             key=key,
         )
 
-        self.act = act
+        self.act = act_layer
 
         self.dropout = eqx.nn.Dropout(dropout)
 
