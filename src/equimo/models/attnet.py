@@ -8,73 +8,13 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.activation import get_act
 from equimo.layers.convolution import ATConvBlock
+from equimo.layers.downsample import ConvNormDownsampler
 from equimo.layers.norm import get_norm
-from equimo.utils import nearest_power_of_2_divisor
-
-
-class Downsampler(eqx.Module):
-    downsampler: eqx.nn.Sequential
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        *,
-        act_layer: Callable = jax.nn.gelu,
-        mode: Literal["double", "simple"] = "simple",
-        key: PRNGKeyArray,
-    ):
-        match mode:
-            case "simple":
-                self.downsampler = eqx.nn.Sequential(
-                    [
-                        eqx.nn.Conv2d(
-                            in_channels=in_channels,
-                            out_channels=out_channels,
-                            kernel_size=3,
-                            stride=2,
-                            padding=1,
-                            key=key,
-                        ),
-                        eqx.nn.GroupNorm(
-                            nearest_power_of_2_divisor(out_channels, 32), out_channels
-                        ),
-                    ]
-                )
-            case "double":
-                self.downsampler = eqx.nn.Sequential(
-                    [
-                        eqx.nn.Conv2d(
-                            in_channels=in_channels,
-                            out_channels=(_d := out_channels // 2),
-                            kernel_size=3,
-                            stride=2,
-                            padding=1,
-                            key=jr.fold_in(key, 0),
-                        ),
-                        eqx.nn.GroupNorm(nearest_power_of_2_divisor(_d, 32), _d),
-                        eqx.nn.Lambda(act_layer),
-                        eqx.nn.Conv2d(
-                            in_channels=_d,
-                            out_channels=out_channels,
-                            kernel_size=3,
-                            stride=2,
-                            padding=1,
-                            key=jr.fold_in(key, 1),
-                        ),
-                        eqx.nn.GroupNorm(
-                            nearest_power_of_2_divisor(out_channels, 32), out_channels
-                        ),
-                    ]
-                )
-
-    def __call__(self, x):
-        return self.downsampler(x)
 
 
 class BlockChunk(eqx.Module):
     blocks: Tuple[ATConvBlock, ...]
-    downsample: Downsampler
+    downsample: ConvNormDownsampler
 
     def __init__(
         self,
@@ -91,7 +31,7 @@ class BlockChunk(eqx.Module):
         ]
         out_channels = kwargs["in_channels"]
 
-        self.downsample = Downsampler(
+        self.downsample = ConvNormDownsampler(
             dim, out_channels, mode=downsampler_mode, key=key_ds
         )
 
@@ -174,7 +114,7 @@ class AttNet(eqx.Module):
                     use_bias=conv_bias,
                     dropout=dropout,
                     drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
-                    use_layer_scale=True,
+                    use_layer_scale=use_layer_scale,
                     key=_k,
                 )
             )
@@ -211,3 +151,93 @@ class AttNet(eqx.Module):
         x = self.head(x)
 
         return x
+
+
+def attnet_xxs(**kwargs) -> AttNet:
+    return AttNet(
+        depths=[2, 2, 4, 2],
+        dims=[32, 64, 128, 240],
+        exp_rates=[8, 8, 4, 4],
+        glu_dwconv=[True, True, True, True],
+        glu_norm=[False, False, False, False],
+        kernel_sizes=[3, 3, 3, 3],
+        drop_path_rate=0.02,
+        use_layer_scale=False,
+        **kwargs,
+    )
+
+
+def attnet_xs(**kwargs) -> AttNet:
+    return AttNet(
+        depths=[2, 2, 7, 2],
+        dims=[40, 80, 160, 320],
+        exp_rates=[8, 8, 4, 4],
+        glu_dwconv=[True, True, True, True],
+        glu_norm=[False, False, False, False],
+        kernel_sizes=[3, 3, 3, 3],
+        drop_path_rate=0.02,
+        use_layer_scale=True,
+        **kwargs,
+    )
+
+
+def attnet_s(**kwargs) -> AttNet:
+    return AttNet(
+        depths=[2, 3, 10, 3],
+        dims=[40, 80, 160, 320],
+        exp_rates=[8, 8, 4, 4],
+        glu_dwconv=[True, True, True, True],
+        glu_norm=[False, False, False, False],
+        kernel_sizes=[3, 3, 3, 3],
+        drop_path_rate=0.1,
+        use_layer_scale=False,
+        **kwargs,
+    )
+
+
+def attnet_t1(**kwargs) -> AttNet:
+    return AttNet(
+        depths=[2, 3, 12, 3],
+        dims=[48, 96, 224, 384],
+        exp_rates=[8, 8, 4, 4],
+        glu_dwconv=[True, True, True, True],
+        kernel_sizes=[3, 3, 3, 3],
+        drop_path_rate=0.1,
+        **kwargs,
+    )
+
+
+def attnet_t2(**kwargs) -> AttNet:
+    return AttNet(
+        depths=[3, 3, 16, 3],
+        dims=[64, 128, 288, 512],
+        exp_rates=[8, 8, 4, 4],
+        glu_dwconv=[True, True, True, True],
+        kernel_sizes=[3, 3, 3, 3],
+        drop_path_rate=0.2,
+        **kwargs,
+    )
+
+
+def attnet_t3(**kwargs) -> AttNet:
+    return AttNet(
+        depths=[4, 4, 26, 4],
+        dims=[72, 144, 320, 576],
+        exp_rates=[8, 8, 4, 4],
+        glu_dwconv=[True, True, True, True],
+        kernel_sizes=[3, 3, 3, 3],
+        drop_path_rate=0.4,
+        **kwargs,
+    )
+
+
+def attnet_t4(**kwargs) -> AttNet:
+    return AttNet(
+        depths=[5, 5, 28, 5],
+        dims=[96, 192, 384, 768],
+        exp_rates=[8, 8, 4, 4],
+        glu_dwconv=[True, True, True, True],
+        kernel_sizes=[3, 3, 3, 3],
+        drop_path_rate=0.5,
+        **kwargs,
+    )

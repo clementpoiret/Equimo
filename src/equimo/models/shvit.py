@@ -9,125 +9,10 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.attention import SHSA
 from equimo.layers.convolution import ConvBlock, SingleConvBlock
+from equimo.layers.downsample import PWSEDownsampler
 from equimo.layers.generic import Residual
-from equimo.layers.patch import SEPatchMerging
 from equimo.models.vit import BlockChunk
 from equimo.utils import nearest_power_of_2_divisor, to_list
-
-
-class Downsampler(eqx.Module):
-    """Downsampling module for spatial feature reduction.
-
-    Combines convolution blocks and patch merging to reduce spatial dimensions
-    while increasing feature channels. Uses residual connections and alternates
-    between depthwise and pointwise convolutions.
-
-    Attributes:
-        conv1: First depthwise convolution with residual
-        conv2: First pointwise convolution block
-        conv3: Second depthwise convolution with residual
-        conv4: Second pointwise convolution block
-        patch_merging: Squeeze-and-excitation patch merging layer
-    """
-
-    conv1: eqx.Module
-    conv2: eqx.Module
-    conv3: eqx.Module
-    conv4: eqx.Module
-    patch_merging: eqx.Module
-
-    def __init__(
-        self,
-        dim: int,
-        out_dim: int,
-        *,
-        key: PRNGKeyArray,
-        drop_path: float = 0.0,
-        **kwargs,
-    ):
-        key_conv1, key_conv2, key_conv3, key_conv4, key_pm = jr.split(key, 5)
-        self.conv1 = Residual(
-            SingleConvBlock(
-                dim,
-                dim,
-                act_layer=lambda x: x,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                groups=dim,
-                key=key_conv1,
-            ),
-            drop_path=drop_path,
-        )
-        self.conv2 = ConvBlock(
-            dim,
-            hidden_dim=dim * 2,
-            act_layer=lambda x: x,
-            drop_path=drop_path,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            key=key_conv2,
-        )
-        self.patch_merging = SEPatchMerging(
-            dim=dim,
-            out_dim=out_dim,
-            key=key_pm,
-        )
-        self.conv3 = Residual(
-            SingleConvBlock(
-                out_dim,
-                out_dim,
-                act_layer=lambda x: x,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                groups=out_dim,
-                key=key_conv3,
-            ),
-            drop_path=drop_path,
-        )
-        self.conv4 = ConvBlock(
-            out_dim,
-            hidden_dim=out_dim * 2,
-            act_layer=lambda x: x,
-            drop_path=drop_path,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            key=key_conv4,
-        )
-
-    def __call__(
-        self,
-        x: Float[Array, "seqlen dim"],
-        key: PRNGKeyArray,
-        inference: Optional[bool] = None,
-    ) -> Float[Array, "seqlen dim"]:
-        """Apply downsampling to input features.
-
-        Args:
-            x: Input feature tensor
-            inference: Whether to enable dropout during inference
-            key: PRNG key for random operations
-
-        Returns:
-            Downsampled feature tensor with increased channels
-        """
-        key_conv1, key_conv2, key_conv3, key_conv4 = jr.split(key, 4)
-        x = self.conv2(
-            self.conv1(x, inference=inference, key=key_conv1),
-            inference=inference,
-            key=key_conv2,
-        )
-        x = self.patch_merging(x)
-        x = self.conv4(
-            self.conv3(x, inference=inference, key=key_conv3),
-            inference=inference,
-            key=key_conv4,
-        )
-
-        return x
 
 
 class BasicBlock(eqx.Module):
@@ -321,7 +206,7 @@ class SHViT(eqx.Module):
                 block=BasicBlock,
                 repeat=repeat,
                 depth=depth,
-                downsampler=Downsampler if i < len(depths) - 1 else eqx.nn.Identity,
+                downsampler=PWSEDownsampler if i < len(depths) - 1 else eqx.nn.Identity,
                 downsampler_contains_dropout=i < len(depths) - 1,
                 downsampler_kwargs=(
                     {"out_dim": dims[i + 1]} if i < len(depths) - 1 else {}

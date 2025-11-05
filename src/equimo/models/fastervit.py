@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.attention import HATBlock, WindowedAttention
 from equimo.layers.convolution import ConvBlock
-from equimo.layers.downsample import Downsampler
+from equimo.layers.downsample import ConvNormDownsampler
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import ConvPatchEmbed
 from equimo.layers.sharing import LayerSharing
@@ -170,7 +170,7 @@ class BlockChunk(eqx.Module):
         key: PRNGKeyArray,
         block: eqx.Module = HATBlock,
         repeat: int = 1,
-        downsampler: eqx.Module = Downsampler,
+        downsampler: eqx.Module = ConvNormDownsampler,
         downsampler_contains_dropout: bool = False,
         only_local: bool = False,
         hierarchy: bool = True,
@@ -220,7 +220,9 @@ class BlockChunk(eqx.Module):
             )
         self.blocks = tuple(blocks)
 
-        self.downsample = downsampler(dim=kwargs.get("dim"), key=key_ds)
+        self.downsample = downsampler(
+            in_channels=kwargs.get("dim"), use_norm=False, key=key_ds
+        )
 
         if (
             len(self.blocks)
@@ -422,7 +424,9 @@ class FasterViT(eqx.Module):
                 ffn_bias=ffn_bias,
                 norm_layer=norm_layer,
                 init_values=None if i < 2 and not ls_convblock else init_values,
-                downsampler=Downsampler if i < len(depths) - 1 else eqx.nn.Identity,
+                downsampler=ConvNormDownsampler
+                if i < len(depths) - 1
+                else eqx.nn.Identity,
                 only_local=not hat[i],
                 do_propagation=do_propagation,
                 key=block_subkeys[i],
