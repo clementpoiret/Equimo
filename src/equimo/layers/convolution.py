@@ -2286,7 +2286,7 @@ class ATConvBlock(eqx.Module):
             dr1 = float(dr1)
             dr2 = float(dr2)
         else:
-            dr1 = dr2 = float(drop_path)
+            dr1 = dr2 = jnp.array(drop_path, float)
 
         self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
