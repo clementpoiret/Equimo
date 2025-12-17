@@ -2219,6 +2219,8 @@ class ATConv(eqx.Module):
 
 
 class ATConvBlock(eqx.Module):
+    residual: bool = eqx.field(static=True)
+
     token_mixer: ATConv
     channel_mixer: GLUConv
     ls1: LayerScale | eqx.nn.Identity
@@ -2241,9 +2243,12 @@ class ATConvBlock(eqx.Module):
         dropout: float = 0.0,
         drop_path: float | list[float] = 0.0,
         use_layer_scale: bool = True,
+        residual: bool = True,
         key: PRNGKeyArray,
+        **kwargs,
     ):
         key_tm, key_cm = jr.split(key, 2)
+        self.residual = residual
 
         hidden_features = int(in_channels * exp_rate)
         # NOTE: slightly different from the original paper
@@ -2301,18 +2306,22 @@ class ATConvBlock(eqx.Module):
             jax.vmap(self.norm2, in_axes=1, out_axes=1), in_axes=1, out_axes=1
         )
 
-        x = self.drop_path1(
-            x,
-            self.ls1(self.token_mixer(norm1(x), inference=inference, key=key_tm)),
-            inference=inference,
-            key=key_dr1,
-        )
-        x = self.drop_path2(
-            x,
-            self.ls2(self.channel_mixer(norm2(x), inference=inference, key=key_cm)),
-            inference=inference,
-            key=key_dr2,
-        )
+        x1 = self.ls1(self.token_mixer(norm1(x), inference=inference, key=key_tm))
+        if self.residual:
+            x1 = self.drop_path1(
+                x,
+                x1,
+                inference=inference,
+                key=key_dr1,
+            )
+        x2 = self.ls2(self.channel_mixer(norm2(x), inference=inference, key=key_cm))
+        if self.residual:
+            x2 = self.drop_path2(
+                x1,
+                x2,
+                inference=inference,
+                key=key_dr2,
+            )
 
         return x
 
