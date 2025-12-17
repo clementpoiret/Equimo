@@ -2337,7 +2337,7 @@ class S2Mixer(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        in_channels: int,
         *,
         key: PRNGKeyArray,
         sampling_ratio: float = 0.125,
@@ -2346,19 +2346,19 @@ class S2Mixer(eqx.Module):
     ):
         """
         Args:
-            dim: Input channel dimension.
+            in_channels: Input channel dimension.
             sampling_ratio: Ratio of channels used for each mixing branch.
             kernel_sizes: Kernel sizes for the SWConvs (default: [5, 7]).
             dilations: Dilation rates for the SWConvs (default: [2, 2]).
         """
-        mix_dim = int(dim * sampling_ratio)
+        mix_channels = int(in_channels * sampling_ratio)
         num_branches = len(kernel_sizes)
 
         # Calculate split indices: [mix_dim, mix_dim*2, ...]
         # The remainder will be the identity branch.
-        self.split_indices = [mix_dim * (i + 1) for i in range(num_branches)]
+        self.split_indices = [mix_channels * (i + 1) for i in range(num_branches)]
 
-        if self.split_indices[-1] > dim:
+        if self.split_indices[-1] > in_channels:
             raise ValueError(
                 "Sampling ratio and number of branches exceed total channels."
             )
@@ -2369,13 +2369,13 @@ class S2Mixer(eqx.Module):
         for i, (k, d) in enumerate(zip(kernel_sizes, dilations)):
             mix_convs.append(
                 eqx.nn.Conv2d(
-                    mix_dim,
-                    mix_dim,
+                    mix_channels,
+                    mix_channels,
                     kernel_size=k,
                     stride=1,
                     dilation=d,
                     padding="SAME",
-                    groups=mix_dim,
+                    groups=mix_channels,
                     use_bias=False,
                     key=keys[i],
                 )
@@ -2402,7 +2402,7 @@ class ShiftNeck(eqx.Module):
     """
     ShiftNeck of the FreeNet model.
 
-    It takes an input tensor (channels=dim), generates a global bias
+    It takes an input tensor, generates a global bias
     using a bottleneck MLP (reduction ratio 8), and adds this bias
     to the original input.
 
@@ -2416,7 +2416,7 @@ class ShiftNeck(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        in_channels: int,
         *,
         key: PRNGKeyArray,
         reduction_ratio: int = 8,
@@ -2424,16 +2424,16 @@ class ShiftNeck(eqx.Module):
     ):
         """
         Args:
-            dim: Input channel dimension (usually 2c in ShiftFFN).
+            in_channels: Input channel dimension (usually 2c in ShiftFFN).
             reduction_ratio: Reduction factor for the bottleneck (default 8).
         """
         key_r, key_e = jr.split(key, 2)
 
-        hidden_dim = max(1, dim // reduction_ratio)
+        hidden_channels = max(1, in_channels // reduction_ratio)
 
         self.reduce = eqx.nn.Conv2d(
-            in_channels=dim,
-            out_channels=hidden_dim,
+            in_channels=in_channels,
+            out_channels=hidden_channels,
             kernel_size=1,
             use_bias=True,
             key=key_r,
@@ -2442,8 +2442,8 @@ class ShiftNeck(eqx.Module):
         self.act = act_layer
 
         self.expand = eqx.nn.Conv2d(
-            in_channels=hidden_dim,
-            out_channels=dim,
+            in_channels=hidden_channels,
+            out_channels=in_channels,
             kernel_size=1,
             use_bias=True,
             key=key_e,
@@ -2500,7 +2500,7 @@ class ShiftFFN(eqx.Module):
         )
 
         self.shift_neck = ShiftNeck(
-            dim=mid_channels,
+            in_channels=mid_channels,
             reduction_ratio=neck_reduction_ratio,
             act_layer=act_layer,
             key=key_sn,
@@ -2560,7 +2560,7 @@ class FreeNetBlock(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        in_channels: int,
         *,
         key: PRNGKeyArray,
         mixer_ratio: float = 0.125,
@@ -2577,7 +2577,7 @@ class FreeNetBlock(eqx.Module):
         self.residual = residual
 
         self.mixer = S2Mixer(
-            dim=dim,
+            in_channels=in_channels,
             sampling_ratio=mixer_ratio,
             kernel_sizes=mixer_kernel_sizes,
             dilations=mixer_dilations,
@@ -2585,15 +2585,15 @@ class FreeNetBlock(eqx.Module):
         )
 
         if norm_layer == eqx.nn.GroupNorm:
-            num_groups = nearest_power_of_2_divisor(dim, 32)
-            self.norm = eqx.nn.GroupNorm(num_groups, dim, **norm_kwargs)
+            num_groups = nearest_power_of_2_divisor(in_channels, 32)
+            self.norm = eqx.nn.GroupNorm(num_groups, in_channels, **norm_kwargs)
         elif norm_layer is not None:
-            self.norm = norm_layer(dim, **norm_kwargs)
+            self.norm = norm_layer(in_channels, **norm_kwargs)
         else:
             self.norm = eqx.nn.Identity()
 
         self.ffn = ShiftFFN(
-            in_channels=dim,
+            in_channels=in_channels,
             expansion_ratio_first=ffn_expansion,
             act_layer=act_layer,
             key=key_ffn,
