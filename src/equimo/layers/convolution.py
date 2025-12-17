@@ -2572,6 +2572,7 @@ class FreeNetBlock(eqx.Module):
         drop_path: float = 0.0,
         act_layer: Callable = jax.nn.gelu,
         residual: bool = True,
+        **kwargs,
     ):
         key_mix, key_ffn = jr.split(key, 2)
         self.residual = residual
