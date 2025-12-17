@@ -148,6 +148,69 @@ class DyT(eqx.Module):
         return x * self.weight + self.bias
 
 
+class RMSNorm2d(eqx.Module):
+    eps: float = eqx.field(static=True)
+
+    weight: Optional[Float[Array, "channels"]]
+
+    def __init__(self, channels: int, eps: float = 1e-6, affine: bool = True):
+        """
+        Args:
+            channels: Number of input channels (C).
+            eps: Epsilon for numerical stability.
+            affine: If True, learn a scale parameter (weight).
+        """
+        self.eps = eps
+        if affine:
+            self.weight = jnp.ones(channels)
+        else:
+            self.weight = None
+
+    def __call__(
+        self, x: Float[Array, "channels height width"]
+    ) -> Float[Array, "channels height width"]:
+        """
+        Forward pass for a single sample (C, H, W).
+        Use jax.vmap(model)(batch) for (N, C, H, W) inputs.
+        """
+        var = jnp.mean(jnp.square(x), axis=0, keepdims=True)  # Result: (1, H, W)
+        x = x * lax.rsqrt(var + self.eps)
+        if self.weight is not None:
+            x = x * self.weight[:, None, None]
+
+        return x
+
+
+class LayerNorm2d(eqx.Module):
+    # WARNING: THIS IS NOT LIKE GroupNorm(groups=1, ...) as some papers are doing!
+    eps: float = eqx.field(static=True)
+
+    weight: Optional[Float[Array, "channels"]]
+    bias: Optional[Float[Array, "channels"]]
+
+    def __init__(self, channels: int, eps: float = 1e-6, affine: bool = True):
+        self.eps = eps
+        if affine:
+            self.weight = jnp.ones(channels)
+            self.bias = jnp.zeros(channels)
+        else:
+            self.weight = None
+            self.bias = None
+
+    def __call__(
+        self, x: Float[Array, "channels height width"]
+    ) -> Float[Array, "channels height width"]:
+        mean = jnp.mean(x, axis=0, keepdims=True)
+        var = jnp.mean(jnp.square(x - mean), axis=0, keepdims=True)
+
+        x = (x - mean) * lax.rsqrt(var + self.eps)
+
+        if self.weight is not None and self.bias is not None:
+            x = x * self.weight[:, None, None] + self.bias[:, None, None]
+
+        return x
+
+
 def get_norm(module: str | eqx.Module) -> eqx.Module:
     """Get an `eqx.Module` from its common name.
 
@@ -164,6 +227,10 @@ def get_norm(module: str | eqx.Module) -> eqx.Module:
             return eqx.nn.RMSNorm
         case "groupnorm":
             return eqx.nn.GroupNorm
+        case "layernorm2d":
+            return LayerNorm2d
+        case "rmsnorm2d":
+            return RMSNorm2d
         case "rmsnormgated":
             return RMSNormGated
         case "layerscale":
