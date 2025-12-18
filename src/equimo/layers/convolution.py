@@ -2303,7 +2303,7 @@ class ATConvBlock(eqx.Module):
                 key=key_dr1,
             )
         x2 = self.ls2(
-            self.channel_mixer(self.norm2(x), inference=inference, key=key_cm)
+            self.channel_mixer(self.norm2(x1), inference=inference, key=key_cm)
         )
         if self.residual:
             x2 = self.drop_path2(
@@ -2313,7 +2313,7 @@ class ATConvBlock(eqx.Module):
                 key=key_dr2,
             )
 
-        return x
+        return x2
 
 
 class S2Mixer(eqx.Module):
