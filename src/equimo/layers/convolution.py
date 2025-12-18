@@ -10,7 +10,7 @@ from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.dropout import DropPathAdd
-from equimo.layers.norm import LayerScale
+from equimo.layers.norm import LayerScale, RMSNorm2d, LayerNorm2d
 from equimo.layers.squeeze_excite import SEModule
 from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
@@ -2015,7 +2015,7 @@ class GLUConv(eqx.Module):
     conv1: eqx.nn.Conv2d
     conv2: eqx.nn.Conv2d
     dwconv: eqx.nn.Conv2d | eqx.nn.Identity
-    norm: eqx.nn.GroupNorm | eqx.nn.Identity
+    norm: RMSNorm2d | eqx.nn.Identity
     act: Callable
     dr1: eqx.nn.Dropout
     dr2: eqx.nn.Dropout
@@ -2066,12 +2066,7 @@ class GLUConv(eqx.Module):
             else eqx.nn.Identity()
         )
 
-        num_groups = nearest_power_of_2_divisor(in_channels, 32)
-        self.norm = (
-            eqx.nn.GroupNorm(num_groups, hidden_channels)
-            if glu_norm
-            else eqx.nn.Identity()
-        )
+        self.norm = RMSNorm2d(hidden_channels) if glu_norm else eqx.nn.Identity()
 
         self.act = act_layer
         self.dr1 = eqx.nn.Dropout(dropout)
@@ -2225,8 +2220,8 @@ class ATConvBlock(eqx.Module):
     channel_mixer: GLUConv
     ls1: LayerScale | eqx.nn.Identity
     ls2: LayerScale | eqx.nn.Identity
-    norm1: eqx.nn.LayerNorm
-    norm2: eqx.nn.LayerNorm
+    norm1: LayerNorm2d
+    norm2: LayerNorm2d
     drop_path1: DropPathAdd
     drop_path2: DropPathAdd
 
@@ -2274,8 +2269,8 @@ class ATConvBlock(eqx.Module):
         self.ls1 = LayerScale(in_channels) if use_layer_scale else eqx.nn.Identity()
         self.ls2 = LayerScale(in_channels) if use_layer_scale else eqx.nn.Identity()
 
-        self.norm1 = eqx.nn.LayerNorm(in_channels)
-        self.norm2 = eqx.nn.LayerNorm(in_channels)
+        self.norm1 = LayerNorm2d(in_channels)
+        self.norm2 = LayerNorm2d(in_channels)
 
         if isinstance(drop_path, list):
             if len(drop_path) != 2:
@@ -2299,14 +2294,7 @@ class ATConvBlock(eqx.Module):
     ) -> Float[Array, "channels height width"]:
         key_tm, key_cm, key_dr1, key_dr2 = jr.split(key, 4)
 
-        norm1 = jax.vmap(
-            jax.vmap(self.norm1, in_axes=1, out_axes=1), in_axes=1, out_axes=1
-        )
-        norm2 = jax.vmap(
-            jax.vmap(self.norm2, in_axes=1, out_axes=1), in_axes=1, out_axes=1
-        )
-
-        x1 = self.ls1(self.token_mixer(norm1(x), inference=inference, key=key_tm))
+        x1 = self.ls1(self.token_mixer(self.norm1(x), inference=inference, key=key_tm))
         if self.residual:
             x1 = self.drop_path1(
                 x,
@@ -2314,7 +2302,9 @@ class ATConvBlock(eqx.Module):
                 inference=inference,
                 key=key_dr1,
             )
-        x2 = self.ls2(self.channel_mixer(norm2(x), inference=inference, key=key_cm))
+        x2 = self.ls2(
+            self.channel_mixer(self.norm2(x), inference=inference, key=key_cm)
+        )
         if self.residual:
             x2 = self.drop_path2(
                 x1,
