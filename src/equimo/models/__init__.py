@@ -1,5 +1,6 @@
 from .fastervit import FasterViT
 from .mlla import Mlla
+from .mobilenet import MobileNetv3, mobilenetv3_large, mobilenetv3_small
 from .partialformer import PartialFormer
 from .reduceformer import (
     ReduceFormer,
