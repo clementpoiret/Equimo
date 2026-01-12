@@ -6,11 +6,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from einops import rearrange, reduce
+from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.dropout import DropPathAdd
-from equimo.layers.norm import LayerScale, RMSNorm2d, LayerNorm2d
+from equimo.layers.norm import LayerNorm2d, LayerScale, RMSNorm2d
 from equimo.layers.squeeze_excite import SEModule
 from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
