@@ -1,3 +1,4 @@
+from typing import Callable
 import equinox as eqx
 import jax
 import jax.random as jr
@@ -42,6 +43,7 @@ class SEModule(eqx.Module):
     fc1: eqx.nn.Conv
     fc2: eqx.nn.Conv
     norm: eqx.Module
+    se_act: Callable
 
     def __init__(
         self,
@@ -52,6 +54,7 @@ class SEModule(eqx.Module):
         rd_divisor: int = 8,
         use_norm: bool = False,
         norm_max_group: int = 32,
+        se_act_layer: Callable = jax.nn.sigmoid,
         **kwargs,
     ):
         key_fc1, key_fc2 = jr.split(key, 2)
@@ -83,6 +86,7 @@ class SEModule(eqx.Module):
             padding=0,
             key=key_fc2,
         )
+        self.se_act = se_act_layer
 
     def __call__(
         self,
@@ -92,7 +96,7 @@ class SEModule(eqx.Module):
         x_se = jax.nn.relu(self.norm(self.fc1(x_se)))
         x_se = self.fc2(x_se)
 
-        return x * jax.nn.sigmoid(x_se)
+        return x * self.se_act(x_se)
 
 
 class EffectiveSEModule(eqx.Module):

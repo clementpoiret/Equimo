@@ -668,7 +668,9 @@ class MBConv(eqx.Module):
     inverted_conv: SingleConvBlock | None
     depth_conv: SingleConvBlock | None
     spatial_conv: SingleConvBlock | None
+    pre_pw_act: Callable
     point_conv: SingleConvBlock
+    se_conv: SEModule | None
     drop_path: DropPathAdd
 
     def __init__(
@@ -686,6 +688,7 @@ class MBConv(eqx.Module):
         | eqx.Module
         | None = eqx.nn.GroupNorm,
         act_layer: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        se: bool = False,
         fuse: bool = False,
         fuse_threshold: int = 256,
         fuse_group: bool = False,
@@ -695,7 +698,7 @@ class MBConv(eqx.Module):
         residual: bool = False,
         **kwargs,
     ):
-        key_inverted, key_depth, key_point = jr.split(key, 3)
+        key_inverted, key_depth, key_point, key_se = jr.split(key, 4)
 
         if not isinstance(norm_layer, Tuple):
             norm_layer = (norm_layer,) * 3
@@ -749,7 +752,7 @@ class MBConv(eqx.Module):
                 stride=stride,
                 groups=mid_channels,
                 norm_layer=norm_layer[1],
-                act_layer=act_layer[1],
+                act_layer=None,
                 use_bias=use_bias[1],
                 padding="SAME",
                 key=key_depth,
@@ -767,7 +770,7 @@ class MBConv(eqx.Module):
                 if fuse_group and fused_conv_groups == 1
                 else fused_conv_groups,
                 norm_layer=norm_layer[0],
-                act_layer=act_layer[0],
+                act_layer=None,
                 use_bias=use_bias[0],
                 padding="SAME",
                 key=key_depth,
@@ -775,6 +778,11 @@ class MBConv(eqx.Module):
             if self.fused
             else None
         )
+
+        # NOTE: I am separating act from the convblock because if SE blocks are
+        # requested, they are applied before the act.
+        self.pre_pw_act = act_layer[0] if self.fused else act_layer[1]
+
         self.point_conv = SingleConvBlock(
             in_channels=mid_channels,
             out_channels=out_channels,
@@ -786,6 +794,18 @@ class MBConv(eqx.Module):
             padding="SAME",
             dropout=dropout,
             key=key_point,
+        )
+        self.se_conv = (
+            SEModule(
+                dim=mid_channels,
+                rd_ratio=1.0,
+                rd_divisor=4,
+                use_norm=False,
+                se_act_layer=jax.nn.hard_sigmoid,
+                key=key_se,
+            )
+            if se
+            else None
         )
 
         self.drop_path = DropPathAdd(drop_path)
@@ -802,7 +822,11 @@ class MBConv(eqx.Module):
         else:
             out = self.inverted_conv(x, inference=inference, key=key_inverted)
             out = self.depth_conv(out, inference=inference, key=key_depth)
-        out = self.point_conv(out, inference=inference, key=key_point)
+
+        if self.se_conv is not None:
+            out = self.se_conv(out)
+
+        out = self.point_conv(self.pre_pw_act(out), inference=inference, key=key_point)
 
         if self.residual:
             out = self.drop_path(x, out, inference=inference, key=key_droppath)
@@ -1032,6 +1056,129 @@ class UIB(eqx.Module):
 
         out = self.dropout(out, inference=inference, key=key_dropout)
 
+        if self.residual:
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+
+        return out
+
+
+class IFormerStem(eqx.Module):
+    conv1: SingleConvBlock
+    fused_ib: MBConv
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        *,
+        act_layer: Callable = jax.nn.gelu,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        key_conv1, key_fusedib = jr.split(key, 2)
+
+        self.conv1 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=int(out_channels / 2),
+            kernel_size=5,
+            stride=2,
+            act_layer=act_layer,
+            use_bias=False,
+            key=key,
+        )
+        self.fused_ib = MBConv(
+            in_channels=int(out_channels / 2),
+            out_channels=out_channels,
+            kernel_size=5,
+            stride=2,
+            expand_ratio=4.0,
+            act_layer=(act_layer, None, None),
+            fuse=True,
+            use_bias=False,
+            key=key_fusedib,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "nc nh nw"]:
+        key_conv1, key_fusedib = jr.split(key, 2)
+
+        x = self.conv1(x, inference=inference, key=key_conv1)
+        x = self.fused_ib(x, inference=inference, key=key_fusedib)
+
+        return x
+
+
+class IFormerBlock(eqx.Module):
+    residual: bool = eqx.field(static=True)
+
+    conv1: SingleConvBlock
+    conv2: SingleConvBlock
+    conv3: SingleConvBlock
+    dropout: eqx.nn.Dropout
+    drop_path: DropPathAdd
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        expand_ratio: float = 3.0,
+        act_layer: Callable = jax.nn.gelu,
+        dropout: float = 0.0,
+        drop_path: float = 0.0,
+        residual: bool = True,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        key_conv1, key_conv2, key_conv3 = jr.split(key, 3)
+        self.residual = residual
+
+        mid_channels = int(in_channels * expand_ratio)
+        self.conv1 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            kernel_size=7,
+            stride=1,
+            act_layer=None,
+            use_bias=False,
+            key=key_conv1,
+        )
+        self.conv2 = SingleConvBlock(
+            in_channels=in_channels,
+            out_channels=mid_channels,
+            kernel_size=1,
+            stride=1,
+            act_layer=act_layer,
+            use_bias=False,
+            key=key_conv2,
+        )
+        self.conv3 = SingleConvBlock(
+            in_channels=mid_channels,
+            out_channels=in_channels,
+            kernel_size=1,
+            stride=1,
+            act_layer=None,
+            use_bias=False,
+            key=key_conv3,
+        )
+        self.dropout = eqx.nn.Dropout(dropout)
+        self.drop_path = DropPathAdd(drop_path)
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        key_conv1, key_conv2, key_conv3, key_dropout, key_droppath = jr.split(key, 5)
+
+        out = self.conv1(x, inference=inference, key=key_conv1)
+        out = self.conv2(out, inference=inference, key=key_conv2)
+        out = self.conv3(out, inference=inference, key=key_conv3)
+        out = self.dropout(out, inference=inference, key=key_dropout)
         if self.residual:
             out = self.drop_path(x, out, inference=inference, key=key_droppath)
 
