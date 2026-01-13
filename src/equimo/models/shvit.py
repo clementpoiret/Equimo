@@ -8,7 +8,7 @@ from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.attention import SHSA
-from equimo.layers.convolution import ConvBlock, SingleConvBlock
+from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock
 from equimo.layers.downsample import PWSEDownsampler
 from equimo.layers.generic import Residual
 from equimo.models.vit import BlockChunk
@@ -31,7 +31,7 @@ class BasicBlock(eqx.Module):
 
     conv: Residual
     mixer: eqx.Module
-    ffn: ConvBlock
+    ffn: DoubleConvBlock
 
     def __init__(
         self,
@@ -78,7 +78,7 @@ class BasicBlock(eqx.Module):
             if block_type == "s"
             else eqx.nn.Identity()
         )
-        self.ffn = ConvBlock(
+        self.ffn = DoubleConvBlock(
             dim,
             hidden_dim=int(dim**2),
             act_layer=jax.nn.relu,

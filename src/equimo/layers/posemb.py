@@ -1,3 +1,4 @@
+from equimo.layers.convolution import SingleConvBlock
 import math
 from typing import Any, Literal, Optional, Tuple
 
@@ -716,38 +717,41 @@ class PosCNN2D(eqx.Module):
         proj: Depthwise convolution layer
     """
 
-    s: int = eqx.field(static=True)
-    proj: eqx.nn.Conv
+    stride: int = eqx.field(static=True)
+    proj: SingleConvBlock
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         *,
+        stride: int = 1,
+        norm_layer: type[eqx.Module] | None = eqx.nn.GroupNorm,
         key: PRNGKeyArray,
-        s: int = 1,
         **kwargs,
     ):
-        self.proj = eqx.nn.Conv(
-            num_spatial_dims=2,
+        self.stride = stride
+        self.proj = SingleConvBlock(
             in_channels=in_channels,
             out_channels=out_channels,
             groups=out_channels,
             kernel_size=3,
-            stride=s,
+            stride=stride,
             padding=1,
+            norm_layer=norm_layer,
+            act_layer=None,
             key=key,
         )
-
-        self.s = s
 
     def __call__(
         self,
         x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: bool = False,
     ) -> Float[Array, "channels height width"]:
-        x1 = self.proj(x)
+        x1 = self.proj(x, inference=inference, key=key)
 
-        if self.s == 1:
+        if self.stride == 1:
             return x + x1
         else:
             return x1

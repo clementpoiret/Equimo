@@ -15,113 +15,6 @@ from equimo.layers.squeeze_excite import SEModule
 from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
 
-class ConvBlock(eqx.Module):
-    """A residual convolutional block with normalization and regularization.
-
-    This block implements a residual connection with two convolution layers,
-    group normalization, activation, layer scaling, and drop path regularization.
-    The block maintains the input dimension while allowing for an optional
-    intermediate hidden dimension.
-
-    Attributes:
-        conv1: First convolution layer
-        conv2: Second convolution layer
-        norm1: Group normalization after first conv
-        norm2: Group normalization after second conv
-        drop_path1: Drop path regularization for residual connection
-        act: Activation function
-        ls1: Layer scaling module
-    """
-
-    conv1: eqx.nn.Conv
-    conv2: eqx.nn.Conv
-    norm1: eqx.Module
-    norm2: eqx.Module
-    drop_path1: DropPathAdd
-    act: Callable
-    ls1: LayerScale | eqx.nn.Identity
-
-    def __init__(
-        self,
-        dim: int,
-        *,
-        key: PRNGKeyArray,
-        hidden_dim: int | None = None,
-        kernel_size: int = 3,
-        stride: int = 1,
-        padding: int = 1,
-        act_layer: Callable | None = jax.nn.gelu,
-        norm_max_group: int = 32,
-        drop_path: float = 0.0,
-        init_values: float | None = None,
-        **kwargs,
-    ):
-        """Initialize the ConvBlock.
-
-        Args:
-            dim: Input and output channel dimension
-            key: PRNG key for initialization
-            hidden_dim: Optional intermediate channel dimension (defaults to dim)
-            kernel_size: Size of the convolutional kernel (default: 3)
-            stride: Stride of the convolution (default: 1)
-            padding: Padding size for convolution (default: 1)
-            act_layer: Activation function (default: gelu)
-            norm_max_group: Maximum number of groups for GroupNorm (default: 32)
-            drop_path: Drop path rate (default: 0.0)
-            init_values: Initial value for layer scaling (default: None)
-            **kwargs: Additional arguments passed to Conv layers
-        """
-
-        key_conv1, key_conv2 = jr.split(key, 2)
-        hidden_dim = hidden_dim or dim
-        num_groups1 = nearest_power_of_2_divisor(hidden_dim, norm_max_group)
-        num_groups2 = nearest_power_of_2_divisor(dim, norm_max_group)
-        self.conv1 = eqx.nn.Conv(
-            num_spatial_dims=2,
-            in_channels=dim,
-            out_channels=hidden_dim,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            use_bias=True,
-            key=key_conv1,
-        )
-        self.norm1 = eqx.nn.GroupNorm(num_groups1, hidden_dim)
-        self.act = act_layer if act_layer is not None else eqx.nn.Identity()
-        self.conv2 = eqx.nn.Conv(
-            num_spatial_dims=2,
-            in_channels=hidden_dim,
-            out_channels=dim,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            use_bias=True,
-            key=key_conv2,
-        )
-        self.norm2 = eqx.nn.GroupNorm(num_groups2, dim)
-
-        dpr = drop_path[0] if isinstance(drop_path, list) else float(drop_path)
-        self.drop_path1 = DropPathAdd(dpr)
-
-        self.ls1 = (
-            LayerScale(dim, init_values=init_values)
-            if init_values
-            else eqx.nn.Identity()
-        )
-
-    def __call__(
-        self,
-        x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
-        inference: Optional[bool] = None,
-    ) -> Float[Array, "channels height width"]:
-        x2 = self.act(self.norm1(self.conv1(x)))
-        x2 = self.norm2(self.conv2(x2))
-        x2 = self.ls1(x2)
-
-        return self.drop_path1(x, x2, inference=inference, key=key)
-
-
 class SingleConvBlock(eqx.Module):
     """A basic convolution block combining convolution, normalization and activation.
 
@@ -136,8 +29,8 @@ class SingleConvBlock(eqx.Module):
     """
 
     conv: eqx.nn.Conv2d | eqx.nn.ConvTranspose2d
-    norm: eqx.Module
-    act: eqx.Module
+    norm: eqx.nn.GroupNorm | eqx.nn.Identity
+    act: Callable
     dropout: eqx.nn.Dropout
 
     def __init__(
@@ -149,7 +42,7 @@ class SingleConvBlock(eqx.Module):
         kernel_size: int = 3,
         stride: int = 1,
         padding: str | int = "SAME",
-        norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
+        norm_layer: type[eqx.Module] | None = eqx.nn.GroupNorm,
         norm_max_group: int = 32,
         act_layer: Callable | None = None,
         dropout: float = 0.0,
@@ -192,7 +85,7 @@ class SingleConvBlock(eqx.Module):
             self.norm = eqx.nn.Identity()
 
         self.dropout = eqx.nn.Dropout(dropout)
-        self.act = eqx.nn.Lambda(act_layer) if act_layer else eqx.nn.Identity()
+        self.act = act_layer if act_layer else lambda x: x
 
     def __call__(
         self,
@@ -203,6 +96,129 @@ class SingleConvBlock(eqx.Module):
         return self.dropout(
             self.act(self.norm(self.conv(x))), inference=inference, key=key
         )
+
+
+class DoubleConvBlock(eqx.Module):
+    """A residual convolutional block with normalization and regularization.
+
+    This block implements a residual connection with two convolution layers,
+    group normalization, activation, layer scaling, and drop path regularization.
+    The block maintains the input dimension while allowing for an optional
+    intermediate hidden dimension.
+
+    Attributes:
+        conv1: First convolution layer
+        conv2: Second convolution layer
+        norm1: Group normalization after first conv
+        norm2: Group normalization after second conv
+        drop_path1: Drop path regularization for residual connection
+        act: Activation function
+        ls1: Layer scaling module
+    """
+
+    residual: bool = eqx.field(static=True)
+
+    conv1: SingleConvBlock
+    conv2: SingleConvBlock
+    drop_path1: DropPathAdd
+    act: Callable
+    ls1: LayerScale | eqx.nn.Identity
+
+    def __init__(
+        self,
+        *,
+        # NOTE: for interop with module requiring the `dim` arg
+        dim: int | None = None,
+        in_channels: int | None = None,
+        hidden_dim: int | None = None,
+        hidden_channels: int | None = None,
+        out_dim: int | None = None,
+        out_channels: int | None = None,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+        use_bias: bool = False,
+        act_layer: Callable | None = jax.nn.gelu,
+        norm_max_group: int = 32,
+        drop_path: float = 0.0,
+        init_values: float | None = None,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        """Initialize the ConvBlock.
+
+        Args:
+            dim: Input and output channel dimension
+            key: PRNG key for initialization
+            hidden_dim: Optional intermediate channel dimension (defaults to dim)
+            kernel_size: Size of the convolutional kernel (default: 3)
+            stride: Stride of the convolution (default: 1)
+            padding: Padding size for convolution (default: 1)
+            act_layer: Activation function (default: gelu)
+            norm_max_group: Maximum number of groups for GroupNorm (default: 32)
+            drop_path: Drop path rate (default: 0.0)
+            init_values: Initial value for layer scaling (default: None)
+            **kwargs: Additional arguments passed to Conv layers
+        """
+
+        key_conv1, key_conv2 = jr.split(key, 2)
+
+        # handle interop / backward compat
+        assert dim is not None or in_channels is not None
+        in_channels: int = in_channels or dim  # type: ignore
+        hidden_channels: int = hidden_channels or hidden_dim or dim  # type: ignore
+        out_channels: int = out_channels or out_dim or dim  # type: ignore
+
+        self.residual = in_channels == out_channels
+
+        self.conv1 = SingleConvBlock(
+            in_channels,
+            hidden_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            use_bias=use_bias,
+            norm_layer=eqx.nn.GroupNorm,
+            act_layer=act_layer,
+            key=key_conv1,
+        )
+        self.conv2 = SingleConvBlock(
+            hidden_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            use_bias=use_bias,
+            norm_layer=eqx.nn.GroupNorm,
+            act_layer=None,
+            key=key_conv2,
+        )
+
+        dpr = drop_path[0] if isinstance(drop_path, list) else float(drop_path)
+        self.drop_path1 = DropPathAdd(dpr)
+
+        self.ls1 = (
+            LayerScale(out_channels, init_values=init_values)
+            if init_values
+            else eqx.nn.Identity()
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        key_conv1, key_conv2 = jr.split(key, 2)
+
+        out = self.conv1(x, inference=inference, key=key_conv1)
+        out = self.conv2(out, inference=inference, key=key_conv2)
+        out = self.ls1(out)
+
+        if self.residual:
+            out = self.drop_path1(out, x, inference=inference, key=key)
+
+        return out
 
 
 class Stem(eqx.Module):
@@ -829,7 +845,7 @@ class MBConv(eqx.Module):
         out = self.point_conv(self.pre_pw_act(out), inference=inference, key=key_point)
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(out, x, inference=inference, key=key_droppath)
 
         return out
 
@@ -925,7 +941,7 @@ class DSConv(eqx.Module):
         out = self.dropout(out, inference=inference, key=key_dropout)
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(out, x, inference=inference, key=key_droppath)
 
         return out
 
@@ -1057,7 +1073,7 @@ class UIB(eqx.Module):
         out = self.dropout(out, inference=inference, key=key_dropout)
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(out, x, inference=inference, key=key_droppath)
 
         return out
 
@@ -1180,7 +1196,7 @@ class IFormerBlock(eqx.Module):
         out = self.conv3(out, inference=inference, key=key_conv3)
         out = self.dropout(out, inference=inference, key=key_dropout)
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(out, x, inference=inference, key=key_droppath)
 
         return out
 
@@ -2153,7 +2169,7 @@ class FasterNetBlock(eqx.Module):
         )
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(out, x, inference=inference, key=key_droppath)
 
         return out
 
@@ -2444,8 +2460,8 @@ class ATConvBlock(eqx.Module):
         x1 = self.ls1(self.token_mixer(self.norm1(x), inference=inference, key=key_tm))
         if self.residual:
             x1 = self.drop_path1(
-                x,
                 x1,
+                x,
                 inference=inference,
                 key=key_dr1,
             )
@@ -2454,8 +2470,8 @@ class ATConvBlock(eqx.Module):
         )
         if self.residual:
             x2 = self.drop_path2(
-                x1,
                 x2,
+                x1,
                 inference=inference,
                 key=key_dr2,
             )
@@ -2763,6 +2779,6 @@ class FreeNetBlock(eqx.Module):
         )
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_dp)
+            out = self.drop_path(out, x, inference=inference, key=key_dp)
 
         return out

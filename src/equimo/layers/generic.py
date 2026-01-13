@@ -63,8 +63,8 @@ class Residual(eqx.Module):
             x2 = self.module(x)
 
         return self.drop_path(
-            x,
             x2,
+            x,
             inference=inference,
             key=key,
         )

@@ -7,7 +7,7 @@ import jax.random as jr
 from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.convolution import ConvBlock, SingleConvBlock, MBConv
+from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock, MBConv
 from equimo.layers.dropout import DropPathAdd
 from equimo.layers.ffn import Mlp
 from equimo.layers.mamba import Mamba2Mixer
@@ -409,7 +409,6 @@ class AttentionBlock(eqx.Module):
         )
 
         x = self.drop_path1(
-            x,
             self.ls1(
                 jax.vmap(self.postnorm)(
                     self.attn(
@@ -420,11 +419,11 @@ class AttentionBlock(eqx.Module):
                     )
                 )
             ),
+            x,
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
-            x,
             self.ls2(
                 self.mlp(
                     jax.vmap(self.norm)(x),
@@ -433,6 +432,7 @@ class AttentionBlock(eqx.Module):
                     **extra_kwargs,
                 )
             ),
+            x,
             inference=inference,
             key=key_dr2,
         )
@@ -715,7 +715,6 @@ class HATBlock(eqx.Module):
             x = jnp.concatenate((x, ct), axis=0)
 
         x = self.drop_path1(
-            x,
             self.ls1(
                 self.attn(
                     jax.vmap(self.norm1)(x),
@@ -723,11 +722,11 @@ class HATBlock(eqx.Module):
                     key=key_attn,
                 )
             ),
+            x,
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
-            x,
             self.ls2(
                 self.mlp(
                     jax.vmap(self.norm2)(x),
@@ -735,6 +734,7 @@ class HATBlock(eqx.Module):
                     key=key_mlp,
                 )
             ),
+            x,
             inference=inference,
             key=key_dr2,
         )
@@ -1279,7 +1279,7 @@ class MllaBlock(eqx.Module):
         if self.use_dwc:
             x1 = jax.vmap(self.out_proj)(x * act_res)
 
-        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
+        x = self.drop_path1(x1, x, inference=inference, key=key_dr1)
 
         x += rearrange(
             self.cpe2(rearrange(x, "(h w) c -> c h w", h=h, w=w)),
@@ -1287,8 +1287,8 @@ class MllaBlock(eqx.Module):
         )
 
         return self.drop_path2(
-            x,
             self.mlp(jax.vmap(self.norm2)(x), inference=inference, key=key_mlp),
+            x,
             inference=inference,
             key=key_dr2,
         )
@@ -1528,7 +1528,7 @@ class PartialFormerBlock(eqx.Module):
     patch_size: float = eqx.field(static=True)
 
     act: Callable
-    posemb: eqx.Module
+    posemb: PosCNN2D
     norm1: eqx.Module
     norm2: eqx.Module
     mmsa: eqx.Module
@@ -1594,7 +1594,7 @@ class PartialFormerBlock(eqx.Module):
         else:
             self.ls1 = self.ls2 = eqx.nn.Identity()
 
-        self.posemb = PosCNN2D(dim, dim, key=key_posemb)
+        self.posemb = PosCNN2D(dim, dim, norm_layer=None, key=key_posemb)
 
         self.mmsa = MMSA(
             dim=dim,
@@ -1648,7 +1648,7 @@ class PartialFormerBlock(eqx.Module):
         h = w = int(l**0.5)
 
         x1 = rearrange(x, "(h w) c -> c h w", h=h, w=w)
-        x1 = self.posemb(x1)
+        x1 = self.posemb(x1, inference=inference, key=key)
         x1 = rearrange(
             x1,
             "c (h h1) (w w1) -> (h w) (h1 w1) c",
@@ -1672,7 +1672,7 @@ class PartialFormerBlock(eqx.Module):
         b = self.sqa(b, qa, inference=inference, key=key_sqa)
 
         x1 = self.ls1(jnp.concat([f, b], axis=0))
-        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
+        x = self.drop_path1(x1, x, inference=inference, key=key_dr1)
 
         qa, x1 = jnp.split(
             self.mlp(
@@ -1682,8 +1682,8 @@ class PartialFormerBlock(eqx.Module):
             )[1],
         )
         x = self.drop_path2(
-            x,
             self.ls2(x1),
+            x,
             inference=inference,
             key=key_dr2,
         )
@@ -2011,11 +2011,11 @@ class RFAttentionBlock(eqx.Module):
         # TODO: some prenorm?
         x1 = self.context_module(x, inference=inference, key=key_context)
         if self.residual:
-            x1 = self.drop_path1(x, x1, inference=inference, key=key_dr1)
+            x1 = self.drop_path1(x1, x, inference=inference, key=key_dr1)
 
         x2 = self.local_module(x, inference=inference, key=key_local)
         if self.residual:
-            x2 = self.drop_path2(x1, x2, inference=inference, key=key_dr2)
+            x2 = self.drop_path2(x2, x1, inference=inference, key=key_dr2)
 
         return x2
 
@@ -2196,7 +2196,7 @@ class ConvAttentionBlock(eqx.Module):
             key=key_attn,
         )
 
-        self.mlp = ConvBlock(
+        self.mlp = DoubleConvBlock(
             dim=in_channels,
             hidden_dim=int(in_channels * mlp_ratio),
             kernel_size=1,
@@ -2219,7 +2219,6 @@ class ConvAttentionBlock(eqx.Module):
         key_attn, key_mlp, key_dr1, key_dr2 = jr.split(key, 4)
 
         x = self.drop_path1(
-            x,
             self.postnorm(
                 self.attn(
                     self.prenorm(x),
@@ -2227,16 +2226,17 @@ class ConvAttentionBlock(eqx.Module):
                     key=key_attn,
                 )
             ),
+            x,
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
-            x,
             self.mlp(
                 self.norm(x),
                 inference=inference,
                 key=key_mlp,
             ),
+            x,
             inference=inference,
             key=key_dr2,
         )
@@ -2315,14 +2315,14 @@ class LowFormerBlock(eqx.Module):
         key_context, key_local, key_dr1, key_dr2 = jr.split(key, 4)
 
         x = self.drop_path1(
-            x,
             self.context_module(x, inference=inference, key=key_context),
+            x,
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
-            x,
             self.local_module(x, inference=inference, key=key_local),
+            x,
             inference=inference,
             key=key_dr2,
         )

@@ -8,7 +8,7 @@ from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.attention import HATBlock, WindowedAttention
-from equimo.layers.convolution import ConvBlock
+from equimo.layers.convolution import DoubleConvBlock
 from equimo.layers.downsample import ConvNormDownsampler
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import ConvPatchEmbed
@@ -403,7 +403,7 @@ class FasterViT(eqx.Module):
         window_size = to_list(window_size, n_chunks)
         self.blocks = tuple(
             BlockChunk(
-                block=ConvBlock if i < 2 else HATBlock,
+                block=DoubleConvBlock if i < 2 else HATBlock,
                 repeat=repeat,
                 dim=int(dim * 2**i),
                 depth=depths[i],

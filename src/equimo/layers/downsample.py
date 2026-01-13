@@ -5,7 +5,7 @@ import jax
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.convolution import ConvBlock, SingleConvBlock
+from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock
 from equimo.layers.generic import Residual
 from equimo.layers.patch import SEPatchMerging
 from equimo.utils import nearest_power_of_2_divisor
@@ -138,7 +138,7 @@ class PWSEDownsampler(eqx.Module):
             ),
             drop_path=drop_path,
         )
-        self.conv2 = ConvBlock(
+        self.conv2 = DoubleConvBlock(
             in_channels,
             hidden_in_channels=in_channels * 2,
             act_layer=None,
@@ -166,7 +166,7 @@ class PWSEDownsampler(eqx.Module):
             ),
             drop_path=drop_path,
         )
-        self.conv4 = ConvBlock(
+        self.conv4 = DoubleConvBlock(
             out_channels,
             hidden_in_channels=out_channels * 2,
             act_layer=None,
