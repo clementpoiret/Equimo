@@ -7,7 +7,12 @@ import jax.random as jr
 from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock, MBConv
+from equimo.layers.convolution import (
+    DoubleConvBlock,
+    SingleConvBlock,
+    MBConv,
+    IFormerBlock,
+)
 from equimo.layers.dropout import DropPathAdd
 from equimo.layers.ffn import Mlp
 from equimo.layers.mamba import Mamba2Mixer
@@ -348,7 +353,6 @@ class AttentionBlock(eqx.Module):
             dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
-
         self.prenorm = norm_layer(dim, eps=eps)
         self.postnorm = (
             norm_layer(dim, eps=eps) if post_attention_norm else eqx.nn.Identity()
@@ -409,6 +413,7 @@ class AttentionBlock(eqx.Module):
         )
 
         x = self.drop_path1(
+            x,
             self.ls1(
                 jax.vmap(self.postnorm)(
                     self.attn(
@@ -419,11 +424,11 @@ class AttentionBlock(eqx.Module):
                     )
                 )
             ),
-            x,
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
+            x,
             self.ls2(
                 self.mlp(
                     jax.vmap(self.norm)(x),
@@ -432,7 +437,6 @@ class AttentionBlock(eqx.Module):
                     **extra_kwargs,
                 )
             ),
-            x,
             inference=inference,
             key=key_dr2,
         )
@@ -715,6 +719,7 @@ class HATBlock(eqx.Module):
             x = jnp.concatenate((x, ct), axis=0)
 
         x = self.drop_path1(
+            x,
             self.ls1(
                 self.attn(
                     jax.vmap(self.norm1)(x),
@@ -722,11 +727,11 @@ class HATBlock(eqx.Module):
                     key=key_attn,
                 )
             ),
-            x,
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
+            x,
             self.ls2(
                 self.mlp(
                     jax.vmap(self.norm2)(x),
@@ -734,7 +739,6 @@ class HATBlock(eqx.Module):
                     key=key_mlp,
                 )
             ),
-            x,
             inference=inference,
             key=key_dr2,
         )
@@ -1022,6 +1026,116 @@ class SHMA(eqx.Module):
             return self._calculate_attention(x, inference=inference, key=key)
 
 
+class SHMABlock(eqx.Module):
+    posemb: PosCNN2D
+    attn: SHMA
+    drop_path1: DropPathAdd
+    ffn: IFormerBlock
+    ls1: LayerScale | eqx.nn.Identity
+    ls2: LayerScale | eqx.nn.Identity
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        num_heads: int = 1,
+        attn_drop: float = 0.0,
+        dropout: float = 0.0,
+        attn_ratio: float = 4.0,
+        ffn_ratio: float = 4.0,
+        q_kernel: int = 1,
+        kv_kernel: int = 1,
+        kv_stride: int = 1,
+        head_dim_reduce_ratio: int = 4,
+        window_size: int = 0,
+        act_layer: Callable = jax.nn.gelu,
+        norm_layer: type[eqx.Module] = eqx.nn.GroupNorm,
+        drop_path: float | List[float] = 0.0,
+        init_values: float | None = 1e-6,
+        key: PRNGKeyArray,
+    ):
+        key_pe, key_attn, key_ffn = jr.split(key, 3)
+
+        if isinstance(drop_path, list):
+            if len(drop_path) != 2:
+                raise AssertionError(
+                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                )
+            dr1, dr2 = drop_path
+            dr1 = float(dr1)
+            dr2 = float(dr2)
+        else:
+            dr1 = dr2 = float(drop_path)
+
+        self.posemb = PosCNN2D(in_channels, key=key_pe)
+        self.attn = SHMA(
+            dim=in_channels,
+            num_heads=num_heads,
+            attn_drop=attn_drop,
+            ratio=attn_ratio,
+            q_kernel=q_kernel,
+            kv_kernel=kv_kernel,
+            kv_stride=kv_stride,
+            head_dim_reduce_ratio=head_dim_reduce_ratio,
+            window_size=window_size,
+            norm_layer=norm_layer,
+            key=key_attn,
+        )
+        self.drop_path1 = DropPathAdd(dr1)
+        self.ffn = IFormerBlock(
+            in_channels=in_channels,
+            expand_ratio=ffn_ratio,
+            act_layer=act_layer,
+            dropout=dropout,
+            drop_path=dr2,
+            residual=True,
+            key=key_ffn,
+        )
+        self.ls1 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+        self.ls2 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: PRNGKeyArray,
+        inference: bool = False,
+    ) -> Float[Array, "channels height width"]:
+        key_pe, key_attn, key_ffn, key_dr1 = jr.split(key, 4)
+
+        x = self.posemb(x, inference=inference, key=key_pe)
+
+        x = self.drop_path1(
+            x,
+            self.ls1(
+                self.attn(
+                    x,
+                    inference=inference,
+                    key=key_attn,
+                )
+            ),
+            inference=inference,
+            key=key_dr1,
+        )
+        # Drop path 2 handled by iformer block
+        x = self.ls2(
+            self.ffn(
+                x,
+                inference=inference,
+                key=key_ffn,
+            )
+        )
+
+        return x
+
+
 class LinearAttention(eqx.Module):
     """Linear attention with rotary position encoding.
 
@@ -1279,7 +1393,7 @@ class MllaBlock(eqx.Module):
         if self.use_dwc:
             x1 = jax.vmap(self.out_proj)(x * act_res)
 
-        x = self.drop_path1(x1, x, inference=inference, key=key_dr1)
+        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
 
         x += rearrange(
             self.cpe2(rearrange(x, "(h w) c -> c h w", h=h, w=w)),
@@ -1287,8 +1401,8 @@ class MllaBlock(eqx.Module):
         )
 
         return self.drop_path2(
-            self.mlp(jax.vmap(self.norm2)(x), inference=inference, key=key_mlp),
             x,
+            self.mlp(jax.vmap(self.norm2)(x), inference=inference, key=key_mlp),
             inference=inference,
             key=key_dr2,
         )
@@ -1594,7 +1708,7 @@ class PartialFormerBlock(eqx.Module):
         else:
             self.ls1 = self.ls2 = eqx.nn.Identity()
 
-        self.posemb = PosCNN2D(dim, dim, norm_layer=None, key=key_posemb)
+        self.posemb = PosCNN2D(dim, norm_layer=None, key=key_posemb)
 
         self.mmsa = MMSA(
             dim=dim,
@@ -1672,7 +1786,7 @@ class PartialFormerBlock(eqx.Module):
         b = self.sqa(b, qa, inference=inference, key=key_sqa)
 
         x1 = self.ls1(jnp.concat([f, b], axis=0))
-        x = self.drop_path1(x1, x, inference=inference, key=key_dr1)
+        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
 
         qa, x1 = jnp.split(
             self.mlp(
@@ -1682,8 +1796,8 @@ class PartialFormerBlock(eqx.Module):
             )[1],
         )
         x = self.drop_path2(
-            self.ls2(x1),
             x,
+            self.ls2(x1),
             inference=inference,
             key=key_dr2,
         )
@@ -2011,11 +2125,11 @@ class RFAttentionBlock(eqx.Module):
         # TODO: some prenorm?
         x1 = self.context_module(x, inference=inference, key=key_context)
         if self.residual:
-            x1 = self.drop_path1(x1, x, inference=inference, key=key_dr1)
+            x1 = self.drop_path1(x, x1, inference=inference, key=key_dr1)
 
         x2 = self.local_module(x, inference=inference, key=key_local)
         if self.residual:
-            x2 = self.drop_path2(x2, x1, inference=inference, key=key_dr2)
+            x2 = self.drop_path2(x1, x2, inference=inference, key=key_dr2)
 
         return x2
 
@@ -2219,6 +2333,7 @@ class ConvAttentionBlock(eqx.Module):
         key_attn, key_mlp, key_dr1, key_dr2 = jr.split(key, 4)
 
         x = self.drop_path1(
+            x,
             self.postnorm(
                 self.attn(
                     self.prenorm(x),
@@ -2226,17 +2341,16 @@ class ConvAttentionBlock(eqx.Module):
                     key=key_attn,
                 )
             ),
-            x,
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
+            x,
             self.mlp(
                 self.norm(x),
                 inference=inference,
                 key=key_mlp,
             ),
-            x,
             inference=inference,
             key=key_dr2,
         )
@@ -2315,14 +2429,14 @@ class LowFormerBlock(eqx.Module):
         key_context, key_local, key_dr1, key_dr2 = jr.split(key, 4)
 
         x = self.drop_path1(
-            self.context_module(x, inference=inference, key=key_context),
             x,
+            self.context_module(x, inference=inference, key=key_context),
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
-            self.local_module(x, inference=inference, key=key_local),
             x,
+            self.local_module(x, inference=inference, key=key_local),
             inference=inference,
             key=key_dr2,
         )
@@ -2330,7 +2444,7 @@ class LowFormerBlock(eqx.Module):
         return x
 
 
-def get_attention(module: str | eqx.Module) -> eqx.Module:
+def get_attention(module: str | type[eqx.Module]) -> type[eqx.Module]:
     """Get an `eqx.Module` from its common name.
 
     This is necessary because configs have to be stringified and stored as
@@ -2346,6 +2460,8 @@ def get_attention(module: str | eqx.Module) -> eqx.Module:
             return WindowedAttention
         case "shsa":
             return SHSA
+        case "shma":
+            return SHMA
         case "linearattention":
             return LinearAttention
         case "mmsa":
@@ -2358,7 +2474,7 @@ def get_attention(module: str | eqx.Module) -> eqx.Module:
             raise ValueError(f"Got an unknown module string: {module}")
 
 
-def get_attention_block(module: str | eqx.Module) -> eqx.Module:
+def get_attention_block(module: str | type[eqx.Module]) -> type[eqx.Module]:
     """Get an `eqx.Module` from its common name.
 
     This is necessary because configs have to be stringified and stored as
@@ -2370,6 +2486,8 @@ def get_attention_block(module: str | eqx.Module) -> eqx.Module:
     match module:
         case "attentionblock":
             return AttentionBlock
+        case "shmablock":
+            return SHMABlock
         case "hatblock":
             return HATBlock
         case "mllablock":

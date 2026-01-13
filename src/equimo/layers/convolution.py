@@ -216,7 +216,7 @@ class DoubleConvBlock(eqx.Module):
         out = self.ls1(out)
 
         if self.residual:
-            out = self.drop_path1(out, x, inference=inference, key=key)
+            out = self.drop_path1(x, out, inference=inference, key=key)
 
         return out
 
@@ -845,7 +845,7 @@ class MBConv(eqx.Module):
         out = self.point_conv(self.pre_pw_act(out), inference=inference, key=key_point)
 
         if self.residual:
-            out = self.drop_path(out, x, inference=inference, key=key_droppath)
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
 
         return out
 
@@ -941,7 +941,7 @@ class DSConv(eqx.Module):
         out = self.dropout(out, inference=inference, key=key_dropout)
 
         if self.residual:
-            out = self.drop_path(out, x, inference=inference, key=key_droppath)
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
 
         return out
 
@@ -1073,7 +1073,7 @@ class UIB(eqx.Module):
         out = self.dropout(out, inference=inference, key=key_dropout)
 
         if self.residual:
-            out = self.drop_path(out, x, inference=inference, key=key_droppath)
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
 
         return out
 
@@ -1196,7 +1196,7 @@ class IFormerBlock(eqx.Module):
         out = self.conv3(out, inference=inference, key=key_conv3)
         out = self.dropout(out, inference=inference, key=key_dropout)
         if self.residual:
-            out = self.drop_path(out, x, inference=inference, key=key_droppath)
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
 
         return out
 
@@ -2169,7 +2169,7 @@ class FasterNetBlock(eqx.Module):
         )
 
         if self.residual:
-            out = self.drop_path(out, x, inference=inference, key=key_droppath)
+            out = self.drop_path(x, out, inference=inference, key=key_droppath)
 
         return out
 
@@ -2460,8 +2460,8 @@ class ATConvBlock(eqx.Module):
         x1 = self.ls1(self.token_mixer(self.norm1(x), inference=inference, key=key_tm))
         if self.residual:
             x1 = self.drop_path1(
-                x1,
                 x,
+                x1,
                 inference=inference,
                 key=key_dr1,
             )
@@ -2470,8 +2470,8 @@ class ATConvBlock(eqx.Module):
         )
         if self.residual:
             x2 = self.drop_path2(
-                x2,
                 x1,
+                x2,
                 inference=inference,
                 key=key_dr2,
             )
@@ -2779,6 +2779,6 @@ class FreeNetBlock(eqx.Module):
         )
 
         if self.residual:
-            out = self.drop_path(out, x, inference=inference, key=key_dp)
+            out = self.drop_path(x, out, inference=inference, key=key_dp)
 
         return out

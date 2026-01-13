@@ -717,24 +717,26 @@ class PosCNN2D(eqx.Module):
         proj: Depthwise convolution layer
     """
 
-    stride: int = eqx.field(static=True)
+    residual: bool = eqx.field(static=True)
     proj: SingleConvBlock
 
     def __init__(
         self,
         in_channels: int,
-        out_channels: int,
         *,
+        out_channels: int | None = None,
         stride: int = 1,
         norm_layer: type[eqx.Module] | None = eqx.nn.GroupNorm,
+        residual: bool = True,
         key: PRNGKeyArray,
         **kwargs,
     ):
-        self.stride = stride
+        self.residual = residual and (stride == 1 and in_channels == out_channels)
+
         self.proj = SingleConvBlock(
             in_channels=in_channels,
-            out_channels=out_channels,
-            groups=out_channels,
+            out_channels=out_channels or in_channels,
+            groups=out_channels or in_channels,
             kernel_size=3,
             stride=stride,
             padding=1,
@@ -751,7 +753,7 @@ class PosCNN2D(eqx.Module):
     ) -> Float[Array, "channels height width"]:
         x1 = self.proj(x, inference=inference, key=key)
 
-        if self.stride == 1:
+        if self.residual:
             return x + x1
         else:
             return x1
