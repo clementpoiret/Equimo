@@ -1057,7 +1057,7 @@ class SHMABlock(eqx.Module):
         act_layer: Callable = jax.nn.gelu,
         norm_layer: type[eqx.Module] = eqx.nn.GroupNorm,
         drop_path: float | List[float] = 0.0,
-        init_values: float | None = 1e-6,
+        init_values: float | None = None,
         key: PRNGKeyArray,
     ):
         # it's here only for compat api :)

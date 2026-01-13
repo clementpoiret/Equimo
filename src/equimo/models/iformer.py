@@ -53,6 +53,7 @@ class BlockChunk(eqx.Module):
         downsampler_kwargs: dict = {},
         downsample_last: bool = False,
         drop_path: float | Sequence[float] = 0.0,
+        init_values: float | None = None,
         key: PRNGKeyArray,
     ):
         assert module is not None or downsampler is not None, (
@@ -95,6 +96,7 @@ class BlockChunk(eqx.Module):
                         in_channels=block_in,
                         out_channels=block_out,
                         drop_path=drop_path[i],
+                        init_values=init_values,
                         **config,
                         key=block_subkeys[i],
                     )
@@ -162,6 +164,7 @@ class IFormer(eqx.Module):
         norm_layer: str | type[eqx.Module] = eqx.nn.LayerNorm,
         num_classes: int = 1000,
         eps=1e-5,
+        init_values: float | None = None,
         key: PRNGKeyArray,
         **kwargs,
     ):
@@ -198,6 +201,7 @@ class IFormer(eqx.Module):
                     downsampler_kwargs=universal_kwargs | downsampler_kwargs[i],
                     downsample_last=downsample_last,
                     drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
+                    init_values=init_values,
                     key=_k,
                 )
             )
