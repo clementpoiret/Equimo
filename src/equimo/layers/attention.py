@@ -858,6 +858,170 @@ class SHSA(eqx.Module):
         return x
 
 
+class SHMA(eqx.Module):
+    """Single-Head Multi-Scale Attention (SHMA) module.
+
+    Reproduces the logic of the SHMA class used in iFormer, including:
+    - Window-based attention (optional)
+    - Gated Value branch (v_gate)
+    - Separate Q/K projections
+    """
+
+    dim: int = eqx.field(static=True)
+    dim_attn: int = eqx.field(static=True)
+    num_heads: int = eqx.field(static=True)
+    dim_head: int = eqx.field(static=True)
+    scale: float = eqx.field(static=True)
+    window_size: int = eqx.field(static=True)
+
+    q: SingleConvBlock
+    kv_fused: SingleConvBlock
+    proj: SingleConvBlock
+    attn_drop: eqx.nn.Dropout
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 1,
+        attn_drop: float = 0.0,
+        ratio: float = 4.0,
+        q_kernel: int = 1,
+        kv_kernel: int = 1,
+        kv_stride: int = 1,
+        head_dim_reduce_ratio: int = 4,
+        window_size: int = 0,
+        norm_layer: Callable = eqx.nn.GroupNorm,
+        *,
+        key: jax.Array,
+        **kwargs,
+    ):
+        keys = jr.split(key, 4)
+
+        mid_dim = int(dim * ratio)
+        self.dim_attn = dim // head_dim_reduce_ratio
+
+        self.dim = dim
+        self.num_heads = num_heads
+        self.dim_head = self.dim_attn // num_heads
+        self.scale = self.dim_head**-0.5
+        self.window_size = window_size
+
+        common_cfg = {
+            "norm_layer": norm_layer,
+            "act_layer": None,
+            "padding": "SAME",
+        }
+
+        self.q = SingleConvBlock(
+            in_channels=dim,
+            out_channels=self.dim_attn,
+            kernel_size=q_kernel,
+            stride=1,
+            key=keys[0],
+            **common_cfg,
+        )
+
+        # self.dim_attn (for K) + 2 * mid_dim (for V + Gate)
+        fused_channels = self.dim_attn + (2 * mid_dim)
+        self.kv_fused = SingleConvBlock(
+            in_channels=dim,
+            out_channels=fused_channels,
+            kernel_size=kv_kernel,
+            stride=kv_stride,
+            key=keys[1],
+            **common_cfg,
+        )
+
+        self.proj = SingleConvBlock(
+            in_channels=mid_dim,
+            out_channels=dim,
+            kernel_size=1,
+            key=keys[3],
+            **common_cfg,
+        )
+
+        self.attn_drop = eqx.nn.Dropout(attn_drop)
+
+    def _calculate_attention(self, x, key: PRNGKeyArray, inference: bool = False):
+        """Core attention logic applied to a single spatial map (image or window).
+
+        Args:
+            x: Input tensor of shape (C, H, W)
+        """
+        key_q, key_kvg, key_drop, key_proj = jr.split(key, 4)
+        C, H, W = x.shape
+
+        q = self.q(x, inference=inference, key=key_q)
+        kvg = self.kv_fused(x, inference=inference, key=key_q)
+
+        k, vg = jnp.split(kvg, [self.dim_attn], axis=0)
+        vg = jax.nn.sigmoid(vg)
+        v, gate = jnp.split(vg, 2, axis=0)
+
+        # Flatten spatial: (heads * d_head, H, W) -> (heads, d_head, N)
+        q = rearrange(q, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
+        k = rearrange(k, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
+        v = rearrange(v, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
+        gate = rearrange(gate, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
+
+        attn = jnp.einsum("h d i, h d j -> h i j", q, k) * self.scale
+        attn = jax.nn.softmax(attn, axis=-1)
+
+        attn = self.attn_drop(attn, key=key_drop, inference=inference)
+
+        x_attn = jnp.einsum("h d j, h i j -> h d i", v, attn)
+        x_attn = x_attn * gate
+        x_attn = rearrange(x_attn, "h d (ht wt) -> (h d) ht wt", ht=H, wt=W)
+
+        return self.proj(x_attn, inference=inference, key=key_proj)
+
+    def __call__(self, x: jax.Array, key: PRNGKeyArray, inference: bool = False):
+        """
+        Args:
+            x: Input of shape (C, H, W)
+        """
+        C, H, W = x.shape
+        if self.window_size > 0:
+            pad_h = (self.window_size - H % self.window_size) % self.window_size
+            pad_w = (self.window_size - W % self.window_size) % self.window_size
+
+            x_padded = x
+            if pad_h > 0 or pad_w > 0:
+                x_padded = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
+
+            H_pad, W_pad = x_padded.shape[1], x_padded.shape[2]
+
+            x_windows = rearrange(
+                x_padded,
+                "c (nh ws_h) (nw ws_w) -> (nh nw) c ws_h ws_w",
+                ws_h=self.window_size,
+                ws_w=self.window_size,
+            )
+
+            # Attention to all windows in parallel
+            attn_fn = lambda w, k: self._calculate_attention(
+                w, inference=inference, key=k
+            )
+            x_windows = eqx.filter_vmap(attn_fn)(
+                x_windows, jr.split(key, x_windows.shape[0])
+            )
+
+            x_out = rearrange(
+                x_windows,
+                "(nh nw) c ws_h ws_w -> c (nh ws_h) (nw ws_w)",
+                nh=H_pad // self.window_size,
+                nw=W_pad // self.window_size,
+            )
+
+            if pad_h > 0 or pad_w > 0:
+                x_out = x_out[:, :H, :W]
+
+            return x_out
+
+        else:
+            return self._calculate_attention(x, inference=inference, key=key)
+
+
 class LinearAttention(eqx.Module):
     """Linear attention with rotary position encoding.
 
