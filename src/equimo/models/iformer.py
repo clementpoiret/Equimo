@@ -2,11 +2,12 @@ from typing import Callable, Optional, Sequence, Tuple
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.activation import get_act
+from equimo.layers.attention import SHMABlock
 from equimo.layers.convolution import (
     IFormerBlock,
     IFormerStem,
@@ -23,6 +24,8 @@ def get_module(name, not_none: bool = True):
             return IFormerBlock
         case "ifs":
             return IFormerStem
+        case "shma":
+            return SHMABlock
         case None:
             if not_none and name is None:
                 raise ValueError(f"{name} can't be None.")
@@ -97,8 +100,6 @@ class BlockChunk(eqx.Module):
                     )
                 )
             self.blocks = tuple(blocks)
-            self.z0_block = None
-            self.deq_block = None
         else:
             # Only downsampler
             self.blocks = None
@@ -140,7 +141,7 @@ class BlockChunk(eqx.Module):
 class IFormer(eqx.Module):
     blocks: Tuple[BlockChunk, ...]
     dropout: eqx.nn.Dropout
-    norm: eqx.Module
+    norm: type[eqx.Module]
     head: eqx.nn.Linear | eqx.nn.Identity
 
     def __init__(
@@ -154,11 +155,11 @@ class IFormer(eqx.Module):
         downsample_last: bool = False,
         dims: list[int] = [64, 128, 256, 512],
         depths: list[int] = [2, 2, 6, 2],
-        drop_path_rate: float = 0.0,
         dropout: float = 0.0,
+        drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
         act_layer: Callable | str = jax.nn.gelu,
-        norm_layer: str | eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = eqx.nn.LayerNorm,
         num_classes: int = 1000,
         eps=1e-5,
         key: PRNGKeyArray,
@@ -176,9 +177,11 @@ class IFormer(eqx.Module):
         universal_kwargs = {"act_layer": act_layer}
 
         if drop_path_uniform:
+            # not traced
             dpr = [drop_path_rate] * depth
         else:
-            dpr = list(jnp.linspace(0.0, drop_path_rate, depth))
+            # traced
+            dpr = np.linspace(0.0, drop_path_rate, depth).tolist()
 
         blocks = []
         _bc_dim = [in_channels, *dims[:-1]]
@@ -235,3 +238,192 @@ class IFormer(eqx.Module):
         x = self.head(x)
 
         return x
+
+
+def iformer_t(**kwargs) -> IFormer:
+    backbone = IFormer(
+        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        module_kwargs=[
+            {"kernel_size": 7, "expand_ratio": 3.0},
+            {"kernel_size": 7, "expand_ratio": 3.0},
+            {"kernel_size": 7, "expand_ratio": 3.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 2,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 2.0,
+            },
+            {"kernel_size": 7, "expand_ratio": 3.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 4,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 2.0,
+            },
+        ],
+        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
+        downsample_last=False,
+        dims=[32, 64, 128, 128, 128, 256],
+        depths=[2, 2, 6, 3, 1, 2],
+        **kwargs,
+    )
+    return backbone
+
+
+def iformer_s(**kwargs) -> IFormer:
+    backbone = IFormer(
+        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        module_kwargs=[
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 2,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 4,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+        ],
+        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
+        downsample_last=False,
+        dims=[32, 64, 176, 176, 176, 320],
+        depths=[2, 2, 9, 3, 1, 2],
+        **kwargs,
+    )
+    return backbone
+
+
+def iformer_m(**kwargs) -> IFormer:
+    backbone = IFormer(
+        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        module_kwargs=[
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 2,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 4,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+        ],
+        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
+        downsample_last=False,
+        dims=[48, 96, 192, 192, 192, 384],
+        depths=[2, 2, 9, 4, 1, 2],
+        **kwargs,
+    )
+    return backbone
+
+
+# TODO: share windowing to avoid intermediate resizes
+def iformer_m_faster(**kwargs) -> IFormer:
+    backbone = IFormer(
+        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        module_kwargs=[
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 2,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+                "window_size": 16,
+            },
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 4,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+        ],
+        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
+        downsample_last=False,
+        dims=[48, 96, 192, 192, 192, 384],
+        depths=[2, 2, 9, 4, 1, 2],
+        **kwargs,
+    )
+    return backbone
+
+
+def iformer_l(**kwargs) -> IFormer:
+    backbone = IFormer(
+        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        module_kwargs=[
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 2,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 4,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+        ],
+        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
+        downsample_last=False,
+        dims=[48, 96, 256, 256, 256, 384],
+        depths=[2, 2, 8, 8, 1, 2],
+        **kwargs,
+    )
+    return backbone
+
+
+def iformer_l_faster(**kwargs) -> IFormer:
+    backbone = IFormer(
+        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        module_kwargs=[
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 2,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+                "window_size": 16,
+            },
+            {"kernel_size": 7, "expand_ratio": 4.0},
+            {
+                "num_heads": 1,
+                "head_dim_reduce_ratio": 4,
+                "attn_ratio": 1.0,
+                "ffn_ratio": 3.0,
+            },
+        ],
+        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
+        downsample_last=False,
+        dims=[48, 96, 256, 256, 256, 384],
+        depths=[2, 2, 8, 8, 1, 2],
+        **kwargs,
+    )
+    return backbone

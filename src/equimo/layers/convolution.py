@@ -121,7 +121,6 @@ class DoubleConvBlock(eqx.Module):
     conv1: SingleConvBlock
     conv2: SingleConvBlock
     drop_path1: DropPathAdd
-    act: Callable
     ls1: LayerScale | eqx.nn.Identity
 
     def __init__(
@@ -136,10 +135,11 @@ class DoubleConvBlock(eqx.Module):
         out_channels: int | None = None,
         kernel_size: int = 3,
         stride: int = 1,
-        padding: int = 1,
+        padding: str | int = "SAME",
         use_bias: bool = False,
         act_layer: Callable | None = jax.nn.gelu,
         norm_max_group: int = 32,
+        dropout: float = 0.0,
         drop_path: float = 0.0,
         init_values: float | None = None,
         key: PRNGKeyArray,
@@ -166,8 +166,8 @@ class DoubleConvBlock(eqx.Module):
         # handle interop / backward compat
         assert dim is not None or in_channels is not None
         in_channels: int = in_channels or dim  # type: ignore
-        hidden_channels: int = hidden_channels or hidden_dim or dim  # type: ignore
-        out_channels: int = out_channels or out_dim or dim  # type: ignore
+        hidden_channels: int = hidden_channels or hidden_dim or in_channels
+        out_channels: int = out_channels or out_dim or in_channels
 
         self.residual = in_channels == out_channels
 
@@ -180,6 +180,7 @@ class DoubleConvBlock(eqx.Module):
             use_bias=use_bias,
             norm_layer=eqx.nn.GroupNorm,
             act_layer=act_layer,
+            dropout=dropout,
             key=key_conv1,
         )
         self.conv2 = SingleConvBlock(
@@ -191,6 +192,7 @@ class DoubleConvBlock(eqx.Module):
             use_bias=use_bias,
             norm_layer=eqx.nn.GroupNorm,
             act_layer=None,
+            dropout=dropout,
             key=key_conv2,
         )
 
@@ -1146,6 +1148,7 @@ class IFormerBlock(eqx.Module):
     conv1: SingleConvBlock
     conv2: SingleConvBlock
     conv3: SingleConvBlock
+    ls: LayerScale | eqx.nn.Identity
     dropout: eqx.nn.Dropout
     drop_path: DropPathAdd
 
@@ -1153,11 +1156,13 @@ class IFormerBlock(eqx.Module):
         self,
         in_channels: int,
         *,
+        kernel_size: int = 7,
         expand_ratio: float = 3.0,
         act_layer: Callable = jax.nn.gelu,
         dropout: float = 0.0,
         drop_path: float = 0.0,
         residual: bool = True,
+        init_values: float | None = None,
         key: PRNGKeyArray,
         **kwargs,
     ):
@@ -1168,8 +1173,9 @@ class IFormerBlock(eqx.Module):
         self.conv1 = SingleConvBlock(
             in_channels=in_channels,
             out_channels=in_channels,
-            kernel_size=7,
+            kernel_size=kernel_size,
             stride=1,
+            groups=in_channels,
             act_layer=None,
             use_bias=False,
             key=key_conv1,
@@ -1192,6 +1198,11 @@ class IFormerBlock(eqx.Module):
             use_bias=False,
             key=key_conv3,
         )
+        self.ls = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
         self.dropout = eqx.nn.Dropout(dropout)
         self.drop_path = DropPathAdd(drop_path)
 
@@ -1208,7 +1219,7 @@ class IFormerBlock(eqx.Module):
         out = self.conv3(out, inference=inference, key=key_conv3)
         out = self.dropout(out, inference=inference, key=key_dropout)
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(x, self.ls(out), inference=inference, key=key_droppath)
 
         return out
 

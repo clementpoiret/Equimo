@@ -211,7 +211,7 @@ class LayerNorm2d(eqx.Module):
         return x
 
 
-def get_norm(module: str | eqx.Module) -> eqx.Module:
+def get_norm(module: str | type[eqx.Module]) -> type[eqx.Module]:
     """Get an `eqx.Module` from its common name.
 
     This is necessary because configs have to be stringified and stored as
