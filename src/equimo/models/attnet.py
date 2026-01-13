@@ -2,8 +2,8 @@ from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.activation import get_act
@@ -95,7 +95,7 @@ class AttNet(eqx.Module):
         if drop_path_uniform:
             dpr = [drop_path_rate] * depth
         else:
-            dpr = list(jnp.linspace(0.0, drop_path_rate, depth))
+            dpr = np.linspace(0.0, drop_path_rate, depth).tolist()
 
         blocks = []
         _bc_dim = [in_channels, *dims[:-1]]

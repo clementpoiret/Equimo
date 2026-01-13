@@ -2,8 +2,8 @@ from typing import Callable, List, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -394,7 +394,7 @@ class FasterViT(eqx.Module):
         if drop_path_uniform:
             dpr = [drop_path_rate] * depth
         else:
-            dpr = list(jnp.linspace(0.0, drop_path_rate, depth))
+            dpr = np.linspace(0.0, drop_path_rate, depth).tolist()
 
         n_chunks = len(depths)
         num_heads = to_list(num_heads, n_chunks)

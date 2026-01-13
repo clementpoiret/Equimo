@@ -9,9 +9,8 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.convolution import (
     DoubleConvBlock,
-    SingleConvBlock,
     MBConv,
-    IFormerBlock,
+    SingleConvBlock,
 )
 from equimo.layers.dropout import DropPathAdd
 from equimo.layers.ffn import Mlp
@@ -344,15 +343,19 @@ class AttentionBlock(eqx.Module):
         key_attn, key_mlp = jr.split(key, 2)
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
+
         self.prenorm = norm_layer(dim, eps=eps)
         self.postnorm = (
             norm_layer(dim, eps=eps) if post_attention_norm else eqx.nn.Identity()
@@ -525,13 +528,16 @@ class HATBlock(eqx.Module):
         self.last = last
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
 
@@ -1030,14 +1036,14 @@ class SHMABlock(eqx.Module):
     posemb: PosCNN2D
     attn: SHMA
     drop_path1: DropPathAdd
-    ffn: IFormerBlock
+    ffn: DoubleConvBlock
     ls1: LayerScale | eqx.nn.Identity
-    ls2: LayerScale | eqx.nn.Identity
 
     def __init__(
         self,
         in_channels: int,
         *,
+        out_channels: None = None,
         num_heads: int = 1,
         attn_drop: float = 0.0,
         dropout: float = 0.0,
@@ -1054,16 +1060,22 @@ class SHMABlock(eqx.Module):
         init_values: float | None = 1e-6,
         key: PRNGKeyArray,
     ):
+        # it's here only for compat api :)
+        del out_channels
+
         key_pe, key_attn, key_ffn = jr.split(key, 3)
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
 
@@ -1082,21 +1094,20 @@ class SHMABlock(eqx.Module):
             key=key_attn,
         )
         self.drop_path1 = DropPathAdd(dr1)
-        self.ffn = IFormerBlock(
+        self.ffn = DoubleConvBlock(
             in_channels=in_channels,
-            expand_ratio=ffn_ratio,
+            hidden_channels=int(in_channels * ffn_ratio),
+            kernel_size=1,
+            stride=1,
+            padding=0,
             act_layer=act_layer,
             dropout=dropout,
             drop_path=dr2,
             residual=True,
+            init_values=init_values,
             key=key_ffn,
         )
         self.ls1 = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
-            if init_values is not None
-            else eqx.nn.Identity()
-        )
-        self.ls2 = (
             LayerScale(in_channels, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
@@ -1124,13 +1135,11 @@ class SHMABlock(eqx.Module):
             inference=inference,
             key=key_dr1,
         )
-        # Drop path 2 handled by iformer block
-        x = self.ls2(
-            self.ffn(
-                x,
-                inference=inference,
-                key=key_ffn,
-            )
+        # Drop path and layer scale handled by double conv block
+        x = self.ffn(
+            x,
+            inference=inference,
+            key=key_ffn,
         )
 
         return x
@@ -1330,13 +1339,16 @@ class MllaBlock(eqx.Module):
         )
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
 
@@ -1689,13 +1701,16 @@ class PartialFormerBlock(eqx.Module):
         self.patch_size = patch_size
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
 
@@ -2076,13 +2091,16 @@ class RFAttentionBlock(eqx.Module):
         self.residual = residual
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
 
@@ -2282,13 +2300,16 @@ class ConvAttentionBlock(eqx.Module):
         key_attn, key_mlp = jr.split(key, 2)
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
 
@@ -2385,13 +2406,16 @@ class LowFormerBlock(eqx.Module):
         key_context, key_local = jr.split(key, 2)
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
             dr1 = dr2 = float(drop_path)
 

@@ -2,8 +2,8 @@ from typing import List, Optional, Tuple
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -95,7 +95,7 @@ class Mlla(eqx.Module):
         self.pos_drop = eqx.nn.Dropout(drop_rate)
 
         dpr = (
-            list(jnp.linspace(0.0, drop_path_rate, n_chunks))
+            np.linspace(0.0, drop_path_rate, n_chunks).tolist()
             if not drop_path_uniform
             else to_list(drop_path_rate, n_chunks)
         )

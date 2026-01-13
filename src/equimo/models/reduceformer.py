@@ -2,8 +2,8 @@ from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -44,7 +44,10 @@ class BlockChunk(eqx.Module):
             k for k, v in kwargs.items() if isinstance(v, list) and len(v) == depth
         ]
 
-        if isinstance(drop_path, float):
+        if isinstance(drop_path, list):
+            if len(drop_path) != depth:
+                raise ValueError(f"Got {len(drop_path)} values for a depth of {depth}.")
+        else:
             drop_path = [drop_path] * depth
 
         blocks = []
@@ -183,7 +186,7 @@ class ReduceFormer(eqx.Module):
         if drop_path_uniform:
             dpr = [drop_path_rate] * depth
         else:
-            dpr = list(jnp.linspace(0.0, drop_path_rate, depth))
+            dpr = np.linspace(0.0, drop_path_rate, depth).tolist()
 
         act_layer = get_act(act_layer)
         norm_layer = get_norm(norm_layer)

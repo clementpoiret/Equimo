@@ -4,6 +4,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -302,12 +303,12 @@ class PartialFormer(eqx.Module):
         if drop_path_uniform:
             dpr = [drop_path_rate] * depth
         else:
-            dpr = list(jnp.linspace(0.0, drop_path_rate, depth))
+            dpr = np.linspace(0.0, drop_path_rate, depth).tolist()
 
         if isinstance(foreground_ratios, float):
             f_ratios = [foreground_ratios] * depth
         elif isinstance(foreground_ratios, Tuple[float, float]):
-            f_ratios = list(jnp.linspace(*foreground_ratios, depth))
+            f_ratios = np.linspace(*foreground_ratios, depth).tolist()
         else:
             raise ValueError("Unknown type for forefround_ratios, got:")
 

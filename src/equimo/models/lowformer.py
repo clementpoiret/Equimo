@@ -2,8 +2,8 @@ from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -190,7 +190,7 @@ class LowFormer(eqx.Module):
         if drop_path_uniform:
             dpr = [drop_path_rate] * depth
         else:
-            dpr = list(jnp.linspace(0.0, drop_path_rate, depth))
+            dpr = np.linspace(0.0, drop_path_rate, depth).tolist()
 
         self.input_stem = eqx.nn.Sequential(
             [

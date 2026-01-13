@@ -19,7 +19,7 @@ class DropPath(eqx.Module, strict=True):
 
     def __init__(
         self,
-        p: float = 0.5,
+        p: float | jax.Array = 0.5,
         inference: bool = False,
     ):
         """**Arguments:**
@@ -29,6 +29,11 @@ class DropPath(eqx.Module, strict=True):
             is *not* applied. If `False` then dropout is applied. This may be toggled
             with overridden during [`DropPath.__call__`][].
         """
+
+        if isinstance(p, jax.Array):
+            if (_l := len(p)) != 1:
+                raise ValueError(f"Got {_l} values for p")
+            p = float(p[0])
 
         self.p = p
         self.inference = inference
@@ -89,6 +94,11 @@ class DropPathAdd(eqx.Module, strict=True):
             is *not* applied. If `False` then dropout is applied. This may be toggled
             with overridden during [`DropPath.__call__`][].
         """
+
+        if isinstance(p, list):
+            if len(p) != 1:
+                raise ValueError(f"Got {len(p)} ps")
+            p = p[0]
 
         self.p = p
         self.inference = inference

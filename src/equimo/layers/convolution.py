@@ -194,8 +194,20 @@ class DoubleConvBlock(eqx.Module):
             key=key_conv2,
         )
 
-        dpr = drop_path[0] if isinstance(drop_path, list) else float(drop_path)
-        self.drop_path1 = DropPathAdd(dpr)
+        if isinstance(drop_path, list):
+            if (_l := len(drop_path)) == 1:
+                dr1 = drop_path[0]
+            elif _l == 2:
+                dr1, _ = drop_path
+                dr1 = float(dr1)
+            else:
+                raise AssertionError(
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
+                )
+        else:
+            dr1 = float(drop_path)
+
+        self.drop_path1 = DropPathAdd(dr1)
 
         self.ls1 = (
             LayerScale(out_channels, init_values=init_values)
@@ -2436,15 +2448,18 @@ class ATConvBlock(eqx.Module):
         self.norm2 = LayerNorm2d(in_channels)
 
         if isinstance(drop_path, list):
-            if len(drop_path) != 2:
+            if (_l := len(drop_path)) == 1:
+                dr1 = dr2 = drop_path[0]
+            elif _l == 2:
+                dr1, dr2 = drop_path
+                dr1 = float(dr1)
+                dr2 = float(dr2)
+            else:
                 raise AssertionError(
-                    f"`drop_path` needs to have 2 elements, got {len(drop_path)} ({drop_path})."
+                    f"`drop_path` needs to have 1 or 2 elements, got {_l} ({drop_path})."
                 )
-            dr1, dr2 = drop_path
-            dr1 = float(dr1)
-            dr2 = float(dr2)
         else:
-            dr1 = dr2 = jnp.array(drop_path, float)
+            dr1 = dr2 = float(drop_path)
 
         self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
