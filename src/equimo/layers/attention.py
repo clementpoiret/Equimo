@@ -1035,9 +1035,11 @@ class SHMA(eqx.Module):
 class SHMABlock(eqx.Module):
     posemb: PosCNN2D
     attn: SHMA
-    drop_path1: DropPathAdd
     ffn: DoubleConvBlock
     ls1: LayerScale | eqx.nn.Identity
+    ls2: LayerScale | eqx.nn.Identity
+    drop_path1: DropPathAdd
+    drop_path2: DropPathAdd
 
     def __init__(
         self,
@@ -1093,7 +1095,6 @@ class SHMABlock(eqx.Module):
             norm_layer=norm_layer,
             key=key_attn,
         )
-        self.drop_path1 = DropPathAdd(dr1)
         self.ffn = DoubleConvBlock(
             in_channels=in_channels,
             hidden_channels=int(in_channels * ffn_ratio),
@@ -1102,16 +1103,24 @@ class SHMABlock(eqx.Module):
             padding=0,
             act_layer=act_layer,
             dropout=dropout,
-            drop_path=dr2,
-            residual=True,
-            init_values=init_values,
+            drop_path=0.0,
+            residual=False,
+            init_values=None,  # handle in this block explicitely
             key=key_ffn,
         )
+
         self.ls1 = (
             LayerScale(in_channels, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
+        self.ls2 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+        self.drop_path1 = DropPathAdd(dr1)
+        self.drop_path2 = DropPathAdd(dr2)
 
     def __call__(
         self,
@@ -1119,7 +1128,7 @@ class SHMABlock(eqx.Module):
         key: PRNGKeyArray,
         inference: bool = False,
     ) -> Float[Array, "channels height width"]:
-        key_pe, key_attn, key_ffn, key_dr1 = jr.split(key, 4)
+        key_pe, key_attn, key_ffn, key_dr1, key_dr2 = jr.split(key, 5)
 
         x = self.posemb(x, inference=inference, key=key_pe)
 
@@ -1135,11 +1144,17 @@ class SHMABlock(eqx.Module):
             inference=inference,
             key=key_dr1,
         )
-        # Drop path and layer scale handled by double conv block
-        x = self.ffn(
+        x = self.drop_path2(
             x,
+            self.ls2(
+                self.ffn(
+                    x,
+                    inference=inference,
+                    key=key_ffn,
+                )
+            ),
             inference=inference,
-            key=key_ffn,
+            key=key_dr2,
         )
 
         return x
@@ -1251,18 +1266,20 @@ class MllaBlock(eqx.Module):
     use_dwc: bool = eqx.field(static=True)
 
     act: Callable
-    cpe1: eqx.Module
-    cpe2: eqx.Module
+    cpe1: eqx.nn.Conv2d
+    cpe2: eqx.nn.Conv2d
     norm1: eqx.Module
     norm2: eqx.Module
-    in_proj: eqx.Module
-    act_proj: eqx.Module
-    out_proj: eqx.Module
-    dwc: eqx.Module
+    in_proj: eqx.nn.Linear | eqx.nn.Identity
+    act_proj: eqx.nn.Linear | eqx.nn.Identity
+    out_proj: eqx.nn.Linear | eqx.nn.Identity
+    dwc: eqx.nn.Conv2d | eqx.nn.Identity
     attn: eqx.Module
-    drop_path1: eqx.Module
-    drop_path2: eqx.Module
     mlp: eqx.Module
+    drop_path1: DropPathAdd
+    drop_path2: DropPathAdd
+    ls1: LayerScale | eqx.nn.Identity
+    ls2: LayerScale | eqx.nn.Identity
 
     def __init__(
         self,
@@ -1270,14 +1287,15 @@ class MllaBlock(eqx.Module):
         *,
         key: PRNGKeyArray,
         act_layer: Callable = jax.nn.silu,  # gelu in VSSD
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: type[eqx.Module] = eqx.nn.LayerNorm,
         use_dwc: bool = True,  # For Mlla but not VMamba-2
-        attention_layer: eqx.Module = LinearAttention,
+        attention_layer: type[eqx.Module] = LinearAttention,
         drop_path: List[float] | float = 0.0,
         mlp_ratio: float = 4.0,
-        ffn_layer: eqx.Module = Mlp,
+        ffn_layer: type[eqx.Module] = Mlp,
         ffn_bias: bool = True,
         proj_drop: float = 0.0,
+        init_values: float | None = None,
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -1300,8 +1318,7 @@ class MllaBlock(eqx.Module):
         self.use_dwc = use_dwc
         self.act = act_layer
 
-        self.cpe1 = eqx.nn.Conv(
-            num_spatial_dims=2,
+        self.cpe1 = eqx.nn.Conv2d(
             in_channels=dim,
             out_channels=dim,
             kernel_size=3,
@@ -1316,8 +1333,7 @@ class MllaBlock(eqx.Module):
         if use_dwc:
             self.in_proj = eqx.nn.Linear(dim, dim, key=key_fc1)
             self.act_proj = eqx.nn.Linear(dim, dim, key=key_fc2)
-            self.dwc = eqx.nn.Conv(
-                num_spatial_dims=2,
+            self.dwc = eqx.nn.Conv2d(
                 in_channels=dim,
                 out_channels=dim,
                 kernel_size=3,
@@ -1352,10 +1368,7 @@ class MllaBlock(eqx.Module):
         else:
             dr1 = dr2 = float(drop_path)
 
-        self.drop_path1 = DropPathAdd(dr1)
-
-        self.cpe2 = eqx.nn.Conv(
-            num_spatial_dims=2,
+        self.cpe2 = eqx.nn.Conv2d(
             in_channels=dim,
             out_channels=dim,
             kernel_size=3,
@@ -1376,7 +1389,18 @@ class MllaBlock(eqx.Module):
             key=key_mlp,
         )
 
+        self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
+        self.ls1 = (
+            LayerScale(dim, axis=1, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+        self.ls2 = (
+            LayerScale(dim, axis=1, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
 
     def __call__(
         self,
@@ -1405,7 +1429,7 @@ class MllaBlock(eqx.Module):
         if self.use_dwc:
             x1 = jax.vmap(self.out_proj)(x * act_res)
 
-        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
+        x = self.drop_path1(x, self.ls1(x1), inference=inference, key=key_dr1)
 
         x += rearrange(
             self.cpe2(rearrange(x, "(h w) c -> c h w", h=h, w=w)),
@@ -1414,7 +1438,9 @@ class MllaBlock(eqx.Module):
 
         return self.drop_path2(
             x,
-            self.mlp(jax.vmap(self.norm2)(x), inference=inference, key=key_mlp),
+            self.ls2(
+                self.mlp(jax.vmap(self.norm2)(x), inference=inference, key=key_mlp)
+            ),
             inference=inference,
             key=key_dr2,
         )
@@ -2063,6 +2089,8 @@ class RFAttentionBlock(eqx.Module):
 
     context_module: RFAttention
     local_module: MBConv
+    ls1: LayerScale | eqx.nn.Identity
+    ls2: LayerScale | eqx.nn.Identity
     drop_path1: DropPathAdd
     drop_path2: DropPathAdd
 
@@ -2084,6 +2112,7 @@ class RFAttentionBlock(eqx.Module):
         local_drop: float = 0.0,
         drop_path: float | List[float] = 0.0,
         residual_mbconv: bool = False,
+        init_values: float | None = None,
         residual: bool = True,
         **kwargs,
     ):
@@ -2129,6 +2158,16 @@ class RFAttentionBlock(eqx.Module):
             key=key_local,
         )
 
+        self.ls1 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+        self.ls2 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
         self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
 
@@ -2143,11 +2182,11 @@ class RFAttentionBlock(eqx.Module):
         # TODO: some prenorm?
         x1 = self.context_module(x, inference=inference, key=key_context)
         if self.residual:
-            x1 = self.drop_path1(x, x1, inference=inference, key=key_dr1)
+            x1 = self.drop_path1(x, self.ls1(x1), inference=inference, key=key_dr1)
 
         x2 = self.local_module(x, inference=inference, key=key_local)
         if self.residual:
-            x2 = self.drop_path2(x1, x2, inference=inference, key=key_dr2)
+            x2 = self.drop_path2(x1, self.ls2(x2), inference=inference, key=key_dr2)
 
         return x2
 
@@ -2277,6 +2316,8 @@ class ConvAttentionBlock(eqx.Module):
     norm: eqx.Module
     attn: eqx.Module
     mlp: eqx.Module
+    ls1: LayerScale | eqx.nn.Identity
+    ls2: LayerScale | eqx.nn.Identity
     drop_path1: DropPathAdd
     drop_path2: DropPathAdd
 
@@ -2294,6 +2335,7 @@ class ConvAttentionBlock(eqx.Module):
         norm_layer: eqx.Module = eqx.nn.GroupNorm,
         norm_max_group: int = 32,
         post_attention_norm: bool = False,
+        init_values: float | None = None,
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -2344,6 +2386,16 @@ class ConvAttentionBlock(eqx.Module):
 
         self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
+        self.ls1 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+        self.ls2 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
 
     def __call__(
         self,
@@ -2355,11 +2407,13 @@ class ConvAttentionBlock(eqx.Module):
 
         x = self.drop_path1(
             x,
-            self.postnorm(
-                self.attn(
-                    self.prenorm(x),
-                    inference=inference,
-                    key=key_attn,
+            self.ls1(
+                self.postnorm(
+                    self.attn(
+                        self.prenorm(x),
+                        inference=inference,
+                        key=key_attn,
+                    )
                 )
             ),
             inference=inference,
@@ -2367,10 +2421,12 @@ class ConvAttentionBlock(eqx.Module):
         )
         x = self.drop_path2(
             x,
-            self.mlp(
-                self.norm(x),
-                inference=inference,
-                key=key_mlp,
+            self.ls2(
+                self.mlp(
+                    self.norm(x),
+                    inference=inference,
+                    key=key_mlp,
+                )
             ),
             inference=inference,
             key=key_dr2,
@@ -2384,6 +2440,8 @@ class LowFormerBlock(eqx.Module):
     local_module: MBConv
     drop_path1: DropPathAdd
     drop_path2: DropPathAdd
+    ls1: LayerScale | eqx.nn.Identity
+    ls2: LayerScale | eqx.nn.Identity
 
     def __init__(
         self,
@@ -2401,6 +2459,7 @@ class LowFormerBlock(eqx.Module):
         mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
         mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
         fuse_mbconv: bool = False,
+        init_values: float | None = None,
         **kwargs,
     ):
         key_context, key_local = jr.split(key, 2)
@@ -2443,6 +2502,16 @@ class LowFormerBlock(eqx.Module):
 
         self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
+        self.ls1 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+        self.ls2 = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
 
     def __call__(
         self,
@@ -2454,13 +2523,13 @@ class LowFormerBlock(eqx.Module):
 
         x = self.drop_path1(
             x,
-            self.context_module(x, inference=inference, key=key_context),
+            self.ls1(self.context_module(x, inference=inference, key=key_context)),
             inference=inference,
             key=key_dr1,
         )
         x = self.drop_path2(
             x,
-            self.local_module(x, inference=inference, key=key_local),
+            self.ls2(self.local_module(x, inference=inference, key=key_local)),
             inference=inference,
             key=key_dr2,
         )

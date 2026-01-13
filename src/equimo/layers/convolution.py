@@ -702,6 +702,7 @@ class MBConv(eqx.Module):
     point_conv: SingleConvBlock
     se_conv: SEModule | None
     drop_path: DropPathAdd
+    ls: LayerScale | eqx.nn.Identity
 
     def __init__(
         self,
@@ -726,6 +727,7 @@ class MBConv(eqx.Module):
         dropout: float = 0.0,
         drop_path: float = 0.0,
         residual: bool = False,
+        init_values: float | None = None,
         **kwargs,
     ):
         key_inverted, key_depth, key_point, key_se = jr.split(key, 4)
@@ -838,6 +840,11 @@ class MBConv(eqx.Module):
             else None
         )
 
+        self.ls = (
+            LayerScale(out_channels, axis=0, init_values=init_values)
+            if init_values is not None and self.residual
+            else eqx.nn.Identity()
+        )
         self.drop_path = DropPathAdd(drop_path)
 
     def __call__(
@@ -859,7 +866,7 @@ class MBConv(eqx.Module):
         out = self.point_conv(self.pre_pw_act(out), inference=inference, key=key_point)
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(x, self.ls(out), inference=inference, key=key_droppath)
 
         return out
 
@@ -871,6 +878,7 @@ class DSConv(eqx.Module):
     point_conv: SingleConvBlock
     dropout: eqx.nn.Dropout
     drop_path: DropPathAdd
+    ls: LayerScale | eqx.nn.Identity
 
     def __init__(
         self,
@@ -886,6 +894,7 @@ class DSConv(eqx.Module):
         | None = eqx.nn.GroupNorm,
         act_layer: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
         residual: bool = False,
+        init_values: float | None = None,
         dropout: float = 0.0,
         drop_path: float = 0.0,
         **kwargs,
@@ -938,6 +947,11 @@ class DSConv(eqx.Module):
             key=key_point,
         )
 
+        self.ls = (
+            LayerScale(out_channels, axis=0, init_values=init_values)
+            if init_values is not None and self.residual
+            else eqx.nn.Identity()
+        )
         self.dropout = eqx.nn.Dropout(dropout)
         self.drop_path = DropPathAdd(drop_path)
 
@@ -955,7 +969,7 @@ class DSConv(eqx.Module):
         out = self.dropout(out, inference=inference, key=key_dropout)
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(x, self.ls(out), inference=inference, key=key_droppath)
 
         return out
 
@@ -977,6 +991,7 @@ class UIB(eqx.Module):
     middle_dw_conv: SingleConvBlock | None
     proj_conv: SingleConvBlock
 
+    ls: LayerScale | eqx.nn.Identity
     dropout: eqx.nn.Dropout
     drop_path: DropPathAdd
 
@@ -994,6 +1009,7 @@ class UIB(eqx.Module):
         act_layer: Callable | None = jax.nn.relu,
         dropout: float = 0.0,
         drop_path: float = 0.0,
+        init_values: float | None = None,
         residual: bool = False,
         key: PRNGKeyArray,
         **kwargs,
@@ -1059,6 +1075,11 @@ class UIB(eqx.Module):
 
         # Ensure shapes are the same between input and output
         self.residual = residual and (stride == 1) and (in_channels == out_channels)
+        self.ls = (
+            LayerScale(out_channels, axis=0, init_values=init_values)
+            if init_values is not None and self.residual
+            else eqx.nn.Identity()
+        )
         self.dropout = eqx.nn.Dropout(dropout)
         self.drop_path = DropPathAdd(drop_path)
 
@@ -1087,7 +1108,7 @@ class UIB(eqx.Module):
         out = self.dropout(out, inference=inference, key=key_dropout)
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(x, self.ls(out), inference=inference, key=key_droppath)
 
         return out
 
@@ -2079,6 +2100,7 @@ class FasterNetBlock(eqx.Module):
     pw_conv2: eqx.nn.Conv2d
     norm: eqx.Module
     act: eqx.Module
+    ls: LayerScale | eqx.nn.Identity
     dropout: eqx.nn.Dropout
     drop_path: DropPathAdd
 
@@ -2098,6 +2120,7 @@ class FasterNetBlock(eqx.Module):
         drop_path: float = 0.0,
         norm_kwargs: dict = {},
         residual: bool = True,
+        init_values: float | None = None,
         **kwargs,
     ):
         """
@@ -2175,6 +2198,11 @@ class FasterNetBlock(eqx.Module):
 
         self.dropout = eqx.nn.Dropout(dropout)
         self.drop_path = DropPathAdd(drop_path)
+        self.ls = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None and self.residual
+            else eqx.nn.Identity()
+        )
         self.act = eqx.nn.Lambda(act_layer) if act_layer else eqx.nn.Identity()
 
     def __call__(
@@ -2192,7 +2220,7 @@ class FasterNetBlock(eqx.Module):
         )
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_droppath)
+            out = self.drop_path(x, self.ls(out), inference=inference, key=key_droppath)
 
         return out
 
@@ -2483,21 +2511,20 @@ class ATConvBlock(eqx.Module):
     ) -> Float[Array, "channels height width"]:
         key_tm, key_cm, key_dr1, key_dr2 = jr.split(key, 4)
 
-        x1 = self.ls1(self.token_mixer(self.norm1(x), inference=inference, key=key_tm))
+        x1 = self.token_mixer(self.norm1(x), inference=inference, key=key_tm)
         if self.residual:
             x1 = self.drop_path1(
                 x,
-                x1,
+                self.ls1(x1),
                 inference=inference,
                 key=key_dr1,
             )
-        x2 = self.ls2(
-            self.channel_mixer(self.norm2(x1), inference=inference, key=key_cm)
-        )
+        x2 = self.channel_mixer(self.norm2(x1), inference=inference, key=key_cm)
+
         if self.residual:
             x2 = self.drop_path2(
                 x1,
-                x2,
+                self.ls2(x2),
                 inference=inference,
                 key=key_dr2,
             )
@@ -2744,6 +2771,7 @@ class FreeNetBlock(eqx.Module):
     mixer: S2Mixer
     norm: eqx.Module
     ffn: ShiftFFN
+    ls: LayerScale | eqx.nn.Identity
     drop_path: DropPathAdd
 
     def __init__(
@@ -2759,6 +2787,7 @@ class FreeNetBlock(eqx.Module):
         norm_kwargs: dict = {},
         drop_path: float = 0.0,
         act_layer: Callable = jax.nn.gelu,
+        init_values: float | None = None,
         residual: bool = True,
         **kwargs,
     ):
@@ -2788,6 +2817,11 @@ class FreeNetBlock(eqx.Module):
             key=key_ffn,
         )
 
+        self.ls = (
+            LayerScale(in_channels, axis=0, init_values=init_values)
+            if init_values is not None and self.residual
+            else eqx.nn.Identity()
+        )
         self.drop_path = DropPathAdd(drop_path)
 
     def __call__(
@@ -2805,6 +2839,6 @@ class FreeNetBlock(eqx.Module):
         )
 
         if self.residual:
-            out = self.drop_path(x, out, inference=inference, key=key_dp)
+            out = self.drop_path(x, self.ls(out), inference=inference, key=key_dp)
 
         return out

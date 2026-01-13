@@ -1,3 +1,4 @@
+from equimo.models.iformer import iformer_t
 import tempfile
 from pathlib import Path
 
@@ -143,6 +144,17 @@ def test_reduceformer():
 
     x = jr.normal(key, (3, 64, 64))
     model = em.reduceformer_backbone_b1(in_channels=3, num_classes=10, key=key)
+    y_hat = model(x, key=key)
+
+    assert len(y_hat) == 10
+
+
+def test_iformer():
+    """Test creation and inference of a ReduceFormer model."""
+    key = jr.PRNGKey(42)
+
+    x = jr.normal(key, (3, 64, 64))
+    model = em.iformer_t(in_channels=3, num_classes=10, key=key)
     y_hat = model(x, key=key)
 
     assert len(y_hat) == 10

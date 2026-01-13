@@ -369,7 +369,7 @@ class FasterViT(eqx.Module):
         ffn_layer: eqx.Module = Mlp,
         ffn_bias: bool = True,
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
-        init_values: float | None = 1e-5,
+        init_values: float | None = None,
         ls_convblock: bool = False,
         do_propagation: bool = False,
         global_pool: Literal["", "token", "avg", "avgmax", "max"] = "avg",
