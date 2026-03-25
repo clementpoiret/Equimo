@@ -22,8 +22,8 @@ class WeightNormLinear(eqx.Module):
         [1] https://arxiv.org/abs/1602.07868
     """
 
-    weight_v: jnp.ndarray
-    weight_g: jnp.ndarray
+    weight_v: Float[Array, "out_features in_features"]
+    weight_g: Float[Array, "out_features 1"]
 
     def __init__(self, in_features: int, out_features: int, key: PRNGKeyArray):
         self.weight_v = eqx.nn.Linear(
@@ -31,14 +31,17 @@ class WeightNormLinear(eqx.Module):
         ).weight
         self.weight_g = jnp.ones((out_features, 1))
 
-    def __call__(self, x):
+    def __call__(
+        self,
+        x: Float[Array, "seqlen in_features"],
+    ) -> Float[Array, "seqlen out_features"]:
         """Apply weight normalized linear transformation.
 
         Args:
-            x: Input tensor
+            x: Input tensor of shape (seqlen, in_features)
 
         Returns:
-            Transformed tensor using normalized weights
+            Transformed tensor of shape (seqlen, out_features)
         """
         v_norm = jnp.linalg.norm(self.weight_v, ord=2, axis=1, keepdims=True)
         normalized_v = self.weight_v / v_norm
@@ -69,12 +72,11 @@ class DINOHead(eqx.Module):
         [1] https://arxiv.org/abs/2304.07193
     """
 
-    act_layer: Callable = eqx.field(static=True)
-
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     fc3: eqx.nn.Linear
     last: WeightNormLinear
+    act_layer: Callable = eqx.field(static=True)
 
     def __init__(
         self,
@@ -110,20 +112,22 @@ class DINOHead(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        key: PRNGKeyArray,
         inference: Optional[bool] = None,
-    ) -> Float[Array, "seqlen dim"]:
+        key: Optional[PRNGKeyArray] = None,
+    ) -> Float[Array, "seqlen out_features"]:
         """Process input through the DINOv2 projection head.
 
         Args:
-            x: Input feature tensor
-            inference: Whether to enable dropout (unused in original implementation)
-            key: PRNG key for random operations
+            x: Input feature tensor of shape (seqlen, dim)
+            inference: Unused; present for API consistency with other FFN modules
+            key: Unused; present for API consistency with other FFN modules
 
         Returns:
-            Projected and normalized features
+            Projected and normalized features of shape (seqlen, out_features)
         """
-        eps = 1e-6 if x.dtype == jnp.float16 else 1e-12
+        # Use larger eps for reduced-precision dtypes to avoid division by zero
+        eps = 1e-6 if x.dtype in (jnp.float16, jnp.bfloat16) else 1e-12
+
         x = self.act_layer(jax.vmap(self.fc1)(x))
         x = self.act_layer(jax.vmap(self.fc2)(x))
         x = self.act_layer(jax.vmap(self.fc3)(x))
@@ -140,24 +144,27 @@ class Mlp(eqx.Module):
 
     A standard MLP implementation with two fully connected layers, activation function,
     and dropout for regularization. The architecture follows:
-    input -> fc1 -> activation -> dropout1 -> fc2 -> dropout2 -> output
+    input -> fc1 -> activation -> norm -> dropout1 -> fc2 -> dropout2 -> output
+
+    Note: the optional inter-layer norm is applied *after* the activation, following
+    the NormFormer (post-activation norm) convention. See:
+    https://arxiv.org/abs/2110.09456
 
     Attributes:
         fc1: First linear layer
         fc2: Second linear layer
-        norm: Optional norm between fc1 and fc2
+        norm: Optional norm between fc1 and fc2 (applied post-activation)
         drop1: Dropout after first layer
         drop2: Dropout after second layer
         act_layer: Activation function
     """
-
-    act_layer: Callable = eqx.field(static=True)
 
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     norm: eqx.Module
     drop1: eqx.nn.Dropout
     drop2: eqx.nn.Dropout
+    act_layer: Callable = eqx.field(static=True)
 
     def __init__(
         self,
@@ -181,9 +188,10 @@ class Mlp(eqx.Module):
             out_features: Number of output features (default: same as in_features)
             hidden_features: Number of hidden features (default: same as in_features)
             act_layer: Activation function (default: gelu)
-            norm_layer: Optional norm layer to apply between denses (default: None)
+            norm_layer: Optional norm layer applied post-activation after fc1 (default: None)
             dropout_rate: Dropout probability (default: 0.0)
             bias: Whether to include bias in linear layers (default: True)
+            eps: Epsilon for norm layer (default: 1e-5)
             **kwargs: Additional arguments
         """
         key_fc1, key_fc2 = jr.split(key, 2)
@@ -210,7 +218,7 @@ class Mlp(eqx.Module):
         self,
         x: Float[Array, "seqlen dim"],
         key: PRNGKeyArray,
-        mask: Optional[Float[Array, ""]] = None,
+        mask: Optional[Float[Array, "seqlen 1"]] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         key_dr1, key_dr2 = jr.split(key, 2)
@@ -278,11 +286,11 @@ class SwiGlu(eqx.Module):
             in_features: Number of input features
             key: PRNG key for initialization
             out_features: Number of output features (default: same as in_features)
-            hidden_features: Size of hidden dimension (default: same as in_features)
+            hidden_features: Size of hidden dimension before alignment (default: same as in_features)
             dropout_rate: Dropout probability (default: 0.0)
-            align_to: constrains hidden features to be a multiple of a given int (default: 8)
+            align_to: Constrains hidden features to be a multiple of this value (default: 8)
             bias: Whether to include bias in linear layers (default: True)
-            **kwargs: Additional arguments
+            **kwargs: Additional arguments (norm_layer is not supported and will be ignored)
         """
         key_fc1, key_fc2, key_fc3 = jr.split(key, 3)
 
@@ -331,7 +339,7 @@ class SwiGlu(eqx.Module):
 
 
 class SwiGluFused(eqx.Module):
-    """SwiGLU activation module with dropout.
+    """SwiGLU activation module with a fused projection, with dropout.
 
     This matches the implementation of Dinov2 giant at
     https://github.com/facebookresearch/dinov2/blob/e1277af2ba9496fbadf7aec6eba56e8d882d1e35/dinov2/layers/swiglu_ffn.py#L54
@@ -370,25 +378,28 @@ class SwiGluFused(eqx.Module):
         out_features: int | None = None,
         hidden_features: int | None = None,
         dropout_rate: float = 0.0,
+        align_to: int = 8,
         bias: bool = True,
         **kwargs,
     ):
-        """Initialize the SwiGLU module.
+        """Initialize the fused SwiGLU module.
 
         Args:
             in_features: Number of input features
             key: PRNG key for initialization
             out_features: Number of output features (default: same as in_features)
-            hidden_features: Size of hidden dimension (default: same as in_features)
+            hidden_features: Size of hidden dimension before alignment (default: same as in_features)
             dropout_rate: Dropout probability (default: 0.0)
+            align_to: Constrains hidden features to be a multiple of this value (default: 8)
             bias: Whether to include bias in linear layers (default: True)
-            **kwargs: Additional arguments
+            **kwargs: Additional arguments (norm_layer is not supported and will be ignored)
         """
         key_fc1, key_fc2 = jr.split(key, 2)
 
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        hidden_features = (int(hidden_features * 2 / 3) + 7) // 8 * 8
+        d = int(hidden_features * 2 / 3)
+        hidden_features = d + (-d % align_to)
 
         self.w12 = eqx.nn.Linear(
             in_features, 2 * hidden_features, use_bias=bias, key=key_fc1
@@ -425,8 +436,8 @@ class SwiGluFused(eqx.Module):
         return x
 
 
-def get_ffn(module: str | eqx.Module) -> eqx.Module:
-    """Get an `eqx.Module` from its common name.
+def get_ffn(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get an `eqx.Module` class from its common name.
 
     This is necessary because configs have to be stringified and stored as
     json files to allow (de)serialization.
