@@ -152,11 +152,10 @@ class SEModule(eqx.Module):
         Returns:
             Channel-recalibrated feature map of the same shape and dtype.
         """
-        dtype = x.dtype
-        x_se = x.mean(axis=(1, 2), keepdims=True).astype(jnp.float32)
+        x_se = x.mean(axis=(1, 2), keepdims=True)
         x_se = jax.nn.relu(self.norm(self.fc1(x_se)))
         x_se = self.fc2(x_se)
-        return x * self.act(x_se).astype(dtype)
+        return x * self.act(x_se)
 
 
 @register_se()
@@ -224,7 +223,6 @@ class EffectiveSEModule(eqx.Module):
         Returns:
             Channel-recalibrated feature map of the same shape and dtype.
         """
-        dtype = x.dtype
-        x_se = x.mean(axis=(1, 2), keepdims=True).astype(jnp.float32)
+        x_se = x.mean(axis=(1, 2), keepdims=True)
         x_se = self.fc(x_se)
-        return x * self.act(x_se).astype(dtype)
+        return x * self.act(x_se)

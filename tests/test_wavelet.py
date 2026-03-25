@@ -97,21 +97,35 @@ class TestHWDConv:
 
     def test_bfloat16_input_finite(self):
         layer = HWDConv(4, 8, key=KEY)
-        x = jr.normal(KEY, (4, 16, 16)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (4, 16, 16)).astype(dtype)
         out = layer(x, key=KEY)
         assert out.dtype == jnp.bfloat16
         assert jnp.all(jnp.isfinite(out))
 
     def test_float16_input_finite(self):
         layer = HWDConv(4, 8, key=KEY)
-        x = jr.normal(KEY, (4, 16, 16)).astype(jnp.float16)
+        dtype = jnp.float16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (4, 16, 16)).astype(dtype)
         out = layer(x, key=KEY)
         assert out.dtype == jnp.float16
         assert jnp.all(jnp.isfinite(out))
 
     def test_output_dtype_preserved(self):
-        layer = HWDConv(4, 8, key=KEY)
         for dtype in (jnp.float32, jnp.bfloat16):
+            layer = HWDConv(4, 8, key=KEY)
+            layer = jax.tree_util.tree_map(
+                lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+                layer,
+            )
             x = jr.normal(KEY, (4, 16, 16)).astype(dtype)
             assert layer(x, key=KEY).dtype == dtype
 

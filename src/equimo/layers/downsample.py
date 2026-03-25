@@ -173,8 +173,7 @@ class ConvNormDownsampler(eqx.Module):
         *args,
         **kwargs,
     ) -> Float[Array, "out_channels new_height new_width"]:
-        dtype = x.dtype
-        return self.downsampler(x.astype(jnp.float32)).astype(dtype)
+        return self.downsampler(x)
 
 
 @register_downsampler()
@@ -294,8 +293,6 @@ class PWSEDownsampler(eqx.Module):
             Downsampled feature tensor with halved spatial dimensions and
             increased channel count.
         """
-        dtype = x.dtype
-        x = x.astype(jnp.float32)
         key_conv1, key_conv2, key_conv3, key_conv4 = jr.split(key, 4)
         x = self.conv2(
             self.conv1(x, inference=inference, key=key_conv1),
@@ -309,4 +306,4 @@ class PWSEDownsampler(eqx.Module):
             key=key_conv4,
         )
 
-        return x.astype(dtype)
+        return x

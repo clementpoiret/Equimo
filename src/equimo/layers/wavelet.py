@@ -176,10 +176,7 @@ class HWDConv(eqx.Module):
     def __call__(
         self, x: Array, *, key: PRNGKeyArray, inference: bool = False
     ) -> Array:
-        dtype = x.dtype
-        x = x.astype(jnp.float32)
-
-        LL, HL, LH, HH = haar_dwt_split(x, dtype=jnp.float32)  # each (C, H/2, W/2)
+        LL, HL, LH, HH = haar_dwt_split(x, dtype=x.dtype)  # each (C, H/2, W/2)
 
         if self.mode == "h_discard":
             y = LL  # (C, H/2, W/2)
@@ -195,4 +192,4 @@ class HWDConv(eqx.Module):
 
         y = self.dropout(y, inference=inference, key=key)
 
-        return y.astype(dtype)
+        return y

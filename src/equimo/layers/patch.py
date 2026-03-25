@@ -171,7 +171,6 @@ class PatchEmbedding(eqx.Module):
         return img_size[0] // self.patch_size[0], img_size[1] // self.patch_size[1]
 
     def __call__(self, x: Float[Array, "channels height width"]) -> Float[Array, "..."]:
-        dtype = x.dtype
         C, H, W = x.shape
 
         if self.img_size is not None:
@@ -199,7 +198,6 @@ class PatchEmbedding(eqx.Module):
             pad_w = (self.patch_size[1] - W % self.patch_size[1]) % self.patch_size[1]
             x = jnp.pad(x, pad_width=((0, 0), (0, pad_h), (0, pad_w)))
 
-        x = x.astype(jnp.float32)  # conv weights are float32; upcast to match
         x = self.proj(x)
         C, H, W = x.shape
 
@@ -207,9 +205,9 @@ class PatchEmbedding(eqx.Module):
         x = jax.vmap(self.norm)(x)
 
         if not self.flatten:
-            return rearrange(x, "(h w) c -> c h w", h=H, w=W).astype(dtype)
+            return rearrange(x, "(h w) c -> c h w", h=H, w=W)
 
-        return x.astype(dtype)
+        return x
 
 
 @register_patch()
@@ -311,10 +309,8 @@ class ConvPatchEmbed(eqx.Module):
             Output tensor of shape (out_channels, height // 4, width // 4),
             same dtype as input.
         """
-        dtype = x.dtype
         c, h, w = x.shape
 
-        x = x.astype(jnp.float32)  # conv weights are float32; upcast to match
         x = self._from_tokens(
             self.act(jax.vmap(self.norm1)(self._to_tokens(self.conv1(x)))),
             h=h // 2,
@@ -325,7 +321,7 @@ class ConvPatchEmbed(eqx.Module):
             h=h // 4,
             w=w // 4,
         )
-        return x.astype(dtype)
+        return x
 
 
 @register_patch()
@@ -422,16 +418,14 @@ class PatchMerging(eqx.Module):
             Downsampled token sequence of shape (seqlen // 4, out_dim),
             same dtype as input.
         """
-        dtype = x.dtype
         l, _ = x.shape
         h = w = int(l**0.5)
 
-        x = x.astype(jnp.float32)  # conv weights are float32; upcast to match
         x = rearrange(x, "(h w) c -> c h w", h=h, w=w)
         x = self.conv3(self.conv2(self.conv1(x)))
         x = rearrange(x, "c h w -> (h w) c")
 
-        return x.astype(dtype)
+        return x
 
 
 @register_patch()
@@ -539,10 +533,8 @@ class SEPatchMerging(eqx.Module):
             Output tensor of shape (out_channels, height // 2, width // 2),
             same dtype as input.
         """
-        dtype = x.dtype
-        x = x.astype(jnp.float32)  # conv weights are float32; upcast to match
         x = self.act(self.norm1(self.conv1(x)))
         x = self.act(self.norm2(self.conv2(x)))
         x = self.se(x)
         x = self.norm3(self.conv3(x))
-        return x.astype(dtype)
+        return x

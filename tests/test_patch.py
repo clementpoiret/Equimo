@@ -150,18 +150,24 @@ class TestPatchEmbedding:
 
     def test_dtype_preserved_bfloat16(self):
         layer = PatchEmbedding(self.IN_CHANNELS, self.DIM, self.PATCH_SIZE, key=KEY)
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(
-            jnp.bfloat16
+        dtype = jnp.bfloat16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
         )
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.bfloat16
         assert jnp.all(jnp.isfinite(out))
 
     def test_dtype_preserved_float16(self):
         layer = PatchEmbedding(self.IN_CHANNELS, self.DIM, self.PATCH_SIZE, key=KEY)
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(
-            jnp.float16
+        dtype = jnp.float16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
         )
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.float16
         assert jnp.all(jnp.isfinite(out))
@@ -175,9 +181,12 @@ class TestPatchEmbedding:
             norm_layer=eqx.nn.LayerNorm,
             key=KEY,
         )
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(
-            jnp.bfloat16
+        dtype = jnp.bfloat16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
         )
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.bfloat16
 
@@ -242,7 +251,12 @@ class TestConvPatchEmbed:
         layer = ConvPatchEmbed(
             self.IN_CHANNELS, self.HIDDEN_CHANNELS, self.OUT_CHANNELS, key=KEY
         )
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.bfloat16
         assert jnp.all(jnp.isfinite(out))
@@ -251,7 +265,12 @@ class TestConvPatchEmbed:
         layer = ConvPatchEmbed(
             self.IN_CHANNELS, self.HIDDEN_CHANNELS, self.OUT_CHANNELS, key=KEY
         )
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(jnp.float16)
+        dtype = jnp.float16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.float16
         assert jnp.all(jnp.isfinite(out))
@@ -306,14 +325,24 @@ class TestPatchMerging:
 
     def test_dtype_preserved_bfloat16(self):
         layer = PatchMerging(self.DIM, key=KEY)
-        x = jr.normal(KEY, (self.SEQLEN, self.DIM)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (self.SEQLEN, self.DIM)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.bfloat16
         assert jnp.all(jnp.isfinite(out))
 
     def test_dtype_preserved_float16(self):
         layer = PatchMerging(self.DIM, key=KEY)
-        x = jr.normal(KEY, (self.SEQLEN, self.DIM)).astype(jnp.float16)
+        dtype = jnp.float16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (self.SEQLEN, self.DIM)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.float16
         assert jnp.all(jnp.isfinite(out))
@@ -380,14 +409,24 @@ class TestSEPatchMerging:
 
     def test_dtype_preserved_bfloat16(self):
         layer = SEPatchMerging(self.IN_CHANNELS, self.OUT_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.bfloat16
         assert jnp.all(jnp.isfinite(out))
 
     def test_dtype_preserved_float16(self):
         layer = SEPatchMerging(self.IN_CHANNELS, self.OUT_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(jnp.float16)
+        dtype = jnp.float16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W)).astype(dtype)
         out = layer(x)
         assert out.dtype == jnp.float16
         assert jnp.all(jnp.isfinite(out))

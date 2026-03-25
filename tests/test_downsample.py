@@ -1,5 +1,7 @@
 """Tests for equimo.layers.downsample."""
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -74,7 +76,12 @@ class TestConvNormDownsampler:
 
     def test_bfloat16_input(self):
         ds = ConvNormDownsampler(IN_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        ds = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            ds,
+        )
+        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(dtype)
         out = ds(x)
         assert jnp.all(jnp.isfinite(out))
 
@@ -117,7 +124,12 @@ class TestPWSEDownsampler:
 
     def test_bfloat16_input(self):
         ds = PWSEDownsampler(IN_CHANNELS, OUT_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        ds = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            ds,
+        )
+        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(dtype)
         out = ds(x, KEY, inference=True)
         assert jnp.all(jnp.isfinite(out))
 

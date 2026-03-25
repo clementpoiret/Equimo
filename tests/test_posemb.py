@@ -259,16 +259,25 @@ class TestRoPE:
         assert jnp.all(jnp.isfinite(rope(x)))
 
     def test_dtype_preserved_bfloat16(self):
-        """RoPE promotes to float32 internally and casts back to input dtype."""
         rope = RoPE(shape=(SEQLEN, DIM))
-        x = jr.normal(KEY, (SEQLEN, DIM)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        rope = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            rope,
+        )
+        x = jr.normal(KEY, (SEQLEN, DIM)).astype(dtype)
         out = rope(x)
         assert out.dtype == jnp.bfloat16
         assert jnp.all(jnp.isfinite(out))
 
     def test_dtype_preserved_float16(self):
         rope = RoPE(shape=(SEQLEN, DIM))
-        x = jr.normal(KEY, (SEQLEN, DIM)).astype(jnp.float16)
+        dtype = jnp.float16
+        rope = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            rope,
+        )
+        x = jr.normal(KEY, (SEQLEN, DIM)).astype(dtype)
         out = rope(x)
         assert out.dtype == jnp.float16
         assert jnp.all(jnp.isfinite(out))
@@ -423,7 +432,12 @@ class TestPosCNN:
 
     def test_bfloat16_input_finite(self):
         layer = PosCNN(DIM, DIM, key=KEY)
-        x = jr.normal(KEY, (SEQLEN, DIM)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        layer = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            layer,
+        )
+        x = jr.normal(KEY, (SEQLEN, DIM)).astype(dtype)
         assert jnp.all(jnp.isfinite(layer(x)))
 
 

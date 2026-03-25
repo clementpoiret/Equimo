@@ -96,7 +96,6 @@ class LearnedPosEmbed(eqx.Module):
             Resampled positional embeddings
         """
         pe = self.weight
-        prev_dtype = pe.dtype
         H, W = new_size
         dim = self.dim if dim is None else dim
         num_embedded_prefix_tokens = (
@@ -119,12 +118,12 @@ class LearnedPosEmbed(eqx.Module):
             old_size = (hw, hw)
 
         prefix = pe[:num_embedded_prefix_tokens] if num_embedded_prefix_tokens else None
-        grid = pe[num_embedded_prefix_tokens:].astype(jnp.float32)
+        grid = pe[num_embedded_prefix_tokens:]
         grid = rearrange(grid, "(h w) d -> h w d", h=old_size[0], w=old_size[1])
         grid = jax.image.resize(
             grid, (H, W, dim), method=interpolation, antialias=self.antialias
         )
-        grid = rearrange(grid, "h w d -> (h w) d").astype(prev_dtype)
+        grid = rearrange(grid, "h w d -> (h w) d")
         if prefix is not None:
             grid = jnp.concatenate([prefix, grid], axis=0)
         return grid
@@ -493,22 +492,18 @@ class RoPE(eqx.Module):
         self,
         x: Float[Array, "..."],
     ) -> Float[Array, "..."]:
-        dtype = x.dtype
-        x = x.astype(jnp.float32)
-
         # Reshape x to separate real and imaginary parts
         x_reshaped = x.reshape(*x.shape[:-1], -1, 2)
-        x_complex = x_reshaped[..., 0] + 1j * x_reshaped[..., 1]
+        x_r, x_i = x_reshaped[..., 0], x_reshaped[..., 1]
 
-        # Apply rotation
+        # Apply rotation via real arithmetic: (x_r + i·x_i)(r_r + i·r_i)
         rotations_ng = jax.lax.stop_gradient(self.rotations)
-        rotations_complex = rotations_ng[..., 0] + 1j * rotations_ng[..., 1]
-        pe_x = rotations_complex * x_complex
+        r_r = rotations_ng[..., 0].astype(x.dtype)
+        r_i = rotations_ng[..., 1].astype(x.dtype)
+        pe_r = x_r * r_r - x_i * r_i
+        pe_i = x_r * r_i + x_i * r_r
 
-        # Convert back to real representation
-        pe_x_real = jnp.stack([pe_x.real, pe_x.imag], axis=-1)
-
-        return pe_x_real.reshape(*x.shape).astype(dtype)
+        return jnp.stack([pe_r, pe_i], axis=-1).reshape(*x.shape)
 
 
 @register_posemb()
@@ -753,18 +748,17 @@ class PosCNN(eqx.Module):
                 f"PosCNN requires a square sequence length, got {l} (not a perfect square)."
             )
 
-        dtype = x.dtype
         x1 = rearrange(
             self.proj(
                 rearrange(
-                    x.astype(jnp.float32),
+                    x,
                     "(h w) c -> c h w",
                     h=h,
                     w=w,
                 )
             ),
             "c h w -> (h w) c",
-        ).astype(dtype)
+        )
 
         if self.s == 1:
             return x + x1

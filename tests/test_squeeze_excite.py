@@ -1,5 +1,6 @@
 """Tests for equimo.layers.squeeze_excite."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -41,13 +42,23 @@ class TestSEModule:
 
     def test_output_dtype_preserved_bfloat16(self):
         se = SEModule(IN_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        se = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            se,
+        )
+        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(dtype)
         out = se(x)
         assert jnp.all(jnp.isfinite(out))
 
     def test_output_dtype_preserved_float16(self):
         se = SEModule(IN_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(jnp.float16)
+        dtype = jnp.float16
+        se = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            se,
+        )
+        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(dtype)
         out = se(x)
         assert jnp.all(jnp.isfinite(out))
 
@@ -112,13 +123,23 @@ class TestEffectiveSEModule:
 
     def test_output_dtype_preserved_bfloat16(self):
         se = EffectiveSEModule(IN_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(jnp.bfloat16)
+        dtype = jnp.bfloat16
+        se = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            se,
+        )
+        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(dtype)
         out = se(x)
         assert jnp.all(jnp.isfinite(out))
 
     def test_output_dtype_preserved_float16(self):
         se = EffectiveSEModule(IN_CHANNELS, key=KEY)
-        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(jnp.float16)
+        dtype = jnp.float16
+        se = jax.tree_util.tree_map(
+            lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
+            se,
+        )
+        x = jr.normal(KEY, (IN_CHANNELS, H, W)).astype(dtype)
         out = se(x)
         assert jnp.all(jnp.isfinite(out))
 
