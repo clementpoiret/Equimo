@@ -1,15 +1,67 @@
-from equimo.layers.convolution import SingleConvBlock
 import math
-from typing import Any, Literal, Optional, Tuple
+from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 from einops import rearrange
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Integer, PRNGKeyArray
+
+from equimo.layers.convolution import SingleConvBlock
+
+_POSEMB_REGISTRY: dict[str, type[eqx.Module]] = {}
 
 
+def register_posemb(
+    name: Optional[str] = None,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new positional embedding modules.
+
+    Why collision checking: Prevents third-party extensions from silently
+    overwriting core layers, which can silently corrupt the computational graph.
+    """
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _POSEMB_REGISTRY:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_POSEMB_REGISTRY[registry_name]}."
+            )
+
+        _POSEMB_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
+
+
+def get_posemb(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get a positional embedding `eqx.Module` class from its registered name.
+
+    This is necessary because configs have to be stringified and stored as
+    json files to allow (de)serialization.
+    """
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _POSEMB_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_POSEMB_REGISTRY.keys())}"
+        )
+
+    return _POSEMB_REGISTRY[module_lower]
+
+
+@register_posemb()
 class LearnedPosEmbed(eqx.Module):
     weight: jax.Array
 
@@ -101,7 +153,8 @@ class LearnedPosEmbed(eqx.Module):
         """
         if dynamic_img_size:
             C, H, W = x.shape
-            assert C == self.dim, f"Channel dim mismatch: {C} vs {self.dim}"
+            if C != self.dim:
+                raise ValueError(f"Channel dim mismatch: {C} vs {self.dim}")
             pos_embed = self.resample(
                 new_size=(H, W),
                 old_size=(self.embed_size, self.embed_size),
@@ -113,15 +166,18 @@ class LearnedPosEmbed(eqx.Module):
 
         to_cat = []
         if cls_token is not None:
-            # Expect (1, dim)
-            assert cls_token.shape[-1] == self.dim and cls_token.shape[0] == 1
+            if cls_token.shape[-1] != self.dim or cls_token.shape[0] != 1:
+                raise ValueError(
+                    f"cls_token must have shape (1, {self.dim}), got {cls_token.shape}"
+                )
             to_cat.append(cls_token)
         if reg_tokens is not None:
-            # Expect (R, dim)
-            assert reg_tokens.ndim == 2 and reg_tokens.shape[-1] == self.dim
+            if reg_tokens.ndim != 2 or reg_tokens.shape[-1] != self.dim:
+                raise ValueError(
+                    f"reg_tokens must have shape (R, {self.dim}), got {reg_tokens.shape}"
+                )
             to_cat.append(reg_tokens)
 
-        # Branching exactly mirrors your current _pos_embed logic
         if self.no_embed_class:
             # Add pos to patches only; then prepend any prefix tokens (cls/reg)
             x = x + pos_embed
@@ -152,6 +208,7 @@ class LearnedPosEmbed(eqx.Module):
         return x
 
 
+@register_posemb()
 class PosEmbMLPSwinv1D(eqx.Module):
     """1D Positional Embedding using MLP for Swin Transformer.
 
@@ -169,7 +226,7 @@ class PosEmbMLPSwinv1D(eqx.Module):
     seq_len: int = eqx.field(static=True)
 
     cpb_mlp: eqx.Module
-    relative_coords_table: jnp.ndarray = eqx.field(static=True)
+    relative_coords_table: Float[Array, "..."]
 
     def __init__(
         self,
@@ -177,7 +234,7 @@ class PosEmbMLPSwinv1D(eqx.Module):
         rank: int,
         seq_len: int,
         *,
-        key=PRNGKeyArray,
+        key: PRNGKeyArray,
         **kwargs,
     ):
         key1, key2 = jr.split(key, 2)
@@ -221,16 +278,18 @@ class PosEmbMLPSwinv1D(eqx.Module):
         self,
         x: Float[Array, "..."],
     ) -> Float[Array, "..."]:
+        coords_table = jax.lax.stop_gradient(self.relative_coords_table)
         if self.rank == 1:
-            table = self.relative_coords_table
+            table = coords_table
         else:
-            table = rearrange(self.relative_coords_table, "c h w -> (h w) c")
+            table = rearrange(coords_table, "c h w -> (h w) c")
 
         pos_emb = jax.vmap(self.cpb_mlp)(table)
 
         return x + pos_emb.astype(x.dtype)
 
 
+@register_posemb()
 class PosEmbMLPSwinv2D(eqx.Module):
     """2D Positional Embedding using MLP for Swin Transformer V2.
 
@@ -253,8 +312,8 @@ class PosEmbMLPSwinv2D(eqx.Module):
     window_size: Tuple[int, int] = eqx.field(static=True)
 
     cpb_mlp: eqx.nn.Sequential
-    relative_coords_table: jnp.ndarray = eqx.field(static=True)
-    relative_position_index: jnp.ndarray = eqx.field(static=True)
+    relative_coords_table: Float[Array, "..."]
+    relative_position_index: Integer[Array, "..."]
 
     def __init__(
         self,
@@ -263,8 +322,7 @@ class PosEmbMLPSwinv2D(eqx.Module):
         num_heads: int,
         seq_len: int,
         *,
-        key=PRNGKeyArray,
-        inference: bool = False,
+        key: PRNGKeyArray,
         no_log: bool = False,
         ct_correct: bool = False,
         **kwargs,
@@ -340,11 +398,13 @@ class PosEmbMLPSwinv2D(eqx.Module):
     def __call__(
         self, x: Float[Array, "..."], local_window_size: int
     ) -> Float[Array, "..."]:
+        coords_table = jax.lax.stop_gradient(self.relative_coords_table)
+        position_index = jax.lax.stop_gradient(self.relative_position_index)
         relative_position_bias_table = jax.vmap(jax.vmap(jax.vmap(self.cpb_mlp)))(
-            self.relative_coords_table
+            coords_table
         ).reshape(-1, self.num_heads)
         relative_position_bias = relative_position_bias_table[
-            self.relative_position_index.reshape(-1)
+            position_index.reshape(-1)
         ].reshape(
             self.window_size[0] * self.window_size[1],
             self.window_size[0] * self.window_size[1],
@@ -391,6 +451,7 @@ class PosEmbMLPSwinv2D(eqx.Module):
         return x + relative_position_bias.astype(x.dtype)
 
 
+@register_posemb()
 class RoPE(eqx.Module):
     """Rotary Position Embedding (RoPE).
 
@@ -450,6 +511,7 @@ class RoPE(eqx.Module):
         return pe_x_real.reshape(*x.shape).astype(dtype)
 
 
+@register_posemb()
 class DinoRoPE(eqx.Module):
     """Axial RoPE that produces per-position sin/cos for later rotation of features.
 
@@ -579,15 +641,14 @@ class DinoRoPE(eqx.Module):
         *,
         H: int,
         W: int,
-        key: jax.Array,
-        inference: Optional[bool] = None,
+        key: PRNGKeyArray,
+        inference: bool = False,
     ) -> Tuple[jax.Array, jax.Array]:
         """Compute (sin, cos) with shapes [H*W, D_head].
 
         If `inference is False`, training-time augmentations may be applied
         depending on configuration. If `inference is True`, no augmentations
-        are applied. If `inference is None`, defaults to training mode
-        (augmentations applied when configured).
+        are applied.
         """
         k_shift, k_jitter, k_rescale = jax.random.split(key, 3)
 
@@ -643,6 +704,7 @@ class DinoRoPE(eqx.Module):
         return sin, cos
 
 
+@register_posemb()
 class PosCNN(eqx.Module):
     """Convolutional Position Encoding for 1D sequences.
 
@@ -685,19 +747,24 @@ class PosCNN(eqx.Module):
         x: Float[Array, "seqlen dim"],
     ) -> Float[Array, "seqlen dim"]:
         l, _ = x.shape
-        h = w = int(l**0.5)
+        h = w = int(math.isqrt(l))
+        if h * w != l:
+            raise ValueError(
+                f"PosCNN requires a square sequence length, got {l} (not a perfect square)."
+            )
 
+        dtype = x.dtype
         x1 = rearrange(
             self.proj(
                 rearrange(
-                    x,
+                    x.astype(jnp.float32),
                     "(h w) c -> c h w",
                     h=h,
                     w=w,
                 )
             ),
             "c h w -> (h w) c",
-        )
+        ).astype(dtype)
 
         if self.s == 1:
             return x + x1
@@ -705,6 +772,7 @@ class PosCNN(eqx.Module):
             return x1
 
 
+@register_posemb()
 class PosCNN2D(eqx.Module):
     """Convolutional Position Encoding for 2D inputs.
 
@@ -713,8 +781,8 @@ class PosCNN2D(eqx.Module):
     2D inputs without reshaping.
 
     Attributes:
-        s: Stride for convolution operation (static)
-        proj: Depthwise convolution layer
+        residual: Whether to add a residual connection (static)
+        proj: Depthwise convolution block
     """
 
     residual: bool = eqx.field(static=True)
@@ -731,12 +799,13 @@ class PosCNN2D(eqx.Module):
         key: PRNGKeyArray,
         **kwargs,
     ):
-        self.residual = residual and (stride == 1 and in_channels == out_channels)
+        effective_out = out_channels or in_channels
+        self.residual = residual and (stride == 1 and in_channels == effective_out)
 
         self.proj = SingleConvBlock(
             in_channels=in_channels,
-            out_channels=out_channels or in_channels,
-            groups=out_channels or in_channels,
+            out_channels=effective_out,
+            groups=in_channels,
             kernel_size=3,
             stride=stride,
             padding=1,

@@ -26,6 +26,17 @@ from .patch import (
     get_patch,
     register_patch,
 )
+from .posemb import (
+    DinoRoPE,
+    LearnedPosEmbed,
+    PosCNN,
+    PosCNN2D,
+    PosEmbMLPSwinv1D,
+    PosEmbMLPSwinv2D,
+    RoPE,
+    get_posemb,
+    register_posemb,
+)
 
 __all__ = [
     # Generic Layers
@@ -59,4 +70,14 @@ __all__ = [
     "SEPatchMerging",
     "get_patch",
     "register_patch",
+    # Positional Embeddings
+    "DinoRoPE",
+    "LearnedPosEmbed",
+    "PosCNN",
+    "PosCNN2D",
+    "PosEmbMLPSwinv1D",
+    "PosEmbMLPSwinv2D",
+    "RoPE",
+    "get_posemb",
+    "register_posemb",
 ]
