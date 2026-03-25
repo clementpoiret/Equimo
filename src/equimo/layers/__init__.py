@@ -1,3 +1,4 @@
+from .dropout import DropPath, DropPathAdd, get_dropout, register_dropout
 from .ffn import (
     DINOHead,
     Mlp,
@@ -39,6 +40,11 @@ from .posemb import (
 )
 
 __all__ = [
+    # Dropout
+    "DropPath",
+    "DropPathAdd",
+    "get_dropout",
+    "register_dropout",
     # Generic Layers
     "BlockChunk",
     "Residual",
