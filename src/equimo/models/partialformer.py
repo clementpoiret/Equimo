@@ -1,3 +1,5 @@
+__all__ = ["PartialFormer"]
+
 from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx

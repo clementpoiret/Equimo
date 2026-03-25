@@ -1,3 +1,5 @@
+__all__ = ["Vssd"]
+
 from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
@@ -11,7 +13,6 @@ from equimo.layers.convolution import Stem
 from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
-from equimo.layers.patch import PatchMerging
 from equimo.models.registry import register_model
 from equimo.utils import make_drop_path_schedule, to_list
 

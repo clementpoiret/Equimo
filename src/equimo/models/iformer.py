@@ -1,3 +1,13 @@
+__all__ = [
+    "IFormer",
+    "iformer_t",
+    "iformer_s",
+    "iformer_m",
+    "iformer_m_faster",
+    "iformer_l",
+    "iformer_l_faster",
+]
+
 from typing import Callable, Optional, Tuple
 
 import equinox as eqx
@@ -6,8 +16,8 @@ import jax.random as jr
 import numpy as np
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.activation import get_act
 from equimo.layers import get_layer
+from equimo.layers.activation import get_act
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.models.registry import register_model

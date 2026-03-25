@@ -1,3 +1,5 @@
+__all__ = ["FasterViT"]
+
 from typing import Callable, List, Literal, Optional, Tuple
 
 import equinox as eqx
@@ -8,10 +10,8 @@ from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.activation import get_act
-from equimo.layers.attention import HATBlock, WindowedAttention, get_attn
-from equimo.layers.convolution import DoubleConvBlock
-from equimo.layers.downsample import ConvNormDownsampler
-from equimo.layers.ffn import Mlp, get_ffn
+from equimo.layers.attention import HATBlock
+from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import _resolve_layer
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import ConvPatchEmbed

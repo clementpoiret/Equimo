@@ -1,3 +1,5 @@
+__all__ = ["update_ema_model"]
+
 from typing import Any
 
 import equinox as eqx

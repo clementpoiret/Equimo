@@ -1,4 +1,7 @@
-from typing import Callable, Optional
+__all__ = ["MobileNetv3", "mobilenetv3_small", "mobilenetv3_large"]
+
+
+from typing import Optional
 
 import equinox as eqx
 import jax

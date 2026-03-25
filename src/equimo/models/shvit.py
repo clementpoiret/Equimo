@@ -1,3 +1,6 @@
+__all__ = ["SHViT"]
+
+
 from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
