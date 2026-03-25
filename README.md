@@ -7,7 +7,10 @@ Equimo (Equinox Image Models) provides JAX/Equinox implementations of recent com
 ## Features
 
 - Pure JAX/Equinox implementations
-- Focus on recent architectures (2023-2024 papers)
+- Focus on recent architectures (2023-2026 papers)
+- **Registry system** — register custom attention, FFN, norm, and model classes by name
+- **`BlockChunk`** — universal building block for staged architectures; supports string-based layer resolution, positional embeddings, downsampling, and stochastic depth
+- String-based layer resolution everywhere — pass `"layernorm"` instead of `eqx.nn.LayerNorm`
 - Modular design for easy experimentation
 - Extensive documentation and type hints
 - **Experimental** support for text embedding
@@ -30,7 +33,7 @@ pip install -e .
 
 ## Implemented Models
 
-Beyond normal ViT (e.g., dinov2 or siglip), equimo proposes other SotA architectures:
+Beyond a standard ViT (e.g., DINOv2 or SigLIP), Equimo provides other SotA architectures:
 
 | Model         | Paper                                                                                                                                                           | Year | Status    |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | --------- |
@@ -42,51 +45,236 @@ Beyond normal ViT (e.g., dinov2 or siglip), equimo proposes other SotA architect
 | VSSD          | [VSSD: Vision Mamba with Non-Causal State Space Duality](https://arxiv.org/abs/2407.18559)                                                                      | 2024 | ✅        |
 | ReduceFormer  | [ReduceFormer: Attention with Tensor Reduction by Summation](https://arxiv.org/abs/2406.07488)                                                                  | 2024 | ✅        |
 | LowFormer     | [LowFormer: Hardware Efficient Design for Convolutional Transformer Backbones](https://arxiv.org/abs/2409.03460)                                                | 2024 | ✅        |
-| DINOv3        | [DINOv3](https://arxiv.org/abs/2508.10104)                                                                                                                      | 2025 | ✅        |
-| FreeNet       | [FreeNet: Liberating Depth-Wise Separable Operations for Building Faster Mobile Vision Architectures](https://ojs.aaai.org/index.php/AAAI/article/view/33041)   | 2025 | ✅        |
+| DINOv3        | [DINOv3](https://arxiv.org/abs/2508.10104)                                                                                                                      | 2025 | ✅†       |
+| FreeNet       | [FreeNet: Liberating Depth-Wise Separable Operations for Building Faster Mobile Vision Architectures](https://ojs.aaai.org/index.php/AAAI/article/view/33041)   | 2025 | ✅‡       |
 
-\*: Only contains the [Linear Angular Attention](https://github.com/clementpoiret/Equimo/blob/f8fcc79e45ca65e9deb1d970c4286c0b8562f9c2/equimo/layers/attention.py#L1407) module. It is straight forward to build a ViT around it, but may require an additional `__call__` kwarg to control the `sparse_reg` bool.
+\*: Only contains the [Linear Angular Attention](https://github.com/clementpoiret/Equimo/blob/f8fcc79e45ca65e9deb1d970c4286c0b8562f9c2/equimo/layers/attention.py#L1407) module. It is straightforward to build a ViT around it, but may require an additional `__call__` kwarg to control the `sparse_reg` bool.
+
+†: DINOv3 is a `VisionTransformer` configuration using RoPE positional embeddings and SwiGLU FFN. Pretrained weights are available — see [pretrained models](#list-of-pretrained-models).
+
+‡: FreeNet building blocks (`FreeNetBlock`, `S2Mixer`, `ShiftNeck`) are implemented in `equimo.layers` and registered in the convolution registry. There is no standalone `FreeNet` model class; use `BlockChunk` to compose a full network from these blocks.
 
 ## Basic Usage
 
 ```python
 import jax
-
 import equimo.models as em
 
-# Create a model (e.g. `faster_vit_0_224`)
 key = jax.random.PRNGKey(0)
-model = em.FasterViT(
+model = em.VisionTransformer(
     img_size=224,
     in_channels=3,
-    dim=64,
-    in_dim=64,
-    depths=[2, 3, 6, 5],
-    num_heads=[2, 4, 8, 16],
-    hat=[False, False, True, False],
-    window_size=[7, 7, 7, 7],
-    ct_size=2,
+    dim=384,
+    patch_size=14,
+    num_heads=[6],
+    depths=[12],
+    num_classes=1000,
     key=key,
 )
 
-# Generate random input
 x = jax.random.normal(key, (3, 224, 224))
 
-# Run inference
-output = model(x, enable_dropout=False, key=key)
+# Inference (dropout disabled)
+logits = model(x, key=key, inference=True)
+
+# Feature extraction
+features = model.features(x, key=key, inference=True)
 ```
+
+## Registry System
+
+Equimo exposes a registry for every layer family. Each registry follows the same pattern:
+a `register_*` decorator and a `get_*` resolver. All model and layer constructors
+accept string names wherever a class would normally be passed.
+
+### Available registries
+
+| Registry function      | Layer family           | Exported from   |
+| ---------------------- | ---------------------- | --------------- |
+| `register_attn`        | Attention modules      | `equimo.layers` |
+| `register_attn_block`  | Transformer blocks     | `equimo.layers` |
+| `register_ffn`         | Feed-forward networks  | `equimo.layers` |
+| `register_norm`        | Normalisation layers   | `equimo.layers` |
+| `register_act`         | Activation functions   | `equimo.layers` |
+| `register_conv`        | Convolution blocks     | `equimo.layers` |
+| `register_patch`       | Patch embedding layers | `equimo.layers` |
+| `register_posemb`      | Positional embeddings  | `equimo.layers` |
+| `register_downsampler` | Downsampling layers    | `equimo.layers` |
+| `register_dropout`     | Dropout variants       | `equimo.layers` |
+| `register_mixer`       | SSM / mixer blocks     | `equimo.layers` |
+| `register_se`          | Squeeze-and-excitation | `equimo.layers` |
+| `register_wavelet`     | Wavelet transforms     | `equimo.layers` |
+| `register_model`       | Full model classes     | `equimo.models` |
+
+`get_layer` (exported from `equimo.layers`) resolves a string name across **all** layer
+registries in priority order, so `BlockChunk` and model constructors can accept a single
+string for any layer type.
+
+### Example: register a custom attention and build a ViT with it
+
+```python
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import equinox as eqx
+from jaxtyping import Array, Float, PRNGKeyArray
+
+import equimo.models as em
+from equimo.layers import register_attn, register_attn_block
+
+# ── 1. Define and register the attention module ───────────────────────────────
+
+@register_attn("myattn")
+class MyAttention(eqx.Module):
+    """Minimal scaled dot-product attention (single-head demo)."""
+
+    qkv: eqx.nn.Linear
+    proj: eqx.nn.Linear
+    dim: int = eqx.field(static=True)
+
+    def __init__(self, dim: int, *, key: PRNGKeyArray, **kwargs):
+        self.dim = dim
+        k1, k2 = jr.split(key)
+        self.qkv = eqx.nn.Linear(dim, 3 * dim, use_bias=False, key=k1)
+        self.proj = eqx.nn.Linear(dim, dim, use_bias=False, key=k2)
+
+    def __call__(
+        self,
+        x: Float[Array, "seq dim"],
+        *,
+        key: PRNGKeyArray,
+        inference: bool = False,
+    ) -> Float[Array, "seq dim"]:
+        seq, d = x.shape
+        qkv = jax.vmap(self.qkv)(x)              # (seq, 3*dim)
+        q, k, v = jnp.split(qkv, 3, axis=-1)     # each (seq, dim)
+        scale = d ** -0.5
+        attn = jax.nn.softmax(
+            (q @ k.T * scale).astype(jnp.float32), axis=-1
+        ).astype(x.dtype)
+        return jax.vmap(self.proj)(attn @ v)
+
+
+# ── 2. Wrap it in a transformer block and register it ────────────────────────
+
+@register_attn_block("myattnblock")
+class MyAttentionBlock(eqx.Module):
+    norm1: eqx.nn.LayerNorm
+    norm2: eqx.nn.LayerNorm
+    attn: MyAttention
+    mlp: eqx.nn.MLP
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,   # accepted for API compatibility; ignored here
+        mlp_ratio: float = 4.0,
+        drop_path: float = 0.0,
+        *,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        k1, k2 = jr.split(key)
+        self.norm1 = eqx.nn.LayerNorm(dim)
+        self.norm2 = eqx.nn.LayerNorm(dim)
+        self.attn = MyAttention(dim=dim, key=k1)
+        self.mlp = eqx.nn.MLP(
+            in_size=dim,
+            out_size=dim,
+            width_size=int(dim * mlp_ratio),
+            depth=1,
+            key=k2,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "seq dim"],
+        *,
+        key: PRNGKeyArray,
+        inference: bool = False,
+        **kwargs,
+    ) -> Float[Array, "seq dim"]:
+        x = x + self.attn(
+            jax.vmap(self.norm1)(x), key=key, inference=inference
+        )
+        x = x + jax.vmap(self.mlp)(jax.vmap(self.norm2)(x))
+        return x
+
+
+# ── 3. Plug it into VisionTransformer via its string name ────────────────────
+
+key = jr.PRNGKey(0)
+model = em.VisionTransformer(
+    img_size=224,
+    in_channels=3,
+    dim=384,
+    patch_size=16,
+    num_heads=[6],
+    depths=[6],
+    num_classes=1000,
+    block="myattnblock",   # ← resolved from the registry
+    key=key,
+)
+
+x = jax.random.normal(key, (3, 224, 224))
+logits = model(x, key=key, inference=True)
+print(logits.shape)  # (1000,)
+```
+
+Re-registering an existing name raises a `ValueError` by default. Pass `force=True` to
+override:
+
+```python
+@register_attn("myattn", force=True)
+class MyImprovedAttention(eqx.Module):
+    ...
+```
+
+## BlockChunk
+
+`BlockChunk` (from `equimo.layers`) is the canonical building block for multi-stage
+vision architectures. It groups a sequence of identical blocks with optional positional
+embedding and downsampling, and handles stochastic depth scheduling automatically.
+
+```python
+from equimo.layers import BlockChunk
+from equimo.layers.attention import AttentionBlock
+from equimo.layers.downsample import ConvNormDownsampler
+import jax.random as jr
+
+key = jr.PRNGKey(0)
+
+stage = BlockChunk(
+    depth=4,
+    in_channels=96,
+    out_channels=192,
+    module="attentionblock",       # resolved from _ATTN_BLOCK_REGISTRY
+    module_kwargs={"dim": 96, "num_heads": 3, "mlp_ratio": 4.0},
+    downsampler="convnormdownsampler",  # resolved from _DOWNSAMPLER_REGISTRY
+    downsampler_kwargs={},         # in_channels/out_channels injected automatically
+    downsample_last=True,          # blocks run first, then downsample
+    drop_path=0.1,
+    key=key,
+)
+```
+
+Passing a list of drop-path rates of length `depth` applies them per block. Any
+list-valued entry in `module_kwargs` whose length equals `depth` is also spread across
+blocks (e.g. per-block attention types).
 
 ## Working with text embeddings
 
-**Warning: this is experimental, it can break or change at any time**
+**Warning: this is experimental and can change at any time.**
 
-`equimo.experimental.text` has been added since v0.3.0. It allows working with both text and images. It is especially
-useful for models like SigLIP or TIPS, although only TIPS is currently supported.
+`equimo.experimental.text` allows working with both text and images. It is especially
+useful for models like SigLIP or TIPS. Text tokenization relies on `tensorflow_text`;
+install equimo with the `text` extra:
 
-Currently, text tokenization relies on tensorflow_text, install equimo with the `text` group such as
-`uv add equimo[text]`.
+```bash
+pip install equimo[text]
+```
 
-Here is a very simple example of a 0-shot classification based on the comparison between text and image embeddings:
+Zero-shot classification example using TIPS:
 
 ```python
 import jax
@@ -96,7 +284,6 @@ from equimo.experimental.text import Tokenizer
 from equimo.io import load_image, load_model
 from equimo.utils import PCAVisualizer, normalize, plot_image_and_feature_map
 
-# Random demo inputs
 key = jax.random.PRNGKey(42)
 image = load_image("./demo.jpg", size=448)
 text = [
@@ -104,11 +291,9 @@ text = [
     "A computer",
 ]
 
-# Loading pretrained models
 image_encoder = load_model("vit", "tips_vits14_hr")
 text_encoder = load_model("experimental.textencoder", "tips_vits14_hr_text")
 
-# Encoding text and image
 ids, paddings = Tokenizer(identifier="sentencepiece_tips").tokenize(text, max_len=64)
 
 text_embedding = normalize(
@@ -120,12 +305,10 @@ spatial_features = rearrange(
     image_embedding[2:], "(h w) d -> h w d", h=int(448 / 14), w=int(448 / 14)
 )
 
-# Getting probabilities based on Cosine Similarity
 cos_sim = jax.nn.softmax(
     ((cls_token[None, :] @ text_embedding.T) / text_encoder.temperature), axis=-1
 )
 
-# Plot the results
 label_idxs = jax.numpy.argmax(cos_sim, axis=-1)
 cos_sim_max = jax.numpy.max(cos_sim, axis=-1)
 label_predicted = text[label_idxs[0]]
@@ -160,10 +343,10 @@ from equimo.io import save_model
 # Save model with compression (creates .tar.lz4 file)
 save_model(
     Path("path/to/save/model"),
-    model,  # can be any model you created using Equimo
+    model,
     model_config,
-    torch_hub_cfg,  # This can be an empty list, it's mainly to keep track of where are the weights coming
-    compression=True
+    torch_hub_cfg,  # can be an empty list; used to track weight provenance
+    compression=True,
 )
 
 # Save model without compression (creates directory)
@@ -172,7 +355,7 @@ save_model(
     model,
     model_config,
     torch_hub_cfg,
-    compression=False
+    compression=False,
 )
 ```
 
@@ -191,33 +374,73 @@ model = load_model(cls="vit", path=Path("path/to/model.tar.lz4"))
 model = load_model(cls="vit", path=Path("path/to/model/"))
 ```
 
-Parameters passed to models can be overridden such as:
+Constructor parameters can be overridden at load time:
 
 ```python
 model = load_model(
     cls="vit",
     identifier="siglip2_vitb16_256",
-    dynamic_img_size=True,  # passed to the VisionTransformer class
+    dynamic_img_size=True,  # forwarded to VisionTransformer.__init__
 )
+```
+
+Custom models registered with `register_model` can also be loaded by name:
+
+```python
+from equimo.models import register_model
+
+@register_model("mynet")
+class MyNet(eqx.Module):
+    ...
+
+model = load_model("mynet", path=Path("mynet.tar.lz4"))
 ```
 
 #### List of pretrained models
 
 The following models have pretrained weights available in Equimo:
 
-- [DinoV2](https://arxiv.org/abs/2304.07193),
-- [SigLIP2](https://arxiv.org/abs/2502.14786),
-- [TIPS](https://arxiv.org/abs/2410.16512).
+- [DINOv2](https://arxiv.org/abs/2304.07193)
+- [DINOv3](https://arxiv.org/abs/2508.10104)
+- [SigLIP2](https://arxiv.org/abs/2502.14786)
+- [TIPS](https://arxiv.org/abs/2410.16512)
 
-Model identifiers allow downloading from equimo's [repository on huggingface](https://huggingface.co/poiretclement/equimo/tree/main/models/default)
+Model identifiers map to filenames in Equimo's [HuggingFace repository](https://huggingface.co/poiretclement/equimo/tree/main/models/default).
 
-Identifiers are filenames without the extensions, such as:
+Examples:
 
 - `dinov2_vitb14`
 - `dinov2_vits14_reg`
+- `dinov3_vits16_pretrain_lvd1689m`
+- `dinov3_vitb16_pretrain_lvd1689m`
+- `dinov3_vitl16_pretrain_lvd1689m`
+- `dinov3_vits16plus_pretrain_lvd1689m`
+- `dinov3_vith16plus_pretrain_lvd1689m`
+- `dinov3_vit7b16_pretrain_lvd1689m`
+- `dinov3_vitl16_pretrain_sat493m`
+- `dinov3_vit7b16_pretrain_sat493m`
 - `siglip2_vitl16_512`
 - `siglip2_vitso400m16_384`
 - `tips_vitg14_lr`
+
+## Mixed Precision
+
+Equimo follows a strict WYSIWYG policy — modules never silently cast inputs or weights.
+Cast your model before running inference:
+
+```python
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+
+model_bf16 = jax.tree_util.tree_map(
+    lambda leaf: leaf.astype(jnp.bfloat16) if eqx.is_inexact_array(leaf) else leaf,
+    model_fp32,
+)
+```
+
+Isolated `float32` upcasts are mandatory for numerically sensitive operations
+(softmax, layer norm variance). These are applied internally where needed.
 
 ## Contributing
 
