@@ -1,4 +1,5 @@
 from typing import Callable
+
 import equinox as eqx
 import jax
 import jax.random as jr
@@ -47,7 +48,7 @@ class SEModule(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        in_channels: int,
         *,
         key: PRNGKeyArray,
         rd_ratio: float = 1.0 / 16,
@@ -58,10 +59,12 @@ class SEModule(eqx.Module):
         **kwargs,
     ):
         key_fc1, key_fc2 = jr.split(key, 2)
-        rd_channels = make_divisible(dim * rd_ratio, rd_divisor, round_limit=0.0)
+        rd_channels = make_divisible(
+            in_channels * rd_ratio, rd_divisor, round_limit=0.0
+        )
         self.fc1 = eqx.nn.Conv(
             num_spatial_dims=2,
-            in_channels=dim,
+            in_channels=in_channels,
             out_channels=rd_channels,
             kernel_size=1,
             stride=1,
@@ -80,7 +83,7 @@ class SEModule(eqx.Module):
         self.fc2 = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=rd_channels,
-            out_channels=dim,
+            out_channels=in_channels,
             kernel_size=1,
             stride=1,
             padding=0,
@@ -122,15 +125,15 @@ class EffectiveSEModule(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        in_channels: int,
         *,
         key: PRNGKeyArray,
         **kwargs,
     ):
         self.fc = eqx.nn.Conv(
             num_spatial_dims=2,
-            in_channels=dim,
-            out_channels=dim,
+            in_channels=in_channels,
+            out_channels=in_channels,
             kernel_size=1,
             stride=1,
             padding=0,

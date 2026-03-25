@@ -58,7 +58,7 @@ class Mamba2Mixer(eqx.Module):
 
     def __init__(
         self,
-        d_model: int,
+        dim: int,
         *,
         key: PRNGKeyArray,
         expand: int = 2,
@@ -75,7 +75,7 @@ class Mamba2Mixer(eqx.Module):
         **kwargs,
     ):
         key_inproj, key_outproj, key_conv, key_randvals, key_a = jr.split(key, 5)
-        self.d_inner = int(d_model * expand)
+        self.d_inner = int(dim * expand)
         if self.d_inner % head_dim != 0:
             raise ValueError("`d_inner` must be a multiple of `head_dim`.")
         self.n_heads = self.d_inner // head_dim
@@ -85,7 +85,7 @@ class Mamba2Mixer(eqx.Module):
 
         d_in_proj = 2 * self.d_inner + 2 * n_groups * d_state + self.n_heads
         self.in_proj = eqx.nn.Linear(
-            d_model,
+            dim,
             d_in_proj,
             use_bias=use_bias,
             key=key_inproj,
@@ -107,7 +107,7 @@ class Mamba2Mixer(eqx.Module):
         dt = jnp.exp(
             rand_vals * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min)
         )
-        dt = jnp.clip(dt, a_min=dt_init_floor)
+        dt = jnp.clip(dt, min=dt_init_floor)
         self.dt_bias = dt + jnp.log(-jnp.expm1(-dt))
 
         A_min, A_max = A_init_range
@@ -118,7 +118,7 @@ class Mamba2Mixer(eqx.Module):
 
         self.norm = eqx.nn.LayerNorm(self.d_inner)
         self.out_proj = eqx.nn.Linear(
-            self.d_inner, d_model, use_bias=use_bias, key=key_outproj
+            self.d_inner, dim, use_bias=use_bias, key=key_outproj
         )
 
     def __call__(

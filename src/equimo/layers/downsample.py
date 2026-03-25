@@ -117,13 +117,17 @@ class PWSEDownsampler(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
         *,
+        in_channels: int | None = None,
+        out_channels: int | None = None,
+        dim: int | None = None,
+        out_dim: int | None = None,
         key: PRNGKeyArray,
         drop_path: float = 0.0,
         **kwargs,
     ):
+        in_channels = in_channels or dim
+        out_channels = out_channels or out_dim
         key_conv1, key_conv2, key_conv3, key_conv4, key_pm = jr.split(key, 5)
         self.conv1 = Residual(
             SingleConvBlock(
@@ -139,8 +143,8 @@ class PWSEDownsampler(eqx.Module):
             drop_path=drop_path,
         )
         self.conv2 = DoubleConvBlock(
-            in_channels,
-            hidden_in_channels=in_channels * 2,
+            in_channels=in_channels,
+            hidden_channels=in_channels * 2,
             act_layer=None,
             drop_path=drop_path,
             kernel_size=1,
@@ -167,8 +171,8 @@ class PWSEDownsampler(eqx.Module):
             drop_path=drop_path,
         )
         self.conv4 = DoubleConvBlock(
-            out_channels,
-            hidden_in_channels=out_channels * 2,
+            in_channels=out_channels,
+            hidden_channels=out_channels * 2,
             act_layer=None,
             drop_path=drop_path,
             kernel_size=1,

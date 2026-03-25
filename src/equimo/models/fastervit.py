@@ -12,80 +12,7 @@ from equimo.layers.convolution import DoubleConvBlock
 from equimo.layers.downsample import ConvNormDownsampler
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import ConvPatchEmbed
-from equimo.layers.sharing import LayerSharing
 from equimo.utils import pool_sd, to_list
-
-
-class LayerSharingWithCT(LayerSharing):
-    """Layer sharing implementation that handles carrier tokens (CT).
-
-    Extends LayerSharing to support passing and updating carrier tokens through
-    the network layers while maintaining layer sharing functionality.
-    """
-
-    def __call__(
-        self,
-        x: Array,
-        ct: Array,
-        # *args,
-        key: PRNGKeyArray,
-        inference: Optional[bool] = None,
-        **kwargs,
-    ):
-        """Apply layer sharing with carrier token support.
-
-        Args:
-            x: Input tensor
-            ct: carrier token tensor
-            inference: Whether to enable dropout during inference
-            key: PRNG key for random operations
-
-        Returns:
-            Tuple of (processed tensor, updated carrier token)
-        """
-        if self.repeat == 1:
-            return self.f(
-                x,
-                ct,
-                # *args,
-                inference=inference,
-                key=key,
-                **kwargs,
-            )
-
-        keys = jr.split(key, self.repeat)
-        reshape = len(x.shape) == 3
-
-        for i in range(self.repeat):
-            if reshape:
-                _, h, w = x.shape
-                lora_x = rearrange(x, "c h w -> (h w) c")
-            else:
-                lora_x = x
-            lora_output = self.dropouts[i](
-                jax.vmap(self.loras[i])(lora_x),
-                inference=inference,
-                key=keys[i],
-            )
-            if reshape:
-                lora_output = rearrange(
-                    lora_output,
-                    "(h w) c -> c h w",
-                    h=h,
-                    w=w,
-                )
-
-            x, ct = self.f(
-                x,
-                ct,
-                inference=inference,
-                key=key,
-                **kwargs,
-            )
-
-            x += lora_output
-
-        return x, ct
 
 
 class TokenInitializer(eqx.Module):
@@ -169,7 +96,6 @@ class BlockChunk(eqx.Module):
         *,
         key: PRNGKeyArray,
         block: eqx.Module = HATBlock,
-        repeat: int = 1,
         downsampler: eqx.Module = ConvNormDownsampler,
         downsampler_contains_dropout: bool = False,
         only_local: bool = False,
@@ -209,14 +135,8 @@ class BlockChunk(eqx.Module):
                     "ct_size": self.ct_size,
                 }
 
-            wrapper = LayerSharingWithCT if self.is_hat else LayerSharing
             blocks.append(
-                wrapper(
-                    dim=kwargs.get("dim"),
-                    f=block(**config, key=block_subkeys[i]),
-                    repeat=repeat,
-                    key=block_subkeys[i],
-                ),
+                block(**config, key=block_subkeys[i]),
             )
         self.blocks = tuple(blocks)
 
@@ -357,7 +277,6 @@ class FasterViT(eqx.Module):
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
         block: eqx.Module = HATBlock,
-        repeat: int = 1,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
         proj_bias: bool = True,
@@ -404,7 +323,6 @@ class FasterViT(eqx.Module):
         self.blocks = tuple(
             BlockChunk(
                 block=DoubleConvBlock if i < 2 else HATBlock,
-                repeat=repeat,
                 dim=int(dim * 2**i),
                 depth=depths[i],
                 input_resolution=int(2 ** (-2 - i) * img_size),

@@ -106,7 +106,7 @@ class BlockChunk(eqx.Module):
                 for i in range(depth):
                     blocks.append(
                         LowFormerBlock(
-                            in_channels=out_channels,
+                            dim=out_channels,
                             mlp_ratio=mlp_ratio,
                             att_stride=att_stride,
                             attention_type=attention_type,

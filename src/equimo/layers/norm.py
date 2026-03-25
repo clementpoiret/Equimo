@@ -19,13 +19,13 @@ class RMSNormGated(eqx.Module):
 
     w: Float[Array, "dim"]
 
-    def __init__(self, d: int):
+    def __init__(self, dim: int):
         """Initialize RMSNormGated.
 
         Args:
-            d: Dimension of the input features
+            dim: Dimension of the input features
         """
-        self.w = jnp.ones(d)
+        self.w = jnp.ones(dim)
 
     def __call__(
         self,

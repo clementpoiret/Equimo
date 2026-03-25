@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from equimo.layers.convolution import MBConv, SingleConvBlock
 
 MNAct = Literal["re", "hs"]
-MNLayerConfig: type = tuple[int, int, int, int, bool, MNAct]
+MNLayerConfig = tuple[int, int, int, int, bool, MNAct]
 
 
 def get_act(act: MNAct) -> Callable:
@@ -57,6 +57,7 @@ class MobileNetv3(eqx.Module):
                 out_channels=layers_config[i + 1][0]
                 if i + 1 < len(layers_config)
                 else last_channels,
+                mid_channels=mid_c,
                 kernel_size=k,
                 stride=s,
                 se=se,
@@ -64,9 +65,7 @@ class MobileNetv3(eqx.Module):
                 residual=True,
                 key=jr.fold_in(key, i),
             )
-            for i, (in_c, mid_c, k, s, se, act) in enumerate(
-                MNLayerConfig(layers_config)
-            )
+            for i, (in_c, mid_c, k, s, se, act) in enumerate(layers_config)
         )
 
         self.dropout = eqx.nn.Dropout(dropout)

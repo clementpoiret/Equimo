@@ -1043,9 +1043,8 @@ class SHMABlock(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        dim: int,
         *,
-        out_channels: None = None,
         num_heads: int = 1,
         attn_drop: float = 0.0,
         dropout: float = 0.0,
@@ -1061,10 +1060,8 @@ class SHMABlock(eqx.Module):
         drop_path: float | List[float] = 0.0,
         init_values: float | None = None,
         key: PRNGKeyArray,
+        **kwargs,
     ):
-        # it's here only for compat api :)
-        del out_channels
-
         key_pe, key_attn, key_ffn = jr.split(key, 3)
 
         if isinstance(drop_path, list):
@@ -1081,9 +1078,9 @@ class SHMABlock(eqx.Module):
         else:
             dr1 = dr2 = float(drop_path)
 
-        self.posemb = PosCNN2D(in_channels, key=key_pe)
+        self.posemb = PosCNN2D(dim, key=key_pe)
         self.attn = SHMA(
-            dim=in_channels,
+            dim=dim,
             num_heads=num_heads,
             attn_drop=attn_drop,
             ratio=attn_ratio,
@@ -1096,8 +1093,8 @@ class SHMABlock(eqx.Module):
             key=key_attn,
         )
         self.ffn = DoubleConvBlock(
-            in_channels=in_channels,
-            hidden_channels=int(in_channels * ffn_ratio),
+            in_channels=dim,
+            hidden_channels=int(dim * ffn_ratio),
             kernel_size=1,
             stride=1,
             padding=0,
@@ -1110,12 +1107,12 @@ class SHMABlock(eqx.Module):
         )
 
         self.ls1 = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
         self.ls2 = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
@@ -1347,7 +1344,7 @@ class MllaBlock(eqx.Module):
         else:
             self.in_proj = self.act_proj = self.dwc = self.out_proj = eqx.nn.Identity()
 
-        config = {"d_model": dim} if attention_layer is Mamba2Mixer else {"dim": dim}
+        config = {"dim": dim}
 
         self.attn = attention_layer(
             **(kwargs | config),
@@ -1834,7 +1831,9 @@ class PartialFormerBlock(eqx.Module):
                 jax.vmap(self.norm2)(jnp.concat([qa, x])),
                 inference=inference,
                 key=key_mlp,
-            )[1],
+            ),
+            [1],
+            axis=0,
         )
         x = self.drop_path2(
             x,
@@ -2323,7 +2322,7 @@ class ConvAttentionBlock(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        dim: int,
         *,
         key: PRNGKeyArray,
         mlp_ratio: float = 4.0,
@@ -2355,17 +2354,17 @@ class ConvAttentionBlock(eqx.Module):
         else:
             dr1 = dr2 = float(drop_path)
 
-        num_groups = nearest_power_of_2_divisor(in_channels, norm_max_group)
-        self.prenorm = norm_layer(num_groups, in_channels, eps=eps)
+        num_groups = nearest_power_of_2_divisor(dim, norm_max_group)
+        self.prenorm = norm_layer(num_groups, dim, eps=eps)
         self.postnorm = (
-            norm_layer(num_groups, in_channels, eps=eps)
+            norm_layer(num_groups, dim, eps=eps)
             if post_attention_norm
             else eqx.nn.Identity()
         )
-        self.norm = norm_layer(num_groups, in_channels, eps=eps)
+        self.norm = norm_layer(num_groups, dim, eps=eps)
 
         self.attn = ConvAttention(
-            in_channels=in_channels,
+            in_channels=dim,
             att_kernel=5 if att_stride > 1 else 3,
             att_stride=att_stride,
             fuse=fuse,
@@ -2374,8 +2373,8 @@ class ConvAttentionBlock(eqx.Module):
         )
 
         self.mlp = DoubleConvBlock(
-            dim=in_channels,
-            hidden_dim=int(in_channels * mlp_ratio),
+            dim=dim,
+            hidden_channels=int(dim * mlp_ratio),
             kernel_size=1,
             stride=1,
             padding=0,
@@ -2387,12 +2386,12 @@ class ConvAttentionBlock(eqx.Module):
         self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
         self.ls1 = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
         self.ls2 = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
@@ -2445,7 +2444,7 @@ class LowFormerBlock(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        dim: int,
         *,
         key,
         mlp_ratio: float = 4.0,
@@ -2479,7 +2478,7 @@ class LowFormerBlock(eqx.Module):
             dr1 = dr2 = float(drop_path)
 
         self.context_module = ConvAttentionBlock(
-            in_channels=in_channels,
+            dim=dim,
             mlp_ratio=mlp_ratio,
             att_stride=att_stride,
             attention_type=attention_type,
@@ -2490,8 +2489,8 @@ class LowFormerBlock(eqx.Module):
             key=key_context,
         )
         self.local_module = MBConv(
-            in_channels=in_channels,
-            out_channels=in_channels,
+            in_channels=dim,
+            out_channels=dim,
             expand_ratio=expand_ratio,
             norm_layer=mbconv_norm_layers,
             act_layer=mbconv_act_layers,
@@ -2503,12 +2502,12 @@ class LowFormerBlock(eqx.Module):
         self.drop_path1 = DropPathAdd(dr1)
         self.drop_path2 = DropPathAdd(dr2)
         self.ls1 = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
         self.ls2 = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )

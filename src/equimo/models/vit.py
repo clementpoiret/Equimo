@@ -16,100 +16,11 @@ from equimo.layers.attention import (
     get_attention_block,
 )
 from equimo.layers.ffn import Mlp, get_ffn
+from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
-from equimo.layers.posemb import DinoRoPE, LearnedPosEmbed, PosCNN
+from equimo.layers.posemb import DinoRoPE, LearnedPosEmbed
 from equimo.utils import pool_sd, to_list
-
-
-class BlockChunk(eqx.Module):
-    """A chunk of transformer blocks with optional downsampling.
-
-    Processes input features through a sequence of transformer blocks with shared
-    parameters, optionally applying positional embeddings and downsampling.
-
-    Attributes:
-        reshape: Whether to reshape inputs for processing
-        downsampler_contains_dropout: If downsampler has dropout
-        posemb: Positional embedding layer
-        blocks: List of processing blocks
-        downsample: Downsampling layer
-    """
-
-    reshape: bool = eqx.field(static=True)
-    downsampler_contains_dropout: bool = eqx.field(static=True)
-
-    posemb: eqx.Module
-    blocks: Tuple[eqx.Module]
-    downsample: eqx.Module
-
-    def __init__(
-        self,
-        depth: int,
-        *,
-        key: PRNGKeyArray,
-        block: eqx.Module = AttentionBlock,
-        use_cpe: bool = False,
-        downsampler: eqx.Module = eqx.nn.Identity,
-        downsampler_contains_dropout: bool = False,
-        downsampler_kwargs: dict = {},
-        **kwargs,
-    ):
-        key_ds, key_pos, *block_subkeys = jr.split(key, depth + 2)
-        if not isinstance(downsampler, eqx.nn.Identity) or use_cpe:
-            if kwargs.get("dim") is None:
-                raise ValueError(
-                    "Using a downsampler or a CPE requires passing a `dim` argument."
-                )
-
-        # self.reshape = block is not ConvBlock
-        self.reshape = True  # TODO
-        self.downsampler_contains_dropout = downsampler_contains_dropout
-
-        keys_to_spread = [
-            k for k, v in kwargs.items() if isinstance(v, list) and len(v) == depth
-        ]
-
-        dim = kwargs.get("dim")
-        self.posemb = (
-            PosCNN(
-                dim,
-                dim,
-                key=key_pos,
-            )
-            if use_cpe
-            else eqx.nn.Identity()
-        )
-
-        blocks = []
-        for i in range(depth):
-            config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
-            blocks.append(block(**config, key=block_subkeys[i]))
-        self.blocks = tuple(blocks)
-
-        self.downsample = downsampler(dim=dim, **downsampler_kwargs, key=key_ds)
-
-    def __call__(
-        self,
-        x: Float[Array, "..."],
-        *,
-        key: PRNGKeyArray,
-        inference: Optional[bool] = None,
-        **kwargs,
-    ) -> Float[Array, "..."]:
-        keys = jr.split(key, len(self.blocks))
-
-        x = self.posemb(x)
-
-        for blk, key_block in zip(self.blocks, keys):
-            x = blk(x, inference=inference, key=key_block, **kwargs)
-
-        if self.downsampler_contains_dropout:
-            x = self.downsample(x, inference=inference, key=key)
-        else:
-            x = self.downsample(x)
-
-        return x
 
 
 class VisionTransformer(eqx.Module):
@@ -307,25 +218,27 @@ class VisionTransformer(eqx.Module):
         attn_layer = to_list(attn_layer, n_chunks)
         self.blocks = tuple(
             BlockChunk(
-                block=block,
-                dim=dims[i],
                 depth=depths[i],
-                num_heads=num_heads[i],
-                mlp_ratio=mlp_ratio,
+                module=block,
+                module_kwargs={
+                    "dim": dims[i],
+                    "num_heads": num_heads[i],
+                    "mlp_ratio": mlp_ratio,
+                    "qkv_bias": qkv_bias,
+                    "proj_bias": proj_bias,
+                    "qk_norm": qk_norm,
+                    "attn_drop": attn_drop,
+                    "proj_drop": proj_drop,
+                    "act_layer": act_layer,
+                    "attn_layer": attn_layer[i],
+                    "ffn_layer": ffn_layer,
+                    "ffn_bias": ffn_bias,
+                    "ffn_kwargs": ffn_kwargs,
+                    "norm_layer": norm_layer,
+                    "eps": eps,
+                },
                 drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                qk_norm=qk_norm,
-                attn_drop=attn_drop,
-                proj_drop=proj_drop,
-                act_layer=act_layer,
-                attn_layer=attn_layer[i],
-                ffn_layer=ffn_layer,
-                ffn_bias=ffn_bias,
-                ffn_kwargs=ffn_kwargs,
-                norm_layer=norm_layer,
                 init_values=init_values,
-                eps=eps,
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
@@ -383,16 +296,14 @@ class VisionTransformer(eqx.Module):
             # In models like Dinov3, RoPE is not applied here, but in self attention blocks
             # It means that we have to dumbly cat prefix token and flattened x manually
             _, H, W = x.shape
+            rope_sincos = None
             if inference:
                 rope_sincos = self.pos_embed.get_sincos(
                     H=H, W=W, inference=inference, key=key_pos
                 )
+            prefix = [t for t in (self.cls_token, self.reg_tokens) if t is not None]
             x = jnp.concatenate(
-                [
-                    self.cls_token,
-                    self.reg_tokens,
-                    rearrange(x, "c h w -> (h w) c"),
-                ],
+                [*prefix, rearrange(x, "c h w -> (h w) c")],
                 axis=0,
             )
         else:

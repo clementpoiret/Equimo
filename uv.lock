@@ -253,6 +253,8 @@ torch = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "timm" },
+    { name = "torch" },
 ]
 
 [package.metadata]
@@ -276,7 +278,11 @@ requires-dist = [
 provides-extras = ["torch", "text", "extras"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3.5" }]
+dev = [
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "timm", specifier = ">=1.0.20" },
+    { name = "torch", specifier = ">=2.9.0" },
+]
 
 [[package]]
 name = "equinox"

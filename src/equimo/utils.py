@@ -134,26 +134,50 @@ def make_2tuple(x):
     return (x, x)
 
 
+def make_drop_path_schedule(
+    drop_path_rate: float,
+    depths: list,
+    uniform: bool = False,
+) -> list:
+    """Build a per-block stochastic depth schedule for hierarchical models.
+
+    Produces one drop-path rate per *block* (not per stage), linearly increasing
+    from 0 to drop_path_rate across the full network depth.
+
+    Args:
+        drop_path_rate: Maximum drop path rate (applied to the last block).
+        depths: Number of blocks per stage; e.g. [2, 2, 6, 2].
+        uniform: If True, every block receives the same rate (no schedule).
+
+    Returns:
+        Flat list of length sum(depths) with per-block drop path rates.
+    """
+    depth = sum(depths)
+    if uniform:
+        return [drop_path_rate] * depth
+    return np.linspace(0.0, drop_path_rate, depth).tolist()
+
+
 def to_list(obj, n):
     """Convert an object to a list of length n by repeating it or validating existing list.
 
     Args:
-        obj: Input object or list
+        obj: Input object, list, or tuple
         n: Desired length of output list
 
     Returns:
-        List of length n containing obj repeated n times if obj is not a list,
-        or the original list if it's already length n
+        List of length n containing obj repeated n times if obj is not a sequence,
+        or obj converted to a list if it's already length n
 
     Raises:
-        AssertionError: If obj is a list but its length doesn't match n
+        AssertionError: If obj is a list/tuple but its length doesn't match n
     """
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         if len(obj) == n:
-            return obj
+            return list(obj)
         else:
             raise AssertionError(
-                f"obj (list of len {len(obj)}) should have a size of {n}"
+                f"obj (sequence of len {len(obj)}) should have a size of {n}"
             )
 
     return [obj] * n

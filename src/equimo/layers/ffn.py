@@ -81,8 +81,8 @@ class DINOHead(eqx.Module):
         in_features: int,
         out_features: int,
         *,
-        hidden_dim=2048,
-        bottleneck_dim=256,
+        hidden_features=2048,
+        bottleneck_features=256,
         key: PRNGKeyArray,
         act_layer: Callable = jax.nn.gelu,
         **kwargs,
@@ -92,8 +92,8 @@ class DINOHead(eqx.Module):
         Args:
             in_features: Number of input features
             out_features: Number of output features
-            hidden_dim: Dimension of hidden layers (default: 2048)
-            bottleneck_dim: Dimension of bottleneck layer (default: 256)
+            hidden_features: Number of hidden features (default: 2048)
+            bottleneck_features: Number of bottleneck features (default: 256)
             key: PRNG key for initialization
             act_layer: Activation function (default: gelu)
             **kwargs: Additional arguments
@@ -102,10 +102,10 @@ class DINOHead(eqx.Module):
 
         self.act_layer = act_layer
 
-        self.fc1 = eqx.nn.Linear(in_features, hidden_dim, key=key_fc1)
-        self.fc2 = eqx.nn.Linear(hidden_dim, hidden_dim, key=key_fc2)
-        self.fc3 = eqx.nn.Linear(hidden_dim, bottleneck_dim, key=key_fc3)
-        self.last = WeightNormLinear(bottleneck_dim, out_features, key=key_last)
+        self.fc1 = eqx.nn.Linear(in_features, hidden_features, key=key_fc1)
+        self.fc2 = eqx.nn.Linear(hidden_features, hidden_features, key=key_fc2)
+        self.fc3 = eqx.nn.Linear(hidden_features, bottleneck_features, key=key_fc3)
+        self.last = WeightNormLinear(bottleneck_features, out_features, key=key_last)
 
     def __call__(
         self,

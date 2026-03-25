@@ -32,7 +32,7 @@ class BlockChunk(eqx.Module):
         out_channels = kwargs["in_channels"]
 
         self.downsample = ConvNormDownsampler(
-            dim, out_channels, mode=downsampler_mode, key=key_ds
+            dim, out_channels=out_channels, mode=downsampler_mode, key=key_ds
         )
 
         blocks = []

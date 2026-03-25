@@ -1,6 +1,7 @@
-from typing import Callable
-import jax
 from functools import partial
+from typing import Callable
+
+import jax
 
 
 def get_act(activation: str | Callable) -> Callable:
@@ -27,6 +28,8 @@ def get_act(activation: str | Callable) -> Callable:
             return jax.nn.sigmoid
         case "hard_sigmoid":
             return jax.nn.hard_sigmoid
+        case "hard_swish":
+            return jax.nn.hard_swish
         case "softmax":
             return jax.nn.softmax
         case _:

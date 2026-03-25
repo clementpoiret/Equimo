@@ -3,16 +3,15 @@ from typing import List, Optional, Tuple
 import equinox as eqx
 import jax
 import jax.random as jr
-import numpy as np
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.attention import LinearAttention, MllaBlock
 from equimo.layers.convolution import Stem
 from equimo.layers.ffn import Mlp
+from equimo.layers.generic import BlockChunk
 from equimo.layers.patch import PatchMerging
-from equimo.models.vit import BlockChunk
-from equimo.utils import to_list
+from equimo.utils import make_drop_path_schedule, to_list
 
 
 class Mlla(eqx.Module):
@@ -39,6 +38,7 @@ class Mlla(eqx.Module):
     patch_embed: eqx.Module
     pos_drop: eqx.Module
     blocks: Tuple[eqx.Module, ...]
+    norm: eqx.Module
     head: eqx.Module
 
     def __init__(
@@ -47,7 +47,6 @@ class Mlla(eqx.Module):
         in_channels: int,
         *,
         key: PRNGKeyArray,
-        repeat: int = 1,
         dim: int = 96,
         patch_size: int = 4,
         depths: List[int] = [2, 2, 6, 2],
@@ -94,33 +93,31 @@ class Mlla(eqx.Module):
 
         self.pos_drop = eqx.nn.Dropout(drop_rate)
 
-        dpr = (
-            np.linspace(0.0, drop_path_rate, n_chunks).tolist()
-            if not drop_path_uniform
-            else to_list(drop_path_rate, n_chunks)
-        )
+        dpr = make_drop_path_schedule(drop_path_rate, depths, uniform=drop_path_uniform)
 
         num_heads = to_list(num_heads, n_chunks)
         attentions_layers = tuple(to_list(attentions_layers, n_chunks))
         self.blocks = tuple(
             BlockChunk(
-                block=MllaBlock,
-                repeat=repeat,
                 depth=depth,
-                downsampler=PatchMerging if (i < n_chunks - 1) else eqx.nn.Identity,
-                downsampler_contains_dropout=False,
-                dim=int(dim * 2**i),
-                input_resolution=(
-                    patches_resolution[0] // (2**i),
-                    patches_resolution[1] // (2**i),
-                ),
-                num_heads=num_heads[i],
-                act_layer=jax.nn.silu,
-                use_dwc=True,
-                attention_layer=attentions_layers[i],
-                drop_path=dpr[i],
-                mlp_ratio=mlp_ratio,
-                ffn_layer=Mlp,
+                module=MllaBlock,
+                module_kwargs={
+                    "dim": int(dim * 2**i),
+                    "input_resolution": (
+                        patches_resolution[0] // (2**i),
+                        patches_resolution[1] // (2**i),
+                    ),
+                    "num_heads": num_heads[i],
+                    "act_layer": jax.nn.silu,
+                    "use_dwc": True,
+                    "attention_layer": attentions_layers[i],
+                    "mlp_ratio": mlp_ratio,
+                    "ffn_layer": Mlp,
+                },
+                downsampler=PatchMerging if (i < n_chunks - 1) else None,
+                downsampler_kwargs={"dim": int(dim * 2**i)} if i < n_chunks - 1 else {},
+                downsample_last=True,
+                drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)

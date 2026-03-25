@@ -90,9 +90,11 @@ class SingleConvBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "dim height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         return self.dropout(
             self.act(self.norm(self.conv(x))), inference=inference, key=key
         )
@@ -129,9 +131,7 @@ class DoubleConvBlock(eqx.Module):
         # NOTE: for interop with module requiring the `dim` arg
         dim: int | None = None,
         in_channels: int | None = None,
-        hidden_dim: int | None = None,
         hidden_channels: int | None = None,
-        out_dim: int | None = None,
         out_channels: int | None = None,
         kernel_size: int = 3,
         stride: int = 1,
@@ -148,12 +148,14 @@ class DoubleConvBlock(eqx.Module):
         """Initialize the ConvBlock.
 
         Args:
-            dim: Input and output channel dimension
+            dim: Input and output channel dimension (alias for in_channels when in==out)
+            in_channels: Number of input channels
+            hidden_channels: Optional intermediate channel dimension (defaults to in_channels)
+            out_channels: Number of output channels (defaults to in_channels)
             key: PRNG key for initialization
-            hidden_dim: Optional intermediate channel dimension (defaults to dim)
             kernel_size: Size of the convolutional kernel (default: 3)
             stride: Stride of the convolution (default: 1)
-            padding: Padding size for convolution (default: 1)
+            padding: Padding size for convolution (default: SAME)
             act_layer: Activation function (default: gelu)
             norm_max_group: Maximum number of groups for GroupNorm (default: 32)
             drop_path: Drop path rate (default: 0.0)
@@ -166,8 +168,8 @@ class DoubleConvBlock(eqx.Module):
         # handle interop / backward compat
         assert dim is not None or in_channels is not None
         in_channels: int = in_channels or dim  # type: ignore
-        hidden_channels: int = hidden_channels or hidden_dim or in_channels
-        out_channels: int = out_channels or out_dim or in_channels
+        hidden_channels: int = hidden_channels or in_channels
+        out_channels: int = out_channels or in_channels
 
         self.residual = in_channels == out_channels
 
@@ -358,8 +360,10 @@ class Stem(eqx.Module):
         x: Float[Array, "channels height width"],
         *,
         key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
-        x = self.conv1(x)
+        key_conv1 = jr.fold_in(key, 0) if key is not None else None
+        x = self.conv1(x, key=key_conv1, inference=inference)
         x = self.conv2(x) + x
         x = self.conv3(x)
 
@@ -829,7 +833,7 @@ class MBConv(eqx.Module):
         )
         self.se_conv = (
             SEModule(
-                dim=mid_channels,
+                in_channels=mid_channels,
                 rd_ratio=1.0,
                 rd_divisor=4,
                 use_norm=False,
@@ -1175,7 +1179,7 @@ class IFormerBlock(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        dim: int,
         *,
         kernel_size: int = 7,
         expand_ratio: float = 3.0,
@@ -1190,19 +1194,19 @@ class IFormerBlock(eqx.Module):
         key_conv1, key_conv2, key_conv3 = jr.split(key, 3)
         self.residual = residual
 
-        mid_channels = int(in_channels * expand_ratio)
+        mid_channels = int(dim * expand_ratio)
         self.conv1 = SingleConvBlock(
-            in_channels=in_channels,
-            out_channels=in_channels,
+            in_channels=dim,
+            out_channels=dim,
             kernel_size=kernel_size,
             stride=1,
-            groups=in_channels,
+            groups=dim,
             act_layer=None,
             use_bias=False,
             key=key_conv1,
         )
         self.conv2 = SingleConvBlock(
-            in_channels=in_channels,
+            in_channels=dim,
             out_channels=mid_channels,
             kernel_size=1,
             stride=1,
@@ -1212,7 +1216,7 @@ class IFormerBlock(eqx.Module):
         )
         self.conv3 = SingleConvBlock(
             in_channels=mid_channels,
-            out_channels=in_channels,
+            out_channels=dim,
             kernel_size=1,
             stride=1,
             act_layer=None,
@@ -1220,7 +1224,7 @@ class IFormerBlock(eqx.Module):
             key=key_conv3,
         )
         self.ls = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
@@ -1645,7 +1649,7 @@ class GhostBottleneck(eqx.Module):
         # SE
         if se_ratio is not None and se_ratio > 0.0:
             # Use provided SEModule with rd_ratio=se_ratio
-            self.se = SEModule(dim=mid_channels, rd_ratio=se_ratio, key=k_sc1)
+            self.se = SEModule(in_channels=mid_channels, rd_ratio=se_ratio, key=k_sc1)
         else:
             self.se = eqx.nn.Identity()
 

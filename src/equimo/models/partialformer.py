@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
-from einops import rearrange, reduce
+from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.attention import PartialFormerBlock
@@ -13,69 +13,7 @@ from equimo.layers.convolution import Stem
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import PatchMerging
 from equimo.layers.posemb import PosCNN
-from equimo.layers.sharing import LayerSharing
 from equimo.utils import to_list
-
-
-class LayerSharingWithQA(LayerSharing):
-    """Layer sharing implementation with Query Attention (QA) token support.
-
-    Extends LayerSharing to handle query attention tokens while maintaining
-    layer sharing functionality. Processes both input features and QA tokens
-    through shared layers with optional LoRA adaptations.
-    """
-
-    def __call__(
-        self,
-        x: Array,
-        qa: Array,
-        *args,
-        key: PRNGKeyArray,
-        inference: Optional[bool] = None,
-        **kwargs,
-    ):
-        if self.repeat == 1:
-            return self.f(
-                x,
-                *args,
-                inference=inference,
-                key=key,
-                **kwargs,
-            )
-
-        keys = jr.split(key, self.repeat)
-        reshape = len(x.shape) == 3
-
-        for i in range(self.repeat):
-            if reshape:
-                _, h, w = x.shape
-                lora_x = rearrange(x, "c h w -> (h w) c")
-            else:
-                lora_x = x
-            lora_output = self.dropouts[i](
-                jax.vmap(self.loras[i])(lora_x),
-                inference=inference,
-                key=keys[i],
-            )
-            if reshape:
-                lora_output = rearrange(
-                    lora_output,
-                    "(h w) c -> c h w",
-                    h=h,
-                    w=w,
-                )
-
-            x, qa = self.f(
-                x,
-                qa=qa,
-                inference=inference,
-                key=key,
-                **kwargs,
-            )
-
-            x += lora_output
-
-        return x, qa
 
 
 class BlockChunk(eqx.Module):
@@ -114,7 +52,6 @@ class BlockChunk(eqx.Module):
         qa_act_layer: Callable = jax.nn.relu,
         qa_norm_layer: eqx.Module = eqx.nn.LayerNorm,
         qa_drop: float = 0.0,
-        repeat: int = 1,
         downsampler: eqx.Module = eqx.nn.Identity,
         downsampler_contains_dropout: bool = False,
         downsampler_kwargs: dict = {},
@@ -150,14 +87,9 @@ class BlockChunk(eqx.Module):
         for i in range(depth):
             config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
             blocks.append(
-                LayerSharingWithQA(
-                    dim=dim,
-                    f=block(**config, key=block_subkeys[i]),
-                    repeat=repeat,
-                    key=block_subkeys[i],
-                ),
+                block(**config, key=block_subkeys[i]),
             )
-        self.blocks = blocks
+        self.blocks = tuple(blocks)
 
         self.downsample = downsampler(dim=dim, **downsampler_kwargs, key=key_ds)
         self.qa_proj = (
@@ -267,7 +199,6 @@ class PartialFormer(eqx.Module):
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
         block: eqx.Module = PartialFormerBlock,
-        repeat: int = 1,
         head_expand_ratio: float = 4.0,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
@@ -307,7 +238,7 @@ class PartialFormer(eqx.Module):
 
         if isinstance(foreground_ratios, float):
             f_ratios = [foreground_ratios] * depth
-        elif isinstance(foreground_ratios, Tuple[float, float]):
+        elif isinstance(foreground_ratios, tuple):
             f_ratios = np.linspace(*foreground_ratios, depth).tolist()
         else:
             raise ValueError("Unknown type for forefround_ratios, got:")
@@ -315,10 +246,9 @@ class PartialFormer(eqx.Module):
         n_chunks = len(depths)
         num_heads = to_list(num_heads, n_chunks)
         self.num_features = int(dim * 2 ** (n_chunks - 1))
-        self.blocks = [
+        self.blocks = tuple(
             BlockChunk(
                 block=block,
-                repeat=repeat,
                 dim=int(dim * 2**i),
                 depth=depths[i],
                 use_cpe=False,
@@ -344,7 +274,7 @@ class PartialFormer(eqx.Module):
                 key=block_subkeys[i],
             )
             for i, depth in enumerate(depths)
-        ]
+        )
 
         self.norm = norm_layer(self.num_features)
         self.head = (

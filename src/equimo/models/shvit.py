@@ -11,7 +11,7 @@ from equimo.layers.attention import SHSA
 from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock
 from equimo.layers.downsample import PWSEDownsampler
 from equimo.layers.generic import Residual
-from equimo.models.vit import BlockChunk
+from equimo.layers.generic import BlockChunk
 from equimo.utils import nearest_power_of_2_divisor, to_list
 
 
@@ -79,8 +79,8 @@ class BasicBlock(eqx.Module):
             else eqx.nn.Identity()
         )
         self.ffn = DoubleConvBlock(
-            dim,
-            hidden_dim=int(dim**2),
+            dim=dim,
+            hidden_channels=int(dim**2),
             act_layer=jax.nn.relu,
             drop_path=drop_path,
             kernel_size=1,
@@ -107,7 +107,6 @@ class BasicBlock(eqx.Module):
         )
 
 
-# TODO: Fix LayerSharing
 class SHViT(eqx.Module):
     """Single Head Vision Transformer (SHViT)[1].
 
@@ -126,6 +125,7 @@ class SHViT(eqx.Module):
 
     patch_embed: eqx.nn.Sequential
     blocks: Tuple[eqx.Module, ...]
+    norm: eqx.Module
     head: eqx.Module
 
     def __init__(
@@ -138,7 +138,6 @@ class SHViT(eqx.Module):
         block_type=["s", "s", "s"],
         *,
         key: PRNGKeyArray,
-        repeat: int = 1,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
         num_classes: int | None = 1000,
@@ -203,18 +202,22 @@ class SHViT(eqx.Module):
         block_types = to_list(block_type, n_chunks)
         self.blocks = tuple(
             BlockChunk(
-                block=BasicBlock,
-                repeat=repeat,
                 depth=depth,
-                downsampler=PWSEDownsampler if i < len(depths) - 1 else eqx.nn.Identity,
-                downsampler_contains_dropout=i < len(depths) - 1,
+                module=BasicBlock,
+                module_kwargs={
+                    "dim": dims[i],
+                    "qk_dim": qk_dims[i],
+                    "pdim": pdims[i],
+                    "block_type": block_types[i],
+                },
+                downsampler=PWSEDownsampler if i < len(depths) - 1 else None,
                 downsampler_kwargs=(
-                    {"out_dim": dims[i + 1]} if i < len(depths) - 1 else {}
+                    {"dim": dims[i], "out_dim": dims[i + 1]}
+                    if i < len(depths) - 1
+                    else {}
                 ),
-                dim=dims[i],
-                qk_dim=qk_dims[i],
-                pdim=pdims[i],
-                block_type=block_types[i],
+                downsampler_needs_key=i < len(depths) - 1,
+                downsample_last=True,
                 drop_path=dpr[i],
                 key=block_subkeys[i],
             )

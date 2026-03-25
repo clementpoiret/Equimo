@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Callable, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -14,6 +14,7 @@ from equimo.layers.convolution import (
     SingleConvBlock,
 )
 from equimo.layers.downsample import ConvNormDownsampler
+from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 
 
@@ -37,112 +38,6 @@ def get_module(name, not_none: bool = True):
             raise NotImplementedError(f"{name} not implemented.")
 
 
-@eqx.filter_jit
-class BlockChunk(eqx.Module):
-    downsample_last: bool = eqx.field(static=True)
-
-    blocks: Tuple[eqx.Module, ...] | None
-    downsample: eqx.Module | None
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        depth: int,
-        *,
-        module: type[eqx.Module] | None = None,
-        module_kwargs: dict = {},
-        downsampler: type[eqx.Module] | None = None,
-        downsampler_kwargs: dict = {},
-        downsample_last: bool = False,
-        drop_path: float | Sequence[float] = 0.0,
-        init_values: float | None = None,
-        key: PRNGKeyArray,
-    ):
-        assert module is not None or downsampler is not None, (
-            "Either `module` or `downsampler` must be defined."
-        )
-
-        key_ds, *block_subkeys = jr.split(key, depth + 2)
-        keys_to_spread = [
-            k
-            for k, v in module_kwargs.items()
-            if isinstance(v, list) and len(v) == depth
-        ]
-
-        self.downsample_last = downsample_last
-
-        # Handle channels for main modules and downsampler
-        down_in = in_channels
-        down_out = out_channels
-        if downsampler is not None:
-            block_in = block_out = in_channels if downsample_last else out_channels
-        else:
-            if depth > 1 and out_channels != in_channels:
-                raise ValueError(
-                    "Please use a dedicated downsampler to have a block of depth>1."
-                )
-
-            block_in = in_channels
-            block_out = out_channels
-
-        if module is not None:
-            blocks = []
-            for i in range(depth):
-                config = module_kwargs | {
-                    k: module_kwargs[k][i] for k in keys_to_spread
-                }
-
-                in_channels if downsample_last else out_channels
-                blocks.append(
-                    module(
-                        in_channels=block_in,
-                        out_channels=block_out,
-                        drop_path=drop_path[i],
-                        init_values=init_values,
-                        **config,
-                        key=block_subkeys[i],
-                    )
-                )
-            self.blocks = tuple(blocks)
-        else:
-            # Only downsampler
-            self.blocks = None
-
-        self.downsample = (
-            downsampler(
-                in_channels=down_in,
-                out_channels=down_out,
-                **downsampler_kwargs,
-                key=key_ds,
-            )
-            if downsampler is not None
-            else None
-        )
-
-    def __call__(
-        self,
-        x: Float[Array, "..."],
-        *,
-        key: PRNGKeyArray,
-        inference: bool = False,
-        **kwargs,
-    ) -> Tuple[Float[Array, "..."], list]:
-        key_down, *keys = jr.split(key, len(self.blocks) + 1)
-
-        if not self.downsample_last and self.downsample:
-            x = self.downsample(x, inference=inference, key=key_down)
-
-        for blk, key_block in zip(self.blocks, keys):
-            x = blk(x, inference=inference, key=key_block, **kwargs)
-
-        if self.downsample_last and self.downsample:
-            x = self.downsample(x, inference=inference, key=key_down)
-
-        return x
-
-
-@eqx.filter_jit
 class IFormer(eqx.Module):
     blocks: Tuple[BlockChunk, ...]
     dropout: eqx.nn.Dropout
@@ -193,15 +88,22 @@ class IFormer(eqx.Module):
         _bc_dim = [in_channels, *dims[:-1]]
         block_keys = jr.split(key_blk, len(dims))
         for i, _k in enumerate(block_keys):
+            has_ds = downsamplers[i] is not None
+            block_dim = _bc_dim[i] if (has_ds and downsample_last) else dims[i]
+            mod_kw = universal_kwargs | module_kwargs[i]
+            if modules[i] is not None:
+                mod_kw = mod_kw | {"dim": block_dim}
+            ds_kw = universal_kwargs | downsampler_kwargs[i]
             blocks.append(
                 BlockChunk(
+                    depth=depths[i],
                     in_channels=_bc_dim[i],
                     out_channels=dims[i],
-                    depth=depths[i],
                     module=modules[i],
-                    module_kwargs=universal_kwargs | module_kwargs[i],
+                    module_kwargs=mod_kw,
                     downsampler=downsamplers[i],
-                    downsampler_kwargs=universal_kwargs | downsampler_kwargs[i],
+                    downsampler_kwargs=ds_kw,
+                    downsampler_needs_key=has_ds,
                     downsample_last=downsample_last,
                     drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
                     init_values=init_values,
