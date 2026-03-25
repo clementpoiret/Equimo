@@ -11,6 +11,70 @@ from equimo.layers.dropout import DropPathAdd
 from equimo.layers.norm import LayerScale
 
 
+def _resolve_layer(name_or_cls: "str | type[eqx.Module]") -> "type[eqx.Module]":
+    """Resolve a layer class from its registered name.
+
+    Searches all known registries in priority order. Accepts a class directly
+    (returned as-is) or a string key (looked up across all registries).
+
+    Priority order: attn_block → conv → mixer → posemb → downsampler →
+    patch → attn → norm → ffn → dropout → se → wavelet.
+
+    Args:
+        name_or_cls: A registered name (case-insensitive) or an eqx.Module subclass.
+
+    Returns:
+        The resolved module class.
+
+    Raises:
+        ValueError: If the name is not found in any registry.
+    """
+    if not isinstance(name_or_cls, str):
+        return name_or_cls
+
+    name_lower = name_or_cls.lower()
+
+    # Lazy imports to avoid circular dependencies at module load time.
+    from equimo.layers.attention import _ATTN_BLOCK_REGISTRY, _ATTN_REGISTRY
+    from equimo.layers.convolution import _CONV_REGISTRY
+    from equimo.layers.downsample import _DOWNSAMPLER_REGISTRY
+    from equimo.layers.dropout import _DROPOUT_REGISTRY
+    from equimo.layers.ffn import _FFN_REGISTRY
+    from equimo.layers.mamba import _MIXER_REGISTRY
+    from equimo.layers.norm import _NORM_REGISTRY
+    from equimo.layers.patch import _PATCH_REGISTRY
+    from equimo.layers.posemb import _POSEMB_REGISTRY
+    from equimo.layers.squeeze_excite import _SE_REGISTRY
+    from equimo.layers.wavelet import _WAVELET_REGISTRY
+
+    registries = [
+        ("attn_block", _ATTN_BLOCK_REGISTRY),
+        ("conv", _CONV_REGISTRY),
+        ("mixer", _MIXER_REGISTRY),
+        ("posemb", _POSEMB_REGISTRY),
+        ("downsampler", _DOWNSAMPLER_REGISTRY),
+        ("patch", _PATCH_REGISTRY),
+        ("attn", _ATTN_REGISTRY),
+        ("norm", _NORM_REGISTRY),
+        ("ffn", _FFN_REGISTRY),
+        ("dropout", _DROPOUT_REGISTRY),
+        ("se", _SE_REGISTRY),
+        ("wavelet", _WAVELET_REGISTRY),
+    ]
+
+    for _registry_name, registry in registries:
+        if name_lower in registry:
+            return registry[name_lower]
+
+    available = sorted(
+        set().union(*[r.keys() for _, r in registries])
+    )
+    raise ValueError(
+        f"Layer '{name_or_cls}' not found in any registry. "
+        f"Available: {available}"
+    )
+
+
 class Residual(eqx.Module):
     """A wrapper module that adds a residual connection with optional drop path.
 
@@ -93,7 +157,7 @@ class WindowedSequence(eqx.Module):
         self,
         in_channels: int,
         depth: int,
-        block_type: type[eqx.Module],
+        block_type: str | type[eqx.Module],
         block_kwargs: dict,
         *,
         window_size: int = 16,
@@ -101,6 +165,7 @@ class WindowedSequence(eqx.Module):
         key: PRNGKeyArray,
     ):
         self.window_size = window_size
+        block_type = _resolve_layer(block_type)
         keys = jr.split(key, depth)
 
         if isinstance(drop_path, list):
@@ -232,11 +297,11 @@ class BlockChunk(eqx.Module):
         *,
         in_channels: int | None = None,
         out_channels: int | None = None,
-        module: type[eqx.Module] | None = None,
+        module: str | type[eqx.Module] | None = None,
         module_kwargs: dict = {},
-        posemb: type[eqx.Module] | None = None,
+        posemb: str | type[eqx.Module] | None = None,
         posemb_kwargs: dict = {},
-        downsampler: type[eqx.Module] | None = None,
+        downsampler: str | type[eqx.Module] | None = None,
         downsampler_kwargs: dict = {},
         downsampler_needs_key: bool = False,
         downsample_last: bool = False,
@@ -247,6 +312,14 @@ class BlockChunk(eqx.Module):
         assert module is not None or downsampler is not None, (
             "At least one of `module` or `downsampler` must be specified."
         )
+
+        # Resolve string names to classes via the layer registries.
+        if module is not None:
+            module = _resolve_layer(module)
+        if posemb is not None:
+            posemb = _resolve_layer(posemb)
+        if downsampler is not None:
+            downsampler = _resolve_layer(downsampler)
 
         key_ds, key_pos, *block_subkeys = jr.split(key, depth + 2)
 

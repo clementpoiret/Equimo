@@ -16,11 +16,16 @@ _MIXER_REGISTRY: dict[str, type[eqx.Module]] = {}
 
 def register_mixer(
     name: Optional[str] = None,
+    force: bool = False,
 ) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
     """Decorator to dynamically register new mixer modules.
 
     Why collision checking: Prevents third-party extensions from silently
     overwriting core layers, which can silently corrupt the computational graph.
+
+    Args:
+        name: Registry key. Defaults to the lowercase class name.
+        force: If True, allow overwriting an existing entry. Default False.
     """
 
     def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
@@ -31,7 +36,7 @@ def register_mixer(
 
         registry_name = name.lower() if name else cls.__name__.lower()
 
-        if registry_name in _MIXER_REGISTRY:
+        if registry_name in _MIXER_REGISTRY and not force:
             raise ValueError(
                 f"Cannot register '{registry_name}'. It is already registered "
                 f"to {_MIXER_REGISTRY[registry_name]}."

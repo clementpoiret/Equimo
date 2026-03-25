@@ -15,7 +15,7 @@ from .ffn import (
     get_ffn,
     register_ffn,
 )
-from .generic import BlockChunk, Residual, WindowedSequence
+from .generic import BlockChunk, Residual, WindowedSequence, _resolve_layer as get_layer
 from .mamba import Mamba2Mixer, get_mixer, register_mixer
 from .norm import (
     DyT,
@@ -71,6 +71,7 @@ __all__ = [
     "BlockChunk",
     "Residual",
     "WindowedSequence",
+    "get_layer",
     # FFN
     "DINOHead",
     "Mlp",

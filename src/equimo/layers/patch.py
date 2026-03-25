@@ -17,11 +17,16 @@ _PATCH_REGISTRY: dict[str, type[eqx.Module]] = {}
 
 def register_patch(
     name: Optional[str] = None,
+    force: bool = False,
 ) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
     """Decorator to dynamically register new patch embedding/merging modules.
 
     Why collision checking: Prevents third-party extensions from silently
     overwriting core layers, which can silently corrupt the computational graph.
+
+    Args:
+        name: Registry key. Defaults to the lowercase class name.
+        force: If True, allow overwriting an existing entry. Default False.
     """
 
     def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
@@ -32,7 +37,7 @@ def register_patch(
 
         registry_name = name.lower() if name else cls.__name__.lower()
 
-        if registry_name in _PATCH_REGISTRY:
+        if registry_name in _PATCH_REGISTRY and not force:
             raise ValueError(
                 f"Cannot register '{registry_name}'. It is already registered "
                 f"to {_PATCH_REGISTRY[registry_name]}."

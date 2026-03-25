@@ -8,17 +8,22 @@ _ACT_REGISTRY: dict[str, Callable] = {}
 
 def register_act(
     name: Optional[str] = None,
+    force: bool = False,
 ) -> Callable[[Callable], Callable]:
     """Decorator to dynamically register new activation functions.
 
     Why collision checking: Prevents third-party extensions from silently
     overwriting core activations, which can silently change model behavior.
+
+    Args:
+        name: Registry key. Defaults to the lowercase function name.
+        force: If True, allow overwriting an existing entry. Default False.
     """
 
     def decorator(fn: Callable) -> Callable:
         registry_name = name.lower() if name else fn.__name__.lower()
 
-        if registry_name in _ACT_REGISTRY:
+        if registry_name in _ACT_REGISTRY and not force:
             raise ValueError(
                 f"Cannot register '{registry_name}'. It is already registered "
                 f"to {_ACT_REGISTRY[registry_name]}."
