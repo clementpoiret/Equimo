@@ -19,6 +19,9 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - uses: DeterminateSystems/nix-installer-action@main
 
       - name: Configure devenv binary cache
@@ -27,10 +30,6 @@ jobs:
           name: devenv
 
       - name: Install devenv.sh
-        # Security mitigation: Explicitly accept the flake configuration from the upstream provider. 
-        # Using the `cachix/devenv` flake reference guarantees we pull the validated release closure 
-        # rather than relying on the arbitrary state of the local `nixpkgs` channel which may have an 
-        # incompatible or stale devenv derivation.
         run: nix profile install --accept-flake-config github:cachix/devenv/latest
 
       - name: Run tests
