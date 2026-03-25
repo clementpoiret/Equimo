@@ -719,12 +719,9 @@ def test_vit5_small_forward():
 
 
 def test_deq_forward():
-    model = em.deq_default(
+    model = em.deq_convnext_t(
         in_channels=3,
         num_classes=NUM_CLASSES,
-        modules=["atconvblock"] * 4,
-        downsamplers=["convnormdownsampler"] * 4,
-        block_types=["normal", "normal", "fpi", "normal"],
         fpi_layer_strategy="standard",
         key=KEY,
     )
@@ -735,12 +732,9 @@ def test_deq_forward():
 
 
 def test_deq_features():
-    model = em.deq_default(
+    model = em.deq_convnext_t(
         in_channels=3,
         num_classes=0,
-        modules=["atconvblock"] * 4,
-        downsamplers=["convnormdownsampler"] * 4,
-        block_types=["normal", "normal", "fpi", "normal"],
         fpi_layer_strategy="standard",
         key=KEY,
     )
