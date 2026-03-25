@@ -40,7 +40,8 @@ class TestAttentionLayers:
     @pytest.mark.parametrize(
         "cls, kwargs",
         [
-            (Attention, {"dim": DIM, "num_heads": NUM_HEADS}),
+            (Attention, {"dim": DIM, "num_heads": NUM_HEADS, "qk_norm": False}),
+            (Attention, {"dim": DIM, "num_heads": NUM_HEADS, "qk_norm": True}),
             (
                 WindowedAttention,
                 {"dim": DIM, "num_heads": NUM_HEADS, "resolution": 4, "seq_len": 16},
@@ -52,6 +53,7 @@ class TestAttentionLayers:
                 {"input_resolution": (4, 4), "dim": DIM, "num_heads": NUM_HEADS},
             ),
             (MMSA, {"dim": DIM, "num_heads": NUM_HEADS}),
+            (SQA, {"dim": DIM, "num_heads": NUM_HEADS}),
             (LinearAngularAttention, {"dim": DIM, "num_heads": NUM_HEADS}),
             (RFAttention, {"in_channels": DIM, "out_channels": DIM}),
             (ConvAttention, {"in_channels": DIM}),
@@ -66,7 +68,11 @@ class TestAttentionLayers:
         else:
             x = jr.normal(key, (SEQLEN, DIM))
 
-        out = model(x, key=key, inference=True)
+        if cls is (SQA):
+            q = jr.normal(key, (1, DIM))
+            out = model(x, q, key=key, inference=True)
+        else:
+            out = model(x, key=key, inference=True)
         assert out.shape == x.shape
         assert jnp.all(jnp.isfinite(out))
 

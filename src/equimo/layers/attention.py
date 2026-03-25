@@ -230,8 +230,12 @@ class Attention(eqx.Module):
         self.qkv = eqx.nn.Linear(dim, dim * 3, use_bias=qkv_bias, key=key_qkv)
         self.proj = eqx.nn.Linear(dim, dim, use_bias=proj_bias, key=key_proj)
 
-        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.q_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
+        self.k_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
@@ -352,8 +356,12 @@ class WindowedAttention(eqx.Module):
             key=key_posemb,
         )
 
-        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.q_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
+        self.k_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
@@ -1640,8 +1648,12 @@ class MMSA(eqx.Module):
             key=key_attnproj2,
         )
 
-        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.q_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
+        self.k_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
@@ -1748,8 +1760,12 @@ class SQA(eqx.Module):
         )
         self.proj_norm = norm_layer(int(dim // proj_ratio), eps=eps)
 
-        self.q_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
-        self.k_norm = norm_layer(dim, eps=eps) if qk_norm else eqx.nn.Identity()
+        self.q_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
+        self.k_norm = (
+            norm_layer(dim // num_heads, eps=eps) if qk_norm else eqx.nn.Identity()
+        )
 
         self.attn_drop = eqx.nn.Dropout(attn_drop)
         self.proj_drop = eqx.nn.Dropout(proj_drop)
