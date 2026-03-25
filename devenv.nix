@@ -16,15 +16,13 @@ in
 
   languages.python = {
     enable = true;
+    package = pkgs.python312;
     uv = {
       enable = true;
       sync.enable = true;
     };
   };
 
-  # enterShell = ''
-  #   . .devenv/state/venv/bin/activate
-  # '';
-
-  enterTest = "uv run pytest tests/";
+  # enterShell = "";
+  enterTest = "uv run pytest";
 }
