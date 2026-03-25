@@ -32,3 +32,6 @@ jobs:
         # rather than relying on the arbitrary state of the local `nixpkgs` channel which may have an 
         # incompatible or stale devenv derivation.
         run: nix profile install --accept-flake-config github:cachix/devenv/latest
+
+      - name: Run tests
+        run: devenv test
