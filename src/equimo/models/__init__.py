@@ -1,3 +1,4 @@
+from .registry import register_model, get_model_cls
 from .fastervit import FasterViT
 from .iformer import IFormer, iformer_t, iformer_s, iformer_m, iformer_l
 from .mlla import Mlla

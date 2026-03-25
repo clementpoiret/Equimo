@@ -12,9 +12,11 @@ from equimo.layers.ffn import Mlp
 from equimo.layers.generic import BlockChunk
 from equimo.layers.mamba import Mamba2Mixer
 from equimo.layers.patch import PatchMerging
+from equimo.models.registry import register_model
 from equimo.utils import make_drop_path_schedule, to_list
 
 
+@register_model("vssd")
 class Vssd(eqx.Module):
     """Vision Mamba with Non-Causal State Space Duality (VSSD)[1].
 

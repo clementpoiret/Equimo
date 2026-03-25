@@ -11,6 +11,7 @@ from equimo.layers.activation import get_act
 from equimo.layers.attention import RFAttentionBlock
 from equimo.layers.convolution import DSConv, MBConv, SingleConvBlock
 from equimo.layers.norm import get_norm
+from equimo.models.registry import register_model
 
 
 class BlockChunk(eqx.Module):
@@ -148,6 +149,7 @@ class BlockChunk(eqx.Module):
         return x
 
 
+@register_model("reduceformer")
 class ReduceFormer(eqx.Module):
     conv_stem: SingleConvBlock
     block_stem: BlockChunk

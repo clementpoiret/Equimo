@@ -13,6 +13,7 @@ from equimo.layers.convolution import Stem
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import PatchMerging
 from equimo.layers.posemb import PosCNN
+from equimo.models.registry import register_model
 from equimo.utils import to_list
 
 
@@ -149,6 +150,7 @@ class BlockChunk(eqx.Module):
         return x, qa
 
 
+@register_model("partialformer")
 class PartialFormer(eqx.Module):
     """PartialFormer implementation with a Partial Attention mechanism[1].
 

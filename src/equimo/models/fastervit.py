@@ -12,6 +12,7 @@ from equimo.layers.convolution import DoubleConvBlock
 from equimo.layers.downsample import ConvNormDownsampler
 from equimo.layers.ffn import Mlp
 from equimo.layers.patch import ConvPatchEmbed
+from equimo.models.registry import register_model
 from equimo.utils import pool_sd, to_list
 
 
@@ -242,6 +243,7 @@ class BlockChunk(eqx.Module):
         return x
 
 
+@register_model("fastervit")
 class FasterViT(eqx.Module):
     """FasterViT: Fast Vision Transformers with Hierarchical Attention[1]
 

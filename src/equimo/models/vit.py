@@ -12,17 +12,19 @@ from equimo.layers.activation import get_act
 from equimo.layers.attention import (
     Attention,
     AttentionBlock,
-    get_attention,
-    get_attention_block,
+    get_attn,
+    get_attn_block,
 )
 from equimo.layers.ffn import Mlp, get_ffn
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
 from equimo.layers.posemb import DinoRoPE, LearnedPosEmbed
+from equimo.models.registry import register_model
 from equimo.utils import pool_sd, to_list
 
 
+@register_model("vit")
 class VisionTransformer(eqx.Module):
     """Vision Transformer (ViT) implementation.
 
@@ -144,8 +146,8 @@ class VisionTransformer(eqx.Module):
         self.embed_size = img_size // patch_size
         self.use_rope_pos_embed = use_rope_pos_embed
 
-        block = get_attention_block(block)
-        attn_layer = get_attention(attn_layer)
+        block = get_attn_block(block)
+        attn_layer = get_attn(attn_layer)
         ffn_layer = get_ffn(ffn_layer)
         norm_layer = get_norm(norm_layer)
         act_layer = get_act(act_layer)

@@ -16,6 +16,7 @@ from equimo.layers.convolution import (
 from equimo.layers.downsample import ConvNormDownsampler
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
+from equimo.models.registry import register_model
 
 
 def get_module(name, not_none: bool = True):
@@ -38,6 +39,7 @@ def get_module(name, not_none: bool = True):
             raise NotImplementedError(f"{name} not implemented.")
 
 
+@register_model("iformer")
 class IFormer(eqx.Module):
     blocks: Tuple[BlockChunk, ...]
     dropout: eqx.nn.Dropout

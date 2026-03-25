@@ -7,6 +7,7 @@ from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.convolution import MBConv, SingleConvBlock
+from equimo.models.registry import register_model
 
 MNAct = Literal["re", "hs"]
 MNLayerConfig = tuple[int, int, int, int, bool, MNAct]
@@ -24,6 +25,7 @@ def get_act(act: MNAct) -> Callable:
             )
 
 
+@register_model("mobilenetv3")
 class MobileNetv3(eqx.Module):
     conv1: SingleConvBlock
     layers: tuple[MBConv, ...]

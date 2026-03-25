@@ -1,12 +1,11 @@
 import io
 import json
 import os
-import re
 import shutil
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 import equinox as eqx
 import jax
@@ -17,96 +16,17 @@ from jaxtyping import Array, Float
 from loguru import logger
 from semver import Version
 
-import equimo.models as em
 from equimo import __version__
+from equimo.models.registry import (
+    _MODEL_REGISTRY,
+    _SAFE_IDENTIFIER_RE,
+    get_model_cls,
+    register_model,
+)
 
 DEFAULT_REPOSITORY_URL = (
     "https://huggingface.co/poiretclement/equimo/resolve/main/models/default"
 )
-
-# Identifier must only contain alphanumerics, hyphens, and underscores.
-# This prevents path traversal when identifiers are embedded in local file paths.
-_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
-_MODEL_REGISTRY: dict[str, type[eqx.Module]] = {}
-
-
-def register_model(
-    name: Optional[str] = None,
-) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
-    """Decorator to register a model class under a serialisable string key.
-
-    Registered names are used by :func:`load_model` and :func:`get_model_cls`
-    to reconstruct the model architecture from a saved config. Collision
-    checking prevents silent overwrites of core models.
-
-    Example::
-
-        @register_model("mynet")
-        class MyNet(eqx.Module):
-            ...
-
-        model = load_model("mynet", path=Path("mynet.tar.lz4"))
-    """
-
-    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
-        if not issubclass(cls, eqx.Module):
-            raise TypeError(
-                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
-            )
-        registry_name = name.lower() if name else cls.__name__.lower()
-        if registry_name in _MODEL_REGISTRY:
-            raise ValueError(
-                f"Cannot register '{registry_name}'. It is already registered "
-                f"to {_MODEL_REGISTRY[registry_name]}."
-            )
-        _MODEL_REGISTRY[registry_name] = cls
-        return cls
-
-    return decorator
-
-
-def get_model_cls(cls: str | type[eqx.Module]) -> type[eqx.Module]:
-    """Resolve a model class from its registered string key or pass it through.
-
-    Args:
-        cls: A registered name (case-insensitive) or an ``eqx.Module`` subclass.
-
-    Returns:
-        The corresponding model class.
-
-    Raises:
-        ValueError: If ``cls`` is a string not present in the registry.
-    """
-    if not isinstance(cls, str):
-        return cls
-
-    cls_lower = cls.lower()
-
-    # Experimental models are lazy-loaded to avoid importing heavy optional
-    # dependencies (TensorFlow, SentencePiece) at module initialisation time.
-    if cls_lower == "experimental.textencoder":
-        from equimo.experimental.text import TextEncoder
-
-        return TextEncoder
-
-    if cls_lower not in _MODEL_REGISTRY:
-        raise ValueError(
-            f"Unknown model class: {cls!r}. "
-            f"Available: {sorted(_MODEL_REGISTRY)}. "
-            "Use register_model() to add custom models."
-        )
-    return _MODEL_REGISTRY[cls_lower]
-
-
-_MODEL_REGISTRY["vit"] = em.VisionTransformer
-_MODEL_REGISTRY["mlla"] = em.Mlla
-_MODEL_REGISTRY["vssd"] = em.Vssd
-_MODEL_REGISTRY["shvit"] = em.SHViT
-_MODEL_REGISTRY["fastervit"] = em.FasterViT
-_MODEL_REGISTRY["partialformer"] = em.PartialFormer
-_MODEL_REGISTRY["iformer"] = em.IFormer
-_MODEL_REGISTRY["mobilenetv3"] = em.MobileNetv3
-_MODEL_REGISTRY["reduceformer"] = em.ReduceFormer
 
 
 def _validate_identifier(identifier: str) -> None:

@@ -12,6 +12,7 @@ from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock
 from equimo.layers.downsample import PWSEDownsampler
 from equimo.layers.generic import Residual
 from equimo.layers.generic import BlockChunk
+from equimo.models.registry import register_model
 from equimo.utils import nearest_power_of_2_divisor, to_list
 
 
@@ -107,6 +108,7 @@ class BasicBlock(eqx.Module):
         )
 
 
+@register_model("shvit")
 class SHViT(eqx.Module):
     """Single Head Vision Transformer (SHViT)[1].
 

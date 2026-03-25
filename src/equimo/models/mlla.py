@@ -11,9 +11,11 @@ from equimo.layers.convolution import Stem
 from equimo.layers.ffn import Mlp
 from equimo.layers.generic import BlockChunk
 from equimo.layers.patch import PatchMerging
+from equimo.models.registry import register_model
 from equimo.utils import make_drop_path_schedule, to_list
 
 
+@register_model("mlla")
 class Mlla(eqx.Module):
     """Mamba-like Linear Attention (MLLA) Vision Model[1].
 
