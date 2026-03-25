@@ -65,3 +65,4 @@ _ACT_REGISTRY["sigmoid"] = jax.nn.sigmoid
 _ACT_REGISTRY["hard_sigmoid"] = jax.nn.hard_sigmoid
 _ACT_REGISTRY["hard_swish"] = jax.nn.hard_swish
 _ACT_REGISTRY["softmax"] = jax.nn.softmax
+_ACT_REGISTRY["relu6"] = jax.nn.relu6
