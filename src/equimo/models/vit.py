@@ -10,12 +10,10 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from equimo.layers.activation import get_act
 from equimo.layers.attention import (
-    Attention,
-    AttentionBlock,
     get_attn,
     get_attn_block,
 )
-from equimo.layers.ffn import Mlp, get_ffn
+from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
@@ -108,23 +106,23 @@ class VisionTransformer(eqx.Module):
         pos_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
-        block: str | eqx.Module = AttentionBlock,
+        block: str | type[eqx.Module] = "attentionblock",
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
         proj_bias: bool = True,
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        act_layer: Callable | str = jax.nn.gelu,
-        attn_layer: str | eqx.Module = Attention,
-        ffn_layer: str | eqx.Module = Mlp,
+        act_layer: str | Callable = "gelu",
+        attn_layer: str | type[eqx.Module] = "attention",
+        ffn_layer: str | type[eqx.Module] = "mlp",
         ffn_bias: bool = True,
         ffn_kwargs: dict = {},
-        norm_layer: str | eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         untie_global_and_local_cls_norm: bool = False,
         init_values: float | None = None,
         global_pool: Literal["", "token", "avg", "avgmax", "max"] = "avg",
-        num_classes: int = 1000,
+        num_classes: int | None = 1000,
         interpolate_antialias: bool = False,
         eps: float = 1e-5,
         **kwargs,
@@ -256,7 +254,7 @@ class VisionTransformer(eqx.Module):
 
         self.head = (
             eqx.nn.Linear(dim, num_classes, key=key_head)
-            if num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 

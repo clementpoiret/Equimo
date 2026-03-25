@@ -30,8 +30,8 @@ class BlockChunk(eqx.Module):
         scales: Tuple[int, ...] = (5,),
         head_dim: int = 32,
         heads_ratio: float = 1.0,
-        norm_layer: eqx.Module = eqx.nn.GroupNorm,
-        act_layer: Callable = jax.nn.hard_swish,
+        norm_layer: str | type[eqx.Module] = "groupnorm",
+        act_layer: str | Callable = "hard_swish",
         fewer_norm: bool = False,
         fuse_mbconv: bool = False,
         dropout: float = 0.0,
@@ -39,6 +39,9 @@ class BlockChunk(eqx.Module):
         residual: bool = False,
         **kwargs,
     ):
+        norm_layer = get_norm(norm_layer)
+        act_layer = get_act(act_layer)
+
         key, *block_subkeys = jr.split(key, depth + 1)
 
         keys_to_spread = [
@@ -166,8 +169,8 @@ class ReduceFormer(eqx.Module):
         key: PRNGKeyArray,
         head_dim: int = 32,
         expand_ratio: float = 4.0,
-        norm_layer: eqx.Module | str = eqx.nn.GroupNorm,
-        act_layer: Callable | str = jax.nn.hard_swish,
+        norm_layer: str | type[eqx.Module] = "groupnorm",
+        act_layer: str | Callable = "hard_swish",
         fuse_mbconv: bool = False,
         num_classes: int | None = 1000,
         dropout: float = 0.0,

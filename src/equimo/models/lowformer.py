@@ -11,6 +11,7 @@ from equimo.layers.activation import get_act
 from equimo.layers.attention import LowFormerBlock
 from equimo.layers.convolution import DSConv, MBConv, SingleConvBlock
 from equimo.layers.norm import get_norm
+from equimo.models.registry import register_model
 
 
 class BlockChunk(eqx.Module):
@@ -32,13 +33,16 @@ class BlockChunk(eqx.Module):
         stride: int = 1,
         expand_ratio: float = 4.0,
         attention_expand_ratio: float = 4.0,
-        norm_layer: eqx.Module = eqx.nn.GroupNorm,
-        act_layer: Callable = jax.nn.hard_swish,
+        norm_layer: str | type[eqx.Module] = "groupnorm",
+        act_layer: str | Callable = "hard_swish",
         fewer_norm: bool = False,
         fuse_mbconv: bool = False,
         drop_path: list[float] = [0.0],
         **kwargs,
     ):
+        norm_layer = get_norm(norm_layer)
+        act_layer = get_act(act_layer)
+
         key, *block_subkeys = jr.split(key, depth + 1)
 
         keys_to_spread = [
@@ -144,6 +148,7 @@ class BlockChunk(eqx.Module):
         return x
 
 
+@register_model("lowformer")
 class LowFormer(eqx.Module):
     input_stem: eqx.nn.Sequential
     blocks: Tuple[BlockChunk, ...]
@@ -163,8 +168,8 @@ class LowFormer(eqx.Module):
         stem_expand_ratio: float = 2.0,
         blocks_expand_ratio: float = 4.0,
         blocks_attention_expand_ratio: float = 4.0,
-        norm_layer: eqx.Module | str = eqx.nn.GroupNorm,
-        act_layer: Callable | str = jax.nn.hard_swish,
+        norm_layer: str | type[eqx.Module] = "groupnorm",
+        act_layer: str | Callable = "hard_swish",
         fuse_mbconv: bool = False,
         num_classes: int | None = 1000,
         drop_path_rate: float = 0.0,

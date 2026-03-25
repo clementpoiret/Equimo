@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -6,11 +6,11 @@ import jax.random as jr
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.attention import Attention, MllaBlock
+from equimo.layers.activation import get_act
 from equimo.layers.convolution import Stem
-from equimo.layers.ffn import Mlp
+from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import BlockChunk
-from equimo.layers.mamba import Mamba2Mixer
+from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchMerging
 from equimo.models.registry import register_model
 from equimo.utils import make_drop_path_schedule, to_list
@@ -61,16 +61,20 @@ class Vssd(eqx.Module):
         patch_size: int = 4,
         depths: List[int] = [2, 4, 12, 4],
         num_heads: List[int] = [2, 4, 8, 16],
-        attentions_layers: Tuple[eqx.Module, ...] | eqx.Module = (
-            Mamba2Mixer,
-            Mamba2Mixer,
-            Mamba2Mixer,
-            Attention,
+        attentions_layers: Tuple[str | type[eqx.Module], ...] | str | type[eqx.Module] = (
+            "mamba2mixer",
+            "mamba2mixer",
+            "mamba2mixer",
+            "attention",
         ),
+        act_layer: str | Callable = "gelu",
+        ffn_layer: str | type[eqx.Module] = "mlp",
+        norm_layer: str | type[eqx.Module] = "layernorm",
         drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
         mlp_ratio: float = 4.0,
+        eps: float = 1e-5,
         num_classes: int | None = 1000,
         **kwargs,
     ):
@@ -80,7 +84,6 @@ class Vssd(eqx.Module):
             img_size: Input image size
             in_channels: Number of input channels
             key: PRNG key for initialization
-            repeat: Number of times to repeat each block
             dim: Initial model dimension
             d_state: Dimension of Mamba state space
             d_conv: Kernel size for Mamba convolution
@@ -88,14 +91,22 @@ class Vssd(eqx.Module):
             patch_size: Size of image patches
             depths: Number of blocks in each stage
             num_heads: Number of attention heads in each stage
-            attentions_layers: Types of attention/mixing layers per stage
+            attentions_layers: Types of attention/mixing layers per stage (names or classes)
+            act_layer: Activation function (name or callable)
+            ffn_layer: FFN block type (name or class)
+            norm_layer: Normalization layer type (name or class)
             drop_rate: Dropout rate
             drop_path_rate: Stochastic depth rate
             drop_path_uniform: Whether to use uniform drop path rate
             mlp_ratio: MLP expansion ratio
+            eps: Epsilon for normalization layers
             num_classes: Number of classification classes
             **kwargs: Additional arguments
         """
+        act_layer = get_act(act_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
+
         key_stem, key_head, *block_subkeys = jr.split(key, 2 + len(depths))
 
         n_chunks = len(depths)
@@ -119,7 +130,7 @@ class Vssd(eqx.Module):
         self.blocks = tuple(
             BlockChunk(
                 depth=depth,
-                module=MllaBlock,
+                module="mllablock",
                 module_kwargs={
                     "dim": int(dim * 2**i),
                     "input_resolution": (
@@ -128,13 +139,14 @@ class Vssd(eqx.Module):
                     ),
                     "num_heads": num_heads[i],
                     "head_dim": int(dim * 2**i) * expand // num_heads[i],
-                    "act_layer": jax.nn.gelu,
+                    "act_layer": act_layer,
                     "use_dwc": False,
-                    "attention_layer": attentions_layers[i],
+                    "attn_layer": attentions_layers[i],
                     "mlp_ratio": mlp_ratio,
-                    "ffn_layer": Mlp,
+                    "ffn_layer": ffn_layer,
+                    "eps": eps,
                 },
-                downsampler=PatchMerging if (i < n_chunks - 1) else None,
+                downsampler="patchmerging" if (i < n_chunks - 1) else None,
                 downsampler_kwargs={"dim": int(dim * 2**i)} if i < n_chunks - 1 else {},
                 downsample_last=True,
                 drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
@@ -143,7 +155,7 @@ class Vssd(eqx.Module):
             for i, depth in enumerate(depths)
         )
 
-        self.norm = eqx.nn.LayerNorm(self.num_features)
+        self.norm = norm_layer(self.num_features, eps=eps)
         self.head = (
             eqx.nn.Linear(self.num_features, num_classes, key=key_head)
             if num_classes > 0

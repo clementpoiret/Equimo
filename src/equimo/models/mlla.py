@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -6,10 +6,11 @@ import jax.random as jr
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.attention import LinearAttention, MllaBlock
+from equimo.layers.activation import get_act
 from equimo.layers.convolution import Stem
-from equimo.layers.ffn import Mlp
+from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import BlockChunk
+from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchMerging
 from equimo.models.registry import register_model
 from equimo.utils import make_drop_path_schedule, to_list
@@ -53,11 +54,15 @@ class Mlla(eqx.Module):
         patch_size: int = 4,
         depths: List[int] = [2, 2, 6, 2],
         num_heads: List[int] = [3, 6, 12, 24],
-        attentions_layers: Tuple[eqx.Module, ...] | eqx.Module = LinearAttention,
+        attentions_layers: Tuple[str | type[eqx.Module], ...] | str | type[eqx.Module] = "linearattention",
+        act_layer: str | Callable = "silu",
+        ffn_layer: str | type[eqx.Module] = "mlp",
+        norm_layer: str | type[eqx.Module] = "layernorm",
         drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
         mlp_ratio: float = 4.0,
+        eps: float = 1e-5,
         num_classes: int | None = 1000,
         **kwargs,
     ):
@@ -67,18 +72,25 @@ class Mlla(eqx.Module):
             img_size: Input image size
             in_channels: Number of input channels
             key: PRNG key for random operations
-            repeat: Number of times to repeat each block
             dim: Initial embedding dimension
             patch_size: Size of image patches
             depths: Number of blocks at each stage
             num_heads: Number of attention heads at each stage
-            attentions_layers: Type of attention layer(s) to use
+            attentions_layers: Type of attention layer(s) to use (name or class)
+            act_layer: Activation function (name or callable)
+            ffn_layer: FFN block type (name or class)
+            norm_layer: Normalization layer type (name or class)
             drop_rate: Dropout rate
             drop_path_rate: Drop path rate
             drop_path_uniform: Whether to use uniform drop path rates
             mlp_ratio: MLP expansion ratio
+            eps: Epsilon for normalization layers
             num_classes: Number of output classes (None for feature extraction)
         """
+        act_layer = get_act(act_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
+
         key_stem, key_head, *block_subkeys = jr.split(key, 2 + len(depths))
 
         n_chunks = len(depths)
@@ -102,7 +114,7 @@ class Mlla(eqx.Module):
         self.blocks = tuple(
             BlockChunk(
                 depth=depth,
-                module=MllaBlock,
+                module="mllablock",
                 module_kwargs={
                     "dim": int(dim * 2**i),
                     "input_resolution": (
@@ -110,13 +122,14 @@ class Mlla(eqx.Module):
                         patches_resolution[1] // (2**i),
                     ),
                     "num_heads": num_heads[i],
-                    "act_layer": jax.nn.silu,
+                    "act_layer": act_layer,
                     "use_dwc": True,
-                    "attention_layer": attentions_layers[i],
+                    "attn_layer": attentions_layers[i],
                     "mlp_ratio": mlp_ratio,
-                    "ffn_layer": Mlp,
+                    "ffn_layer": ffn_layer,
+                    "eps": eps,
                 },
-                downsampler=PatchMerging if (i < n_chunks - 1) else None,
+                downsampler="patchmerging" if (i < n_chunks - 1) else None,
                 downsampler_kwargs={"dim": int(dim * 2**i)} if i < n_chunks - 1 else {},
                 downsample_last=True,
                 drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
@@ -125,7 +138,7 @@ class Mlla(eqx.Module):
             for i, depth in enumerate(depths)
         )
 
-        self.norm = eqx.nn.LayerNorm(self.num_features)
+        self.norm = norm_layer(self.num_features, eps=eps)
         self.head = (
             eqx.nn.Linear(self.num_features, num_classes, key=key_head)
             if num_classes > 0

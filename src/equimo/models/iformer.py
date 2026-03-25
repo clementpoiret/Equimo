@@ -7,36 +7,10 @@ import numpy as np
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.activation import get_act
-from equimo.layers.attention import SHMABlock
-from equimo.layers.convolution import (
-    IFormerBlock,
-    IFormerStem,
-    SingleConvBlock,
-)
-from equimo.layers.downsample import ConvNormDownsampler
+from equimo.layers import get_layer
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.models.registry import register_model
-
-
-def get_module(name, not_none: bool = True):
-    match name:
-        case "conv":
-            return SingleConvBlock
-        case "cndown":
-            return ConvNormDownsampler
-        case "ifb":
-            return IFormerBlock
-        case "ifs":
-            return IFormerStem
-        case "shma":
-            return SHMABlock
-        case None:
-            if not_none and name is None:
-                raise ValueError(f"{name} can't be None.")
-            return None
-        case _:
-            raise NotImplementedError(f"{name} not implemented.")
 
 
 @register_model("iformer")
@@ -50,9 +24,9 @@ class IFormer(eqx.Module):
         self,
         in_channels: int,
         *,
-        modules: list[str | None] = [None, None, None, None],
+        modules: list[str | type[eqx.Module] | None] = [None, None, None, None],
         module_kwargs: list[dict] = [{}, {}, {}, {}],
-        downsamplers: list[str | None] = [None, None, None, None],
+        downsamplers: list[str | type[eqx.Module] | None] = [None, None, None, None],
         downsampler_kwargs: list[dict] = [{}, {}, {}, {}],
         downsample_last: bool = False,
         dims: list[int] = [64, 128, 256, 512],
@@ -60,9 +34,9 @@ class IFormer(eqx.Module):
         dropout: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
-        act_layer: Callable | str = jax.nn.gelu,
-        norm_layer: str | type[eqx.Module] = eqx.nn.LayerNorm,
-        num_classes: int = 1000,
+        act_layer: str | Callable = "gelu",
+        norm_layer: str | type[eqx.Module] = "layernorm",
+        num_classes: int | None = 1000,
         eps=1e-5,
         init_values: float | None = None,
         key: PRNGKeyArray,
@@ -74,8 +48,8 @@ class IFormer(eqx.Module):
 
         act_layer = get_act(act_layer)
         norm_layer = get_norm(norm_layer)
-        modules = [get_module(b, False) for b in modules]
-        downsamplers = [get_module(b, False) for b in downsamplers]
+        modules = [get_layer(b) if b is not None else None for b in modules]
+        downsamplers = [get_layer(b) if b is not None else None for b in downsamplers]
 
         universal_kwargs = {"act_layer": act_layer}
 
@@ -118,7 +92,7 @@ class IFormer(eqx.Module):
         self.norm = norm_layer(dims[-1], eps=eps)
         self.head = (
             eqx.nn.Linear(dims[-1], num_classes, key=key_head)
-            if num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 
@@ -153,7 +127,7 @@ class IFormer(eqx.Module):
 
 def iformer_t(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 3.0},
             {"kernel_size": 7, "expand_ratio": 3.0},
@@ -172,7 +146,7 @@ def iformer_t(**kwargs) -> IFormer:
                 "ffn_ratio": 2.0,
             },
         ],
-        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[32, 64, 128, 128, 128, 256],
@@ -184,7 +158,7 @@ def iformer_t(**kwargs) -> IFormer:
 
 def iformer_s(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -203,7 +177,7 @@ def iformer_s(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[32, 64, 176, 176, 176, 320],
@@ -215,7 +189,7 @@ def iformer_s(**kwargs) -> IFormer:
 
 def iformer_m(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -234,7 +208,7 @@ def iformer_m(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 192, 192, 192, 384],
@@ -247,7 +221,7 @@ def iformer_m(**kwargs) -> IFormer:
 # TODO: share windowing to avoid intermediate resizes
 def iformer_m_faster(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -267,7 +241,7 @@ def iformer_m_faster(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 192, 192, 192, 384],
@@ -279,7 +253,7 @@ def iformer_m_faster(**kwargs) -> IFormer:
 
 def iformer_l(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -298,7 +272,7 @@ def iformer_l(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 256, 256, 256, 384],
@@ -310,7 +284,7 @@ def iformer_l(**kwargs) -> IFormer:
 
 def iformer_l_faster(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["ifb", "ifb", "ifb", "shma", "ifb", "shma"],
+        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -330,7 +304,7 @@ def iformer_l_faster(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["ifs", "cndown", "cndown", None, None, "cndown"],
+        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 256, 256, 256, 384],

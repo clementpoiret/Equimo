@@ -8,10 +8,12 @@ import numpy as np
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.attention import PartialFormerBlock
+from equimo.layers.activation import get_act
+from equimo.layers.attention import get_attn_block
 from equimo.layers.convolution import Stem
-from equimo.layers.ffn import Mlp
-from equimo.layers.patch import PatchMerging
+from equimo.layers.ffn import get_ffn
+from equimo.layers.generic import _resolve_layer
+from equimo.layers.norm import get_norm
 from equimo.layers.posemb import PosCNN
 from equimo.models.registry import register_model
 from equimo.utils import to_list
@@ -48,17 +50,22 @@ class BlockChunk(eqx.Module):
         depth: int,
         *,
         key: PRNGKeyArray,
-        block: eqx.Module = PartialFormerBlock,
+        block: str | type[eqx.Module] = "partialformerblock",
         use_cpe: bool = False,
-        qa_act_layer: Callable = jax.nn.relu,
-        qa_norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        qa_act_layer: str | Callable = "relu",
+        qa_norm_layer: str | type[eqx.Module] = "layernorm",
         qa_drop: float = 0.0,
-        downsampler: eqx.Module = eqx.nn.Identity,
+        downsampler: str | type[eqx.Module] = eqx.nn.Identity,
         downsampler_contains_dropout: bool = False,
         downsampler_kwargs: dict = {},
         **kwargs,
     ):
         key_ds, key_pos, key_qaproj, *block_subkeys = jr.split(key, depth + 3)
+        block = _resolve_layer(block)
+        if isinstance(downsampler, str):
+            downsampler = _resolve_layer(downsampler)
+        qa_act_layer = get_act(qa_act_layer)
+        qa_norm_layer = get_norm(qa_norm_layer)
         if not isinstance(downsampler, eqx.nn.Identity) or use_cpe:
             if kwargs.get("dim") is None:
                 raise ValueError(
@@ -200,7 +207,7 @@ class PartialFormer(eqx.Module):
         pos_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
-        block: eqx.Module = PartialFormerBlock,
+        block: str | type[eqx.Module] = "partialformerblock",
         head_expand_ratio: float = 4.0,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
@@ -209,15 +216,20 @@ class PartialFormer(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        act_layer: Callable = jax.nn.gelu,
-        ffn_layer: eqx.Module = Mlp,
+        act_layer: str | Callable = "gelu",
+        ffn_layer: str | type[eqx.Module] = "mlp",
         ffn_bias: bool = True,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         init_values: float | None = None,
-        num_classes: int = 1000,
+        num_classes: int | None = 1000,
         interpolate_antialias: bool = False,
         **kwargs,
     ):
+        block = get_attn_block(block)
+        act_layer = get_act(act_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
+
         depth = sum(depths)
         key_qa, key_stem, key_head, *block_subkeys = jr.split(key, 3 + len(depths))
 
@@ -254,7 +266,7 @@ class PartialFormer(eqx.Module):
                 dim=int(dim * 2**i),
                 depth=depths[i],
                 use_cpe=False,
-                downsampler=PatchMerging if (i < n_chunks - 1) else eqx.nn.Identity,
+                downsampler="patchmerging" if (i < n_chunks - 1) else eqx.nn.Identity,
                 downsampler_contains_dropout=False,
                 foreground_ratio=f_ratios[i],
                 patch_size=patch_size,
@@ -281,7 +293,7 @@ class PartialFormer(eqx.Module):
         self.norm = norm_layer(self.num_features)
         self.head = (
             eqx.nn.Linear(self.num_features, num_classes, key=key_head)
-            if num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 

@@ -7,10 +7,13 @@ import numpy as np
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.attention import HATBlock, WindowedAttention
+from equimo.layers.activation import get_act
+from equimo.layers.attention import HATBlock, WindowedAttention, get_attn
 from equimo.layers.convolution import DoubleConvBlock
 from equimo.layers.downsample import ConvNormDownsampler
-from equimo.layers.ffn import Mlp
+from equimo.layers.ffn import Mlp, get_ffn
+from equimo.layers.generic import _resolve_layer
+from equimo.layers.norm import get_norm
 from equimo.layers.patch import ConvPatchEmbed
 from equimo.models.registry import register_model
 from equimo.utils import pool_sd, to_list
@@ -96,16 +99,18 @@ class BlockChunk(eqx.Module):
         depth: int,
         *,
         key: PRNGKeyArray,
-        block: eqx.Module = HATBlock,
-        downsampler: eqx.Module = ConvNormDownsampler,
+        block: str | type[eqx.Module] = "hatblock",
+        downsampler: str | type[eqx.Module] = "convnormdownsampler",
         downsampler_contains_dropout: bool = False,
         only_local: bool = False,
         hierarchy: bool = True,
         ct_size: int = 1,
         **kwargs,
     ):
+        block = _resolve_layer(block)
+        downsampler = _resolve_layer(downsampler)
         key_ds, key_gt, *block_subkeys = jr.split(key, depth + 2)
-        if not isinstance(downsampler, eqx.nn.Identity):
+        if not issubclass(downsampler, eqx.nn.Identity):
             if kwargs.get("dim") is None:
                 raise ValueError(
                     "Using a downsampler requires passing a `dim` argument."
@@ -278,26 +283,29 @@ class FasterViT(eqx.Module):
         key: PRNGKeyArray,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
-        block: eqx.Module = HATBlock,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
         proj_bias: bool = True,
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        act_layer: Callable = jax.nn.gelu,
-        attn_layer: eqx.Module = WindowedAttention,
-        ffn_layer: eqx.Module = Mlp,
+        act_layer: str | Callable = "gelu",
+        attn_layer: str | type[eqx.Module] = "windowedattention",
+        ffn_layer: str | type[eqx.Module] = "mlp",
         ffn_bias: bool = True,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         init_values: float | None = None,
         ls_convblock: bool = False,
         do_propagation: bool = False,
         global_pool: Literal["", "token", "avg", "avgmax", "max"] = "avg",
-        num_classes: int = 1000,
+        num_classes: int | None = 1000,
         interpolate_antialias: bool = False,
         **kwargs,
     ):
+        act_layer = get_act(act_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
+
         depth = sum(depths)
         key_patchemb, key_posemb, key_cls, key_reg, key_head, *block_subkeys = jr.split(
             key, 5 + len(depths)
@@ -324,7 +332,7 @@ class FasterViT(eqx.Module):
         window_size = to_list(window_size, n_chunks)
         self.blocks = tuple(
             BlockChunk(
-                block=DoubleConvBlock if i < 2 else HATBlock,
+                block="doubleconvblock" if i < 2 else "hatblock",
                 dim=int(dim * 2**i),
                 depth=depths[i],
                 input_resolution=int(2 ** (-2 - i) * img_size),
@@ -344,7 +352,7 @@ class FasterViT(eqx.Module):
                 ffn_bias=ffn_bias,
                 norm_layer=norm_layer,
                 init_values=None if i < 2 and not ls_convblock else init_values,
-                downsampler=ConvNormDownsampler
+                downsampler="convnormdownsampler"
                 if i < len(depths) - 1
                 else eqx.nn.Identity,
                 only_local=not hat[i],
@@ -358,7 +366,7 @@ class FasterViT(eqx.Module):
         self.norm = norm_layer(num_features)
         self.head = (
             eqx.nn.Linear(num_features, num_classes, key=key_head)
-            if num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 

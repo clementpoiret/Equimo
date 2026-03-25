@@ -1,4 +1,4 @@
-from typing import Callable, Literal, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -7,57 +7,12 @@ import numpy as np
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.layers.activation import get_act
-from equimo.layers.convolution import ATConvBlock
-from equimo.layers.downsample import ConvNormDownsampler
+from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
+from equimo.models.registry import register_model
 
 
-class BlockChunk(eqx.Module):
-    blocks: Tuple[ATConvBlock, ...]
-    downsample: ConvNormDownsampler
-
-    def __init__(
-        self,
-        dim: int,
-        depth: int,
-        *,
-        downsampler_mode: Literal["simple", "double"] = "simple",
-        key: PRNGKeyArray,
-        **kwargs,
-    ):
-        key_ds, *block_subkeys = jr.split(key, depth + 1)
-        keys_to_spread = [
-            k for k, v in kwargs.items() if isinstance(v, list) and len(v) == depth
-        ]
-        out_channels = kwargs["in_channels"]
-
-        self.downsample = ConvNormDownsampler(
-            dim, out_channels=out_channels, mode=downsampler_mode, key=key_ds
-        )
-
-        blocks = []
-        for i in range(depth):
-            config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
-            blocks.append(ATConvBlock(**config, key=block_subkeys[i]))
-        self.blocks = tuple(blocks)
-
-    def __call__(
-        self,
-        x: Float[Array, "..."],
-        *,
-        key: PRNGKeyArray,
-        inference: Optional[bool] = None,
-        **kwargs,
-    ) -> Float[Array, "..."]:
-        keys = jr.split(key, len(self.blocks))
-
-        x = self.downsample(x)
-        for blk, key_block in zip(self.blocks, keys):
-            x = blk(x, inference=inference, key=key_block, **kwargs)
-
-        return x
-
-
+@register_model("attnet")
 class AttNet(eqx.Module):
     blocks: Tuple[BlockChunk, ...]
     norm: eqx.Module
@@ -78,14 +33,14 @@ class AttNet(eqx.Module):
         drop_path_rate: float = 0.0,
         dropout: float = 0.0,
         drop_path_uniform: bool = False,
-        act_layer: Callable | str = jax.nn.gelu,
-        norm_layer: str | eqx.Module = eqx.nn.LayerNorm,
-        num_classes: int = 1000,
+        act_layer: str | Callable = "gelu",
+        norm_layer: str | type[eqx.Module] = "layernorm",
+        num_classes: int | None = 1000,
         eps=1e-5,
         key: PRNGKeyArray,
         **kwargs,
     ):
-        key_down, key_blk, key_head = jr.split(key, 3)
+        key_blk, key_head = jr.split(key, 2)
 
         depth = sum(depths)
 
@@ -102,19 +57,24 @@ class AttNet(eqx.Module):
         for i, _k in enumerate(jr.split(key_blk, len(dims))):
             blocks.append(
                 BlockChunk(
-                    dim=_bc_dim[i],
                     depth=depths[i],
-                    downsampler_mode="double" if i == 0 else "simple",
-                    in_channels=dims[i],
-                    kernel_size=kernel_sizes[i],
-                    exp_rate=exp_rates[i],
-                    act_layer=act_layer,
-                    glu_norm=glu_norm[i],
-                    glu_dwconv=glu_dwconv[i],
-                    use_bias=conv_bias,
-                    dropout=dropout,
+                    in_channels=_bc_dim[i],
+                    out_channels=dims[i],
+                    module="atconvblock",
+                    module_kwargs={
+                        "dim": dims[i],
+                        "kernel_size": kernel_sizes[i],
+                        "exp_rate": exp_rates[i],
+                        "act_layer": act_layer,
+                        "glu_norm": glu_norm[i],
+                        "glu_dwconv": glu_dwconv[i],
+                        "use_bias": conv_bias,
+                        "dropout": dropout,
+                        "use_layer_scale": use_layer_scale,
+                    },
+                    downsampler="convnormdownsampler",
+                    downsampler_kwargs={"mode": "double" if i == 0 else "simple"},
                     drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
-                    use_layer_scale=use_layer_scale,
                     key=_k,
                 )
             )
@@ -123,7 +83,7 @@ class AttNet(eqx.Module):
         self.norm = norm_layer(dims[-1], eps=eps)
         self.head = (
             eqx.nn.Linear(dims[-1], num_classes, key=key_head)
-            if num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 

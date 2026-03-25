@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -7,11 +7,11 @@ import numpy as np
 from einops import reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.layers.attention import SHSA
 from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock
-from equimo.layers.downsample import PWSEDownsampler
-from equimo.layers.generic import Residual
-from equimo.layers.generic import BlockChunk
+from equimo.layers.generic import BlockChunk, Residual
+from equimo.layers.norm import get_norm
 from equimo.models.registry import register_model
 from equimo.utils import nearest_power_of_2_divisor, to_list
 
@@ -42,6 +42,7 @@ class BasicBlock(eqx.Module):
         block_type: str,
         *,
         key: PRNGKeyArray,
+        act_layer: Callable = jax.nn.relu,
         drop_path: float = 0.0,
         norm_max_group: int = 32,
         **kwargs,
@@ -82,7 +83,7 @@ class BasicBlock(eqx.Module):
         self.ffn = DoubleConvBlock(
             dim=dim,
             hidden_channels=int(dim**2),
-            act_layer=jax.nn.relu,
+            act_layer=act_layer,
             drop_path=drop_path,
             kernel_size=1,
             stride=1,
@@ -140,11 +141,16 @@ class SHViT(eqx.Module):
         block_type=["s", "s", "s"],
         *,
         key: PRNGKeyArray,
+        act_layer: str | Callable = "relu",
+        norm_layer: str | type[eqx.Module] = "layernorm",
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
         num_classes: int | None = 1000,
         **kwargs,
     ):
+        act_layer = get_act(act_layer)
+        norm_layer = get_norm(norm_layer)
+
         key_conv1, key_conv2, key_conv3, key_conv4, key_head, *block_subkeys = jr.split(
             key, 5 + len(depths)
         )
@@ -160,7 +166,7 @@ class SHViT(eqx.Module):
                     kernel_size=3,
                     stride=2,
                     padding=1,
-                    act_layer=jax.nn.relu,
+                    act_layer=act_layer,
                     key=key_conv1,
                 ),
                 SingleConvBlock(
@@ -169,7 +175,7 @@ class SHViT(eqx.Module):
                     kernel_size=3,
                     stride=2,
                     padding=1,
-                    act_layer=jax.nn.relu,
+                    act_layer=act_layer,
                     key=key_conv2,
                 ),
                 SingleConvBlock(
@@ -178,7 +184,7 @@ class SHViT(eqx.Module):
                     kernel_size=3,
                     stride=2,
                     padding=1,
-                    act_layer=jax.nn.relu,
+                    act_layer=act_layer,
                     key=key_conv3,
                 ),
                 SingleConvBlock(
@@ -211,8 +217,9 @@ class SHViT(eqx.Module):
                     "qk_dim": qk_dims[i],
                     "pdim": pdims[i],
                     "block_type": block_types[i],
+                    "act_layer": act_layer,
                 },
-                downsampler=PWSEDownsampler if i < len(depths) - 1 else None,
+                downsampler="pwsedownsampler" if i < len(depths) - 1 else None,
                 downsampler_kwargs=(
                     {"in_channels": dims[i], "out_channels": dims[i + 1]}
                     if i < len(depths) - 1
@@ -226,7 +233,7 @@ class SHViT(eqx.Module):
             for i, depth in enumerate(depths)
         )
 
-        self.norm = eqx.nn.LayerNorm(dims[-1])
+        self.norm = norm_layer(dims[-1])
         self.head = (
             eqx.nn.Linear(dims[-1], num_classes, key=key_head)
             if num_classes > 0
