@@ -77,7 +77,7 @@ from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
-from equimo.layers.posemb import LearnedPosEmbed, VisionRoPE
+from equimo.layers.posemb import LearnedPosEmbed, VisionRoPE, CompositeVisionRoPE
 from equimo.models.registry import register_model
 from equimo.utils import pool_sd, to_list
 
@@ -106,8 +106,9 @@ class VisionTransformer(eqx.Module):
         num_reg_tokens: Number of registration tokens
         num_prefix_tokens: Total number of prefix tokens
         num_embedded_prefix_tokens: Number of embedded prefix tokens
-        no_embed_class: Whether to skip class token embedding
-        pos_embed_reg_tokens: Whether to add positional embeddings to reg tokens
+        global_pos_embed_cls: Whether the class token receives global positional embedding
+        global_pos_embed_reg: Whether reg tokens receive global positional embedding
+        local_pos_embed_reg: Whether reg tokens receive local positional embedding (RoPE)
         embed_len: Total embedding length
         dynamic_img_size: Whether to support dynamic image sizes
         antialias: Whether to use antialiasing in interpolation
@@ -115,7 +116,7 @@ class VisionTransformer(eqx.Module):
 
     patch_embed: PatchEmbedding
     global_pos_embed: LearnedPosEmbed | None
-    local_pos_embed: VisionRoPE | None
+    local_pos_embed: CompositeVisionRoPE | None
     cls_token: jax.Array | None
     reg_tokens: jax.Array | None
     mask_token: jax.Array | None
@@ -132,8 +133,9 @@ class VisionTransformer(eqx.Module):
     num_reg_tokens: int = eqx.field(static=True)
     num_prefix_tokens: int = eqx.field(static=True)
     num_embedded_prefix_tokens: int = eqx.field(static=True)
-    no_embed_class: bool = eqx.field(static=True)
-    pos_embed_reg_tokens: bool = eqx.field(static=True)
+    global_pos_embed_cls: bool = eqx.field(static=True)
+    global_pos_embed_reg: bool = eqx.field(static=True)
+    local_pos_embed_reg: bool = eqx.field(static=True)
     embed_len: int = eqx.field(static=True)
     dynamic_img_size: bool = eqx.field(static=True)
     antialias: bool = eqx.field(static=True)
@@ -152,17 +154,24 @@ class VisionTransformer(eqx.Module):
         dynamic_img_size: bool = False,
         dynamic_img_pad: bool = False,
         class_token: bool = True,
-        no_embed_class: bool = False,
+        global_pos_embed_cls: bool = True,
+        global_pos_embed_reg: bool = False,
+        local_pos_embed_reg: bool = False,
         reg_tokens: int = 4,
         use_global_pos_embed: bool = True,
         use_local_pos_embed: bool = False,
-        local_pos_embed_config: dict = {
+        local_pos_embed_config_patch: dict = {
             "strategy": "period",
             "base": 100.0,
             "normalize_coords": "separate",
             "dtype": jnp.float32,
         },
-        pos_embed_reg_tokens: bool = False,
+        local_pos_embed_config_reg: dict = {
+            "strategy": "period",
+            "base": 100.0,
+            "normalize_coords": "separate",
+            "dtype": jnp.float32,
+        },
         pos_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         drop_path_uniform: bool = False,
@@ -198,8 +207,9 @@ class VisionTransformer(eqx.Module):
         self.num_embedded_prefix_tokens = 0
         self.dynamic_img_size = dynamic_img_size
         self.antialias = interpolate_antialias
-        self.no_embed_class = no_embed_class
-        self.pos_embed_reg_tokens = pos_embed_reg_tokens
+        self.global_pos_embed_cls = global_pos_embed_cls
+        self.global_pos_embed_reg = global_pos_embed_reg
+        self.local_pos_embed_reg = local_pos_embed_reg
         self.global_pool = global_pool
         self.embed_size = img_size // patch_size
 
@@ -227,9 +237,9 @@ class VisionTransformer(eqx.Module):
 
         self.mask_token = jnp.zeros((1, dim)) if use_mask_token else None
 
-        if no_embed_class:
+        if not global_pos_embed_cls:
             self.embed_len = self.num_patches
-        elif self.pos_embed_reg_tokens:
+        elif global_pos_embed_reg:
             self.embed_len = self.num_patches + self.num_prefix_tokens
             self.num_embedded_prefix_tokens += self.num_prefix_tokens
         else:
@@ -243,8 +253,8 @@ class VisionTransformer(eqx.Module):
                 embed_size=self.embed_size,
                 num_prefix_tokens=self.num_prefix_tokens,
                 num_embedded_prefix_tokens=self.num_embedded_prefix_tokens,
-                no_embed_class=self.no_embed_class,
-                pos_embed_reg_tokens=self.pos_embed_reg_tokens,
+                global_pos_embed_cls=global_pos_embed_cls,
+                global_pos_embed_reg=global_pos_embed_reg,
                 antialias=interpolate_antialias,
             )
         else:
@@ -255,10 +265,31 @@ class VisionTransformer(eqx.Module):
                 raise ValueError(
                     "Local pos embedding (RoPE) currently requires a static number of heads."
                 )
-            self.local_pos_embed = VisionRoPE(
+            patch_rope = VisionRoPE(
                 dim=dim,
                 num_heads=num_heads,
-                **local_pos_embed_config,
+                **local_pos_embed_config_patch,
+            )
+            _n_prefix = (
+                (1 if class_token else 0)
+                if local_pos_embed_reg
+                else self.num_prefix_tokens
+            )
+            _n_reg = self.num_reg_tokens if local_pos_embed_reg else 0
+            reg_rope = (
+                VisionRoPE(
+                    dim=dim,
+                    num_heads=num_heads,
+                    **local_pos_embed_config_reg,
+                )
+                if _n_reg > 0
+                else None
+            )
+            self.local_pos_embed = CompositeVisionRoPE(
+                patch_rope,
+                reg_rope=reg_rope,
+                num_prefix_tokens=_n_prefix,
+                num_registers=_n_reg,
             )
         else:
             self.local_pos_embed = None
@@ -514,7 +545,7 @@ _SIGLIP2_BASE_CFG: dict = {
     "use_mask_token": False,
     "reg_tokens": 0,
     "class_token": False,
-    "no_embed_class": True,
+    "global_pos_embed_cls": False,
     "init_values": None,
     "eps": 1e-6,
     "dynamic_img_size": False,
@@ -537,16 +568,34 @@ _VIT5_BASE_CFG: dict = {
     "patch_size": 16,
     "num_classes": 1000,
     "reg_tokens": 4,
+    "class_token": True,
+    "global_pos_embed_cls": False,  # APE on patches only (not CLS/reg)
+    "global_pos_embed_reg": False,  # APE on patches only (not CLS/reg)
+    "local_pos_embed_reg": True,  # registers get their own RoPE via CompositeVisionRoPE
     "use_mask_token": False,
     "dynamic_img_size": False,
+    "use_global_pos_embed": True,  # learned APE
+    "use_local_pos_embed": True,  # RoPE
+    "local_pos_embed_config_patch": {
+        "strategy": "mode",
+        "freqs_for": "lang",
+        "theta": 10000,
+        "pt_seq_len": 14,  # = 224 // 16
+    },
+    "local_pos_embed_config_reg": {
+        "strategy": "mode",
+        "freqs_for": "lang",
+        "theta": 100,  # reg_theta in PyTorch
+        "pt_seq_len": 2,  # = int(sqrt(4))
+    },
     "act_layer": "gelu",
-    "use_global_pos_embed": True,
-    "use_local_pos_embed": True,
-    "init_values": 1e-4,
     "norm_layer": "rmsnorm",
+    "eps": 1e-6,
     "qkv_bias": False,
     "qk_norm": True,
+    "init_values": 1e-4,  # layer scale
 }
+
 
 _VIT_REGISTRY: dict[str, tuple[dict, dict]] = {
     # Standard ViT (Dosovitskiy et al. + DeiT-III Ti/S)
@@ -856,6 +905,22 @@ _VIT_REGISTRY: dict[str, tuple[dict, dict]] = {
             "depths": [40],
             "ffn_layer": "swiglufused",
         },
+    ),
+    "vit5_small": (
+        _VIT5_BASE_CFG,
+        {"dim": 384, "num_heads": 6, "depths": [12]},
+    ),
+    "vit5_base": (
+        _VIT5_BASE_CFG,
+        {"dim": 768, "num_heads": 12, "depths": [12]},
+    ),
+    "vit5_large": (
+        _VIT5_BASE_CFG,
+        {"dim": 1024, "num_heads": 16, "depths": [24]},
+    ),
+    "vit5_xlarge": (
+        _VIT5_BASE_CFG,
+        {"dim": 1152, "num_heads": 16, "depths": [28]},
     ),
 }
 
@@ -1184,3 +1249,23 @@ def tips_vitg14_lr(pretrained: bool = False, **kwargs) -> VisionTransformer:
 def tips_vitg14_hr(pretrained: bool = False, **kwargs) -> VisionTransformer:
     """TIPS ViT-g/14 high-res (448*448)."""
     return _build_vit("tips_vitg14_hr", pretrained=pretrained, **kwargs)
+
+
+def vit5_small(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """ViT5-S/16 — 384-dim, 6 heads, 12 blocks, 4 registers, RoPE + APE."""
+    return _build_vit("vit5_small", pretrained=pretrained, **kwargs)
+
+
+def vit5_base(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """ViT5-B/16 — 768-dim, 12 heads, 12 blocks, 4 registers, RoPE + APE."""
+    return _build_vit("vit5_base", pretrained=pretrained, **kwargs)
+
+
+def vit5_large(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """ViT5-L/16 — 1024-dim, 16 heads, 24 blocks, 4 registers, RoPE + APE."""
+    return _build_vit("vit5_large", pretrained=pretrained, **kwargs)
+
+
+def vit5_xlarge(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """ViT5-XL/16 — 1152-dim, 16 heads, 28 blocks, 4 registers, RoPE + APE."""
+    return _build_vit("vit5_xlarge", pretrained=pretrained, **kwargs)

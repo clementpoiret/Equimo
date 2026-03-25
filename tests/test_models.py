@@ -1,4 +1,3 @@
-from equimo.models.vit import dinov2_vits14_reg, dinov3_vits16_pretrain_lvd1689m
 import hashlib
 import tempfile
 from pathlib import Path
@@ -19,6 +18,12 @@ from equimo.models.mlla import Mlla
 from equimo.models.mobilenet import mobilenetv3_small
 from equimo.models.partialformer import PartialFormer
 from equimo.models.shvit import SHViT
+from equimo.models.vit import (
+    dinov2_vits14_reg,
+    dinov3_vits16_pretrain_lvd1689m,
+    siglip2_vitb16_256,
+    vit5_small,
+)
 from equimo.models.vssd import Vssd
 from equimo.utils import make_drop_path_schedule
 
@@ -131,7 +136,8 @@ def test_vit_rope():
         num_heads=2,
         depths=[2],
         num_classes=NUM_CLASSES,
-        use_rope_pos_embed=True,
+        use_global_pos_embed=False,
+        use_local_pos_embed=True,
         dynamic_img_size=True,
         class_token=True,
         reg_tokens=0,
@@ -466,6 +472,40 @@ def test_partialformer_foreground_ratios_tuple():
     assert y.shape == (NUM_CLASSES,)
 
 
+# ConvNeXt
+
+
+def test_convnext_forward():
+    model = em.convnext_t(in_channels=3, num_classes=NUM_CLASSES, key=KEY)
+    x = jr.normal(KEY, (3, 64, 64))
+    y = model(x, key=KEY, inference=True)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+
+
+def test_convnext_features():
+    model = em.convnext_t(in_channels=3, num_classes=0, key=KEY)
+    x = jr.normal(KEY, (3, 64, 64))
+    feats = model.features(x, key=KEY, inference=True)
+    assert feats.ndim == 3  # (c, h, w)
+    assert jnp.all(jnp.isfinite(feats))
+
+
+def test_convnext_drop_path():
+    model = em.ConvNeXt(
+        in_channels=3,
+        depths=[2, 2],
+        dims=[32, 64],
+        drop_path_rate=0.1,
+        num_classes=NUM_CLASSES,
+        key=KEY,
+    )
+    x = jr.normal(KEY, (3, 64, 64))
+    y = model(x, key=KEY, inference=True)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+
+
 # Save / Load
 
 
@@ -559,16 +599,6 @@ def test_load_pretrained_model():
     assert jnp.all(jnp.isfinite(features))
 
 
-def test_dinov3():
-    key = jr.PRNGKey(42)
-
-    x = jnp.ones((3, 64, 64))
-    model = dinov3_vits16_pretrain_lvd1689m(pretrained=True)
-    y_hat = model(x, key=key)
-
-    assert jnp.abs(y_hat[0] - -0.25373647) < 1e-6
-
-
 def test_dinov2_vits14_reg_matches_timm():
     """DINOv2 ViT-S/14 with 4 register tokens must match timm's output.
 
@@ -593,4 +623,70 @@ def test_dinov2_vits14_reg_matches_timm():
     eq_cls = np.array(fwd["x_norm_cls_token"])  # (384,)
 
     mae = float(np.mean(np.abs(eq_cls - ref["cls_token"])))
-    assert mae < 5e-4, f"DINOv2 cls token MAE vs timm: {mae:.2e}"
+    assert mae < 1e-5, f"DINOv2 cls token MAE vs timm: {mae:.2e}"
+
+
+def test_dinov3_vits16_matches_hf():
+    """DINOv3 ViT-S/16 (LVD-1689M) cls token must match HuggingFace output.
+
+    Reference features were extracted with:
+        facebook/dinov3-vits16-pretrain-lvd1689m via transformers pipeline
+    on a fixed random 256×256 image (see torch_models.py).
+
+    Comparison:
+    - HF  model(img).last_hidden_state[0, 0]       → post-norm cls token
+    - equimo forward_features(x)["x_norm_cls_token"] → same quantity
+    Tolerance: mean absolute error < 5e-4.
+    """
+    key = jr.PRNGKey(42)
+    ref = np.load(Path(__file__).parent / "data" / "dinov3_vits16_reference.npz")
+
+    x = jnp.array(ref["img"])  # (3, 256, 256)
+    model = dinov3_vits16_pretrain_lvd1689m(pretrained=True)
+
+    fwd = model.forward_features(x, key=key, inference=True)
+    eq_cls = np.array(fwd["x_norm_cls_token"])  # (384,)
+
+    mae = float(np.mean(np.abs(eq_cls - ref["cls_token"])))
+    assert mae < 3e-4, f"DINOv3 cls token MAE vs HuggingFace: {mae:.2e}"
+
+
+def test_siglip2_vitb16_256_matches_hf():
+    """SigLIP2 ViT-B/16 at 256×256 patch tokens must match HuggingFace output.
+
+    Reference features were extracted with:
+        google/siglip2-base-patch16-256 vision_model via transformers pipeline
+    on a fixed random 256×256 image (see torch_models.py).
+
+    Comparison:
+    - HF  vision_model(img).last_hidden_state[0]  → post-norm patch tokens (256, 768)
+    - equimo jax.vmap(model.norm)(model.features(x)) → same quantity
+    Tolerance: mean absolute error < 5e-4.
+    """
+    key = jr.PRNGKey(42)
+    ref = np.load(Path(__file__).parent / "data" / "siglip2_vitb16_256_reference.npz")
+
+    x = jnp.array(ref["img"])  # (3, 256, 256)
+    model = siglip2_vitb16_256(pretrained=True)
+
+    features = model.features(x, key=key, inference=True)
+    eq_patches = np.array(jax.vmap(model.norm)(features))  # (256, 768)
+
+    mae = float(np.mean(np.abs(eq_patches - ref["patch_tokens"])))
+    assert mae < 1e-5, f"SigLIP2 patch tokens MAE vs HuggingFace: {mae:.2e}"
+
+
+def test_vit5_small_forward():
+    """ViT5-S/16 forward pass: correct output shape and finite values.
+
+    Uses combined APE (patches only) + RoPE (patches + registers).
+    """
+    key = jr.PRNGKey(42)
+    model = vit5_small(pretrained=False, key=key)
+    x = jr.normal(key, (3, 224, 224))
+
+    features = model.features(x, key=key, inference=True)
+
+    # 5 prefix tokens (1 cls + 4 reg) + 196 patches
+    assert features.shape == (201, 384)
+    assert jnp.all(jnp.isfinite(features))

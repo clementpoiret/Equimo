@@ -7,6 +7,7 @@ import jax.random as jr
 import pytest
 
 from equimo.layers.posemb import (
+    CompositeVisionRoPE,
     DinoRoPE,
     LearnedPosEmbed,
     PosCNN,
@@ -39,25 +40,25 @@ class TestLearnedPosEmbed:
             embed_size=embed_size,
             num_prefix_tokens=0,
             num_embedded_prefix_tokens=0,
-            no_embed_class=True,
-            pos_embed_reg_tokens=False,
+            global_pos_embed_cls=False,
+            global_pos_embed_reg=False,
         )
 
-    def test_no_embed_class_shape(self):
+    def test_patch_only_posemb_shape(self):
         pe = self._make()
         x = jr.normal(KEY, (SEQLEN, DIM))
         out = pe(x, cls_token=None, reg_tokens=None, dynamic_img_size=False)
         assert out.shape == (SEQLEN, DIM)
 
-    def test_no_embed_class_with_cls(self):
+    def test_patch_only_posemb_with_cls(self):
         pe = LearnedPosEmbed(
             weight=jr.normal(KEY, (SEQLEN, DIM)),
             dim=DIM,
             embed_size=H,
             num_prefix_tokens=1,
             num_embedded_prefix_tokens=0,
-            no_embed_class=True,
-            pos_embed_reg_tokens=False,
+            global_pos_embed_cls=False,
+            global_pos_embed_reg=False,
         )
         x = jr.normal(KEY, (SEQLEN, DIM))
         cls = jr.normal(KEY, (1, DIM))
@@ -90,8 +91,8 @@ class TestLearnedPosEmbed:
             embed_size=H,
             num_prefix_tokens=0,
             num_embedded_prefix_tokens=0,
-            no_embed_class=False,
-            pos_embed_reg_tokens=False,
+            global_pos_embed_cls=True,
+            global_pos_embed_reg=False,
         )
         x = jr.normal(KEY, (SEQLEN, DIM))
         reg = jr.normal(KEY, (2, DIM))
@@ -814,6 +815,266 @@ class TestPosCNN2D:
         x = jr.normal(KEY, (DIM, H, W))
         out = layer(x, key=KEY, inference=True)
         assert not jnp.allclose(out, x)
+
+
+# CompositeVisionRoPE
+
+
+class TestCompositeVisionRoPE:
+    """Tests for CompositeVisionRoPE: prefix + register + patch token layout."""
+
+    def _make_patch_rope(self, **kwargs):
+        defaults = dict(strategy="period", dim=DIM, num_heads=NUM_HEADS)
+        defaults.update(kwargs)
+        return VisionRoPE(**defaults)
+
+    def _make_reg_rope(self, **kwargs):
+        defaults = dict(strategy="period", dim=DIM, num_heads=NUM_HEADS)
+        defaults.update(kwargs)
+        return VisionRoPE(**defaults)
+
+    # -- get_sincos: shapes ---------------------------------------------------
+
+    def test_sincos_shape_patches_only(self):
+        """No prefix, no registers: output length == H*W."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=0,
+            num_registers=0,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        d_head = DIM // NUM_HEADS
+        assert sin.shape == (H * W, d_head)
+        assert cos.shape == (H * W, d_head)
+
+    def test_sincos_shape_with_prefix(self):
+        """Prefix tokens prepend rows; total length == num_prefix + H*W."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=0,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        d_head = DIM // NUM_HEADS
+        assert sin.shape == (1 + H * W, d_head)
+        assert cos.shape == (1 + H * W, d_head)
+
+    def test_sincos_shape_with_registers_no_reg_rope(self):
+        """Registers with no reg_rope: total length == num_prefix + num_registers + H*W."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        d_head = DIM // NUM_HEADS
+        assert sin.shape == (1 + 4 + H * W, d_head)
+        assert cos.shape == (1 + 4 + H * W, d_head)
+
+    def test_sincos_shape_with_reg_rope(self):
+        """Registers with reg_rope: shape unchanged, but values differ from identity."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            reg_rope=self._make_reg_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        d_head = DIM // NUM_HEADS
+        assert sin.shape == (1 + 4 + H * W, d_head)
+        assert cos.shape == (1 + 4 + H * W, d_head)
+
+    # -- get_sincos: values ---------------------------------------------------
+
+    def test_prefix_tokens_are_identity(self):
+        """Prefix rows must be sin=0, cos=1 (identity rotation)."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=2,
+            num_registers=0,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.allclose(sin[:2], jnp.zeros_like(sin[:2]))
+        assert jnp.allclose(cos[:2], jnp.ones_like(cos[:2]))
+
+    def test_registers_are_identity_without_reg_rope(self):
+        """Register rows must be sin=0, cos=1 when no reg_rope is given."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        # rows 1..4 are registers
+        assert jnp.allclose(sin[1:5], jnp.zeros_like(sin[1:5]))
+        assert jnp.allclose(cos[1:5], jnp.ones_like(cos[1:5]))
+
+    def test_registers_non_identity_with_reg_rope(self):
+        """Register rows must NOT be identity when reg_rope is provided."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            reg_rope=self._make_reg_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        # At least some register sin values should differ from 0
+        assert not jnp.allclose(sin[1:5], jnp.zeros_like(sin[1:5]))
+
+    def test_patch_rows_match_standalone_rope(self):
+        """Patch portion of sincos must equal standalone VisionRoPE output."""
+        patch_rope = self._make_patch_rope()
+        comp = CompositeVisionRoPE(
+            patch_rope,
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        sin_comp, cos_comp = comp.get_sincos(H=H, W=W, key=KEY, inference=True)
+        sin_patch, cos_patch = patch_rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        # patch rows start at index 1 + 4 = 5
+        assert jnp.allclose(sin_comp[5:], sin_patch, atol=1e-6)
+        assert jnp.allclose(cos_comp[5:], cos_patch, atol=1e-6)
+
+    def test_sincos_finite(self):
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            reg_rope=self._make_reg_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(sin))
+        assert jnp.all(jnp.isfinite(cos))
+
+    def test_sincos_bounded(self):
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=0,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.abs(sin) <= 1.0 + 1e-5)
+        assert jnp.all(jnp.abs(cos) <= 1.0 + 1e-5)
+
+    # -- __call__: shapes and values ------------------------------------------
+
+    def test_call_shape_patches_only(self):
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=0,
+            num_registers=0,
+        )
+        d_head = DIM // NUM_HEADS
+        x = jr.normal(KEY, (H * W, NUM_HEADS, d_head))
+        out = rope(x, H=H, W=W, key=KEY, inference=True)
+        assert out.shape == x.shape
+
+    def test_call_shape_with_prefix_and_registers(self):
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        d_head = DIM // NUM_HEADS
+        seq_len = 1 + 4 + H * W
+        x = jr.normal(KEY, (seq_len, NUM_HEADS, d_head))
+        out = rope(x, H=H, W=W, key=KEY, inference=True)
+        assert out.shape == x.shape
+
+    def test_call_finite(self):
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        d_head = DIM // NUM_HEADS
+        seq_len = 1 + 4 + H * W
+        x = jr.normal(KEY, (seq_len, NUM_HEADS, d_head))
+        out = rope(x, H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(out))
+
+    def test_call_changes_patch_tokens(self):
+        """Patch tokens must be rotated (output != input for those rows)."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=0,
+        )
+        d_head = DIM // NUM_HEADS
+        seq_len = 1 + H * W
+        x = jr.normal(KEY, (seq_len, NUM_HEADS, d_head))
+        out = rope(x, H=H, W=W, key=KEY, inference=True)
+        # Patch rows (1:) should differ
+        assert not jnp.allclose(out[1:], x[1:])
+
+    def test_call_infers_hw_from_seqlen(self):
+        """When H and W are omitted, they are inferred as sqrt(n_patches)."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=0,
+        )
+        d_head = DIM // NUM_HEADS
+        seq_len = 1 + H * W
+        x = jr.normal(KEY, (seq_len, NUM_HEADS, d_head))
+        out = rope(x, key=KEY, inference=True)
+        assert out.shape == x.shape
+        assert jnp.all(jnp.isfinite(out))
+
+    # -- reg_grid inference ---------------------------------------------------
+
+    def test_perfect_square_registers_infers_grid(self):
+        """num_registers that is a perfect square should auto-infer reg_grid."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=4,
+        )
+        assert rope.reg_grid == (2, 2)
+
+    def test_explicit_reg_grid_non_square_registers(self):
+        """Provide reg_grid explicitly when num_registers is not a perfect square."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=1,
+            num_registers=6,
+            reg_grid=(2, 3),
+        )
+        assert rope.reg_grid == (2, 3)
+
+    def test_non_square_registers_without_grid_raises(self):
+        with pytest.raises(ValueError, match="not a perfect square"):
+            CompositeVisionRoPE(
+                self._make_patch_rope(),
+                num_prefix_tokens=1,
+                num_registers=6,
+            )
+
+    # -- registry integration -------------------------------------------------
+
+    def test_registry_lookup(self):
+        assert get_posemb("compositevisionrope") is CompositeVisionRoPE
+
+    def test_registry_roundtrip(self):
+        cls = get_posemb("compositevisionrope")
+        rope = cls(self._make_patch_rope(), num_prefix_tokens=1, num_registers=0)
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(sin))
+
+    # -- no prefix, no registers ----------------------------------------------
+
+    def test_zero_prefix_zero_registers_defaults(self):
+        """Default construction with no extra tokens should work."""
+        rope = CompositeVisionRoPE(
+            self._make_patch_rope(),
+            num_prefix_tokens=0,
+            num_registers=0,
+        )
+        assert rope.num_prefix_tokens == 0
+        assert rope.num_registers == 0
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        d_head = DIM // NUM_HEADS
+        assert sin.shape == (H * W, d_head)
 
 
 # get_posemb

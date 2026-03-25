@@ -80,8 +80,8 @@ class LearnedPosEmbed(eqx.Module):
     embed_size: int = eqx.field(static=True)
     num_prefix_tokens: int = eqx.field(static=True)
     num_embedded_prefix_tokens: int = eqx.field(static=True)
-    no_embed_class: bool = eqx.field(static=True)
-    pos_embed_reg_tokens: bool = eqx.field(static=True)
+    global_pos_embed_cls: bool = eqx.field(static=True)
+    global_pos_embed_reg: bool = eqx.field(static=True)
 
     antialias: bool = eqx.field(static=True, default=True)
 
@@ -188,26 +188,26 @@ class LearnedPosEmbed(eqx.Module):
                 )
             to_cat.append(reg_tokens)
 
-        if self.no_embed_class:
+        if not self.global_pos_embed_cls:
             # Add pos to patches only; then prepend any prefix tokens (cls/reg)
             x = x + pos_embed
             if to_cat:
                 x = jnp.concatenate(to_cat + [x], axis=0)
 
-        elif self.pos_embed_reg_tokens:
-            # Prefix tokens are included in the positional grid length; concat first, then add
+        elif self.global_pos_embed_reg:
+            # All prefix tokens (cls + reg) are included in the positional grid; concat first, then add
             if to_cat:
                 x = jnp.concatenate(to_cat + [x], axis=0)
             x = x + pos_embed
 
         else:
-            # Only class token is embedded with patches; reg tokens (if any) are inserted after
-            # the class token and before the patch tokens.
+            # Only the class token is embedded with patches; reg tokens (if any) are inserted after
+            # the class token and before the patch tokens without global posemb.
             # Note: this branch assumes that if reg_tokens are used, a cls_token exists too.
             if cls_token is None and reg_tokens is not None:
                 raise ValueError(
-                    "Configuration invalid: reg_tokens without cls_token when pos_embed_reg_tokens=False "
-                    "and no_embed_class=False."
+                    "Configuration invalid: reg_tokens without cls_token when "
+                    "global_pos_embed_reg=False and global_pos_embed_cls=True."
                 )
             x = jnp.concatenate(to_cat[:1] + [x], axis=0)  # cat cls_token if present
             x = x + pos_embed
@@ -812,6 +812,11 @@ class VisionRoPE(eqx.Module):
             self.pt_seq_len = None
 
         elif strategy == "mode":
+            # When called from VisionTransformer, dim=embed_dim. For mode strategy
+            # we need dim_rope = head_dim // 2 = dim // num_heads // 2
+            if num_heads is not None and dim is not None:
+                dim = dim // num_heads // 2
+
             if custom_freqs is not None:
                 freqs = jnp.asarray(custom_freqs)
             elif freqs_for == "lang":
@@ -901,21 +906,66 @@ class VisionRoPE(eqx.Module):
         t_w = jnp.arange(W, dtype=jnp.float32) / W * self.pt_seq_len
         return t_h, t_w
 
+    # def get_sincos(
+    #     self,
+    #     *,
+    #     H: int,
+    #     W: int,
+    #     key: Optional[PRNGKeyArray] = None,
+    #     inference: bool = True,
+    # ) -> Tuple[jax.Array, jax.Array]:
+    #     """Compute ``(sin, cos)`` each with shape ``(H*W, D_out)``.
+
+    #     For period-based: ``D_out = D_head``.
+    #     For mode-based:   ``D_out = 2 * dim`` (height + width concatenated).
+
+    #     ``key`` and ``inference`` are only used by the period strategy
+    #     (for augmentations) and can be omitted for mode-based usage.
+    #     """
+    #     dtype = self.dtype
+    #     freqs = jax.lax.stop_gradient(self.freqs).astype(dtype)
+
+    #     if self.strategy == "period":
+    #         if key is None and not inference:
+    #             raise ValueError(
+    #                 "A PRNG key is required for period-based RoPE during training."
+    #             )
+    #         if key is None:
+    #             key = jax.random.PRNGKey(0)
+    #         D_quarter = self.D_head // 4
+
+    #         coords = self._coords_period(H, W, key=key, inference=inference)
+    #         angles = (2.0 * jnp.pi * coords[:, :, None]) / freqs[None, None, :]
+    #         angles = angles.reshape(H * W, 2 * D_quarter)
+    #         angles = jnp.tile(angles, (1, 2))
+
+    #     else:  # "mode"
+    #         t_h, t_w = self._coords_mode(H, W)
+
+    #         freqs_h = jnp.outer(t_h, freqs)
+    #         freqs_w = jnp.outer(t_w, freqs)
+    #         freqs_h = jnp.repeat(freqs_h, 2, axis=-1)
+    #         freqs_w = jnp.repeat(freqs_w, 2, axis=-1)
+
+    #         D = freqs_h.shape[-1]
+    #         fh = jnp.broadcast_to(freqs_h[:, None, :], (H, W, D))
+    #         fw = jnp.broadcast_to(freqs_w[None, :, :], (H, W, D))
+    #         angles = jnp.concatenate([fh, fw], axis=-1).reshape(H * W, -1)
+
+    #     return jnp.sin(angles).astype(dtype), jnp.cos(angles).astype(dtype)
     def get_sincos(
         self,
         *,
         H: int,
         W: int,
+        num_prefix_tokens: int = 0,
         key: Optional[PRNGKeyArray] = None,
         inference: bool = True,
     ) -> Tuple[jax.Array, jax.Array]:
-        """Compute ``(sin, cos)`` each with shape ``(H*W, D_out)``.
+        """Compute ``(sin, cos)`` each with shape ``(num_prefix_tokens + H*W, D_out)``.
 
-        For period-based: ``D_out = D_head``.
-        For mode-based:   ``D_out = 2 * dim`` (height + width concatenated).
-
-        ``key`` and ``inference`` are only used by the period strategy
-        (for augmentations) and can be omitted for mode-based usage.
+        Prefix tokens (CLS, registers, etc.) receive identity rotation
+        (sin=0, cos=1) so that RoPE leaves them unchanged.
         """
         dtype = self.dtype
         freqs = jax.lax.stop_gradient(self.freqs).astype(dtype)
@@ -947,19 +997,192 @@ class VisionRoPE(eqx.Module):
             fw = jnp.broadcast_to(freqs_w[None, :, :], (H, W, D))
             angles = jnp.concatenate([fh, fw], axis=-1).reshape(H * W, -1)
 
-        return jnp.sin(angles).astype(dtype), jnp.cos(angles).astype(dtype)
+        sin = jnp.sin(angles).astype(dtype)
+        cos = jnp.cos(angles).astype(dtype)
+
+        # Prepend identity rotation for prefix tokens (CLS, registers, etc.)
+        if num_prefix_tokens > 0:
+            D_out = sin.shape[-1]
+            prefix_sin = jnp.zeros((num_prefix_tokens, D_out), dtype=dtype)
+            prefix_cos = jnp.ones((num_prefix_tokens, D_out), dtype=dtype)
+            sin = jnp.concatenate([prefix_sin, sin], axis=0)
+            cos = jnp.concatenate([prefix_cos, cos], axis=0)
+
+        return sin, cos
+
+    # def __call__(
+    #     self,
+    #     x: Float[Array, "..."],
+    #     *,
+    #     key: Optional[PRNGKeyArray] = None,
+    #     inference: bool = True,
+    # ) -> Float[Array, "..."]:
+    #     """Apply rotary embedding. Expects ``x.shape[-3]`` to be ``H * W``."""
+    #     seq_len = x.shape[-3]
+    #     ft = int(seq_len**0.5)
+    #     sin, cos = self.get_sincos(H=ft, W=ft, key=key, inference=inference)
+    #     cos = cos[:, None, :]
+    #     sin = sin[:, None, :]
+    #     return x * cos + _rotate_half(x) * sin
+    def __call__(
+        self,
+        x: Float[Array, "..."],
+        *,
+        num_prefix_tokens: int = 0,
+        key: Optional[PRNGKeyArray] = None,
+        inference: bool = True,
+    ) -> Float[Array, "..."]:
+        """Apply rotary embedding. Expects ``x.shape[-3]`` to be
+        ``num_prefix_tokens + H * W`` with a square spatial grid.
+        """
+        seq_len = x.shape[-3] - num_prefix_tokens
+        ft = int(seq_len**0.5)
+        sin, cos = self.get_sincos(
+            H=ft,
+            W=ft,
+            num_prefix_tokens=num_prefix_tokens,
+            key=key,
+            inference=inference,
+        )
+        cos = cos[:, None, :]
+        sin = sin[:, None, :]
+        return x * cos + _rotate_half(x) * sin
+
+
+@register_posemb()
+class CompositeVisionRoPE(eqx.Module):
+    """Composite RoPE that applies different rotary embeddings to different
+    token groups within a single sequence.
+
+    Token layout:
+
+        [ CLS | reg_0 ... reg_{R-1} | patch_0 ... patch_{H*W-1} ]
+
+    - **CLS** (and any other prefix tokens): identity rotation (pass-through).
+    - **Register tokens**: separate RoPE on a ``(h, w)`` grid, typically
+      with a much higher frequency base so registers occupy a distinct
+      region of position space.
+    - **Patch tokens**: main RoPE on the ``(H, W)`` spatial grid.
+
+    Parameters
+    ----------
+    patch_rope : VisionRoPE
+        RoPE instance for spatial patch tokens.
+    reg_rope : VisionRoPE | None
+        RoPE instance for register tokens.  If None, registers receive
+        identity rotation.
+    num_prefix_tokens : int
+        Number of leading tokens to leave unrotated (e.g. 1 for [CLS]).
+    num_registers : int
+        Number of register tokens (immediately after prefix).
+    reg_grid : tuple[int, int] | None
+        Explicit (h, w) grid for registers.  If None, inferred as
+        ``(int(sqrt(num_registers)), int(sqrt(num_registers)))`` which
+        requires ``num_registers`` to be a perfect square.
+    """
+
+    patch_rope: VisionRoPE
+    reg_rope: Optional[VisionRoPE]
+    num_prefix_tokens: int = eqx.field(static=True)
+    num_registers: int = eqx.field(static=True)
+    reg_grid: Tuple[int, int] = eqx.field(static=True)
+
+    def __init__(
+        self,
+        patch_rope: VisionRoPE,
+        *,
+        reg_rope: Optional[VisionRoPE] = None,
+        num_prefix_tokens: int = 1,
+        num_registers: int = 0,
+        reg_grid: Optional[Tuple[int, int]] = None,
+    ):
+        self.patch_rope = patch_rope
+        self.reg_rope = reg_rope
+        self.num_prefix_tokens = num_prefix_tokens
+        self.num_registers = num_registers
+
+        if num_registers > 0 and reg_grid is None:
+            side = int(num_registers**0.5)
+            if side * side != num_registers:
+                raise ValueError(
+                    f"num_registers={num_registers} is not a perfect square. "
+                    f"Provide `reg_grid` explicitly."
+                )
+            reg_grid = (side, side)
+        self.reg_grid = reg_grid if reg_grid is not None else (0, 0)
+
+    def get_sincos(
+        self,
+        *,
+        H: int,
+        W: int,
+        key: Optional[PRNGKeyArray] = None,
+        inference: bool = True,
+    ) -> Tuple[jax.Array, jax.Array]:
+        """Compute ``(sin, cos)`` for the full sequence.
+
+        Returns shape ``(num_prefix + num_registers + H*W, D_out)``.
+        """
+        sin_p, cos_p = self.patch_rope.get_sincos(
+            H=H,
+            W=W,
+            key=key,
+            inference=inference,
+        )
+        D_out = sin_p.shape[-1]
+        dtype = sin_p.dtype
+
+        parts_sin = []
+        parts_cos = []
+
+        # 1. Prefix: identity
+        if self.num_prefix_tokens > 0:
+            parts_sin.append(jnp.zeros((self.num_prefix_tokens, D_out), dtype=dtype))
+            parts_cos.append(jnp.ones((self.num_prefix_tokens, D_out), dtype=dtype))
+
+        # 2. Registers
+        if self.num_registers > 0 and self.reg_rope is not None:
+            rh, rw = self.reg_grid
+            sin_r, cos_r = self.reg_rope.get_sincos(
+                H=rh,
+                W=rw,
+                key=key,
+                inference=inference,
+            )
+            parts_sin.append(sin_r)
+            parts_cos.append(cos_r)
+        elif self.num_registers > 0:
+            parts_sin.append(jnp.zeros((self.num_registers, D_out), dtype=dtype))
+            parts_cos.append(jnp.ones((self.num_registers, D_out), dtype=dtype))
+
+        # 3. Patches
+        parts_sin.append(sin_p)
+        parts_cos.append(cos_p)
+
+        return jnp.concatenate(parts_sin, axis=0), jnp.concatenate(parts_cos, axis=0)
 
     def __call__(
         self,
         x: Float[Array, "..."],
         *,
+        H: Optional[int] = None,
+        W: Optional[int] = None,
         key: Optional[PRNGKeyArray] = None,
         inference: bool = True,
     ) -> Float[Array, "..."]:
-        """Apply rotary embedding. Expects ``x.shape[-3]`` to be ``H * W``."""
+        """Apply composite RoPE to a full sequence.
+
+        If ``H`` and ``W`` are not given, the patch grid is inferred
+        as square from ``seq_len - num_prefix_tokens - num_registers``.
+        """
         seq_len = x.shape[-3]
-        ft = int(seq_len**0.5)
-        sin, cos = self.get_sincos(H=ft, W=ft, key=key, inference=inference)
+        n_patches = seq_len - self.num_prefix_tokens - self.num_registers
+
+        if H is None or W is None:
+            ft = int(n_patches**0.5)
+            H, W = ft, ft
+
+        sin, cos = self.get_sincos(H=H, W=W, key=key, inference=inference)
         cos = cos[:, None, :]
         sin = sin[:, None, :]
         return x * cos + _rotate_half(x) * sin
