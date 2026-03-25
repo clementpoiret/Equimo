@@ -81,6 +81,61 @@ logits = model(x, key=key, inference=True)
 features = model.features(x, key=key, inference=True)
 ```
 
+## Predefined Model Variants
+
+Every model family ships convenience constructors that encode the canonical
+hyperparameters for each published variant. Under the hood each constructor
+resolves through a two-level registry: a shared **base config** (e.g.
+`in_channels=3`) and a **variant config** (depths, widths, …) that are merged
+before the model is instantiated.  Any key can be overridden at call time via
+`**kwargs`.
+
+```python
+import jax
+import equimo.models as em
+
+key = jax.random.PRNGKey(0)
+
+# Build a predefined variant with default config
+model = em.vit_base_patch16_224(key=key)
+
+# Override specific parameters — e.g. fine-tune head size or disable the class token
+model = em.vit_small_patch16_224(num_classes=10, key=key)
+
+# Models with pretrained weights accept a `pretrained` flag
+model = em.dinov2_vitb14(pretrained=True)
+```
+
+### Available variants
+
+| Family | Constructors |
+| --- | --- |
+| `VisionTransformer` | `vit_tiny/small/base/large/huge_patch{16,32}_224`, `vit_huge_patch14_224`, `dinov2_vit{s,b,l,g}14{_reg}`, `dinov3_vit*`, `siglip2_vit*`, `tips_vit*` |
+| `AttNet` | `attnet_{xxs,xs,s,t1,t2,t3,t4}` |
+| `IFormer` | `iformer_{t,s,m,m_faster,l,l_faster}` |
+| `LowFormer` | `lowformer_backbone_{b0,b1,b2,b3}` |
+| `ReduceFormer` | `reduceformer_backbone_{b1,b2,b3}` |
+| `MobileNetv3` | `mobilenetv3_{small,large}` |
+
+> `LowFormer` requires `attention_type` (`"softmax"` or `"sigmoid"`) which has
+> no sensible default and must be supplied by the caller.
+
+### Extending the variant registry
+
+Each family exposes its internal registry dict and `_build_*` function. You can
+add your own variants without subclassing:
+
+```python
+from equimo.models.attnet import _ATTNET_REGISTRY, _ATTNET_BASE_CFG, _build_attnet
+
+_ATTNET_REGISTRY["attnet_custom"] = (
+    _ATTNET_BASE_CFG,
+    {"depths": [3, 3, 9, 3], "dims": [56, 112, 224, 448], "drop_path_rate": 0.15},
+)
+
+model = _build_attnet("attnet_custom", key=jax.random.PRNGKey(0))
+```
+
 ## Registry System
 
 Equimo exposes a registry for every layer family. Each registry follows the same pattern:
