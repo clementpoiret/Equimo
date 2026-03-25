@@ -181,15 +181,15 @@ _CONVNEXT_REGISTRY: dict[str, tuple[dict, dict]] = {
     # EUPE pretrained variants
     "eupe_convnext_tiny": (
         _EUPE_CONVNEXT_BASE_CFG,
-        convnext_sizes["tiny"],
+        {**convnext_sizes["tiny"], "act_layer": "exactgelu"},
     ),
     "eupe_convnext_small": (
         _EUPE_CONVNEXT_BASE_CFG,
-        convnext_sizes["small"],
+        {**convnext_sizes["small"], "act_layer": "exactgelu"},
     ),
     "eupe_convnext_base": (
         _EUPE_CONVNEXT_BASE_CFG,
-        convnext_sizes["base"],
+        {**convnext_sizes["base"], "act_layer": "exactgelu"},
     ),
 }
 
