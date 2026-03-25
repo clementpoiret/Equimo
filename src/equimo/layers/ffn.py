@@ -6,7 +6,55 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
+_FFN_REGISTRY: dict[str, type[eqx.Module]] = {}
 
+
+def register_ffn(
+    name: Optional[str] = None,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new FFN modules.
+
+    Why collision checking: Prevents third-party extensions from silently
+    overwriting core layers, which can silently corrupt the computational graph.
+    """
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        # Default to class name if explicit name is omitted
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _FFN_REGISTRY:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_FFN_REGISTRY[registry_name]}."
+            )
+
+        _FFN_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
+
+
+def get_ffn(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get an `eqx.Module` class from its common name."""
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _FFN_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_FFN_REGISTRY.keys())}"
+        )
+
+    return _FFN_REGISTRY[module_lower]
+
+
+@register_ffn()
 class WeightNormLinear(eqx.Module):
     """Linear layer with weight normalization.
 
@@ -24,12 +72,16 @@ class WeightNormLinear(eqx.Module):
 
     weight_v: Float[Array, "out_features in_features"]
     weight_g: Float[Array, "out_features 1"]
+    eps: float = eqx.field(static=True)
 
-    def __init__(self, in_features: int, out_features: int, key: PRNGKeyArray):
+    def __init__(
+        self, in_features: int, out_features: int, key: PRNGKeyArray, eps: float = 1e-6
+    ):
         self.weight_v = eqx.nn.Linear(
             in_features, out_features, use_bias=False, key=key
         ).weight
         self.weight_g = jnp.ones((out_features, 1))
+        self.eps = eps
 
     def __call__(
         self,
@@ -43,7 +95,7 @@ class WeightNormLinear(eqx.Module):
         Returns:
             Transformed tensor of shape (seqlen, out_features)
         """
-        v_norm = jnp.linalg.norm(self.weight_v, ord=2, axis=1, keepdims=True)
+        v_norm = jnp.sqrt(jnp.sum(self.weight_v**2, axis=1, keepdims=True) + self.eps)
         normalized_v = self.weight_v / v_norm
         weight = self.weight_g * normalized_v
 
@@ -51,6 +103,7 @@ class WeightNormLinear(eqx.Module):
         return out
 
 
+@register_ffn()
 class DINOHead(eqx.Module):
     """Multi-layer Perceptron (MLP) head used to train DINOv2 models.
 
@@ -132,13 +185,14 @@ class DINOHead(eqx.Module):
         x = self.act_layer(jax.vmap(self.fc2)(x))
         x = self.act_layer(jax.vmap(self.fc3)(x))
 
-        x = x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + eps)
+        x = x / jnp.sqrt(jnp.sum(x**2, axis=-1, keepdims=True) + eps)
 
         x = self.last(x)
 
         return x
 
 
+@register_ffn()
 class Mlp(eqx.Module):
     """Multi-layer Perceptron (MLP) module with dropout.
 
@@ -244,6 +298,7 @@ class Mlp(eqx.Module):
         return x
 
 
+@register_ffn()
 class SwiGlu(eqx.Module):
     """SwiGLU activation module with dropout.
 
@@ -338,6 +393,7 @@ class SwiGlu(eqx.Module):
         return x
 
 
+@register_ffn()
 class SwiGluFused(eqx.Module):
     """SwiGLU activation module with a fused projection, with dropout.
 
@@ -434,27 +490,3 @@ class SwiGluFused(eqx.Module):
         )
 
         return x
-
-
-def get_ffn(module: str | type[eqx.Module]) -> type[eqx.Module]:
-    """Get an `eqx.Module` class from its common name.
-
-    This is necessary because configs have to be stringified and stored as
-    json files to allow (de)serialization.
-    """
-    if not isinstance(module, str):
-        return module
-
-    match module:
-        case "mlp":
-            return Mlp
-        case "swiglu":
-            return SwiGlu
-        case "swiglufused":
-            return SwiGluFused
-        case "dinohead":
-            return DINOHead
-        case "weightnormlinear":
-            return WeightNormLinear
-        case _:
-            raise ValueError(f"Got an unknown module string: {module}")
