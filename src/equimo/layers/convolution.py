@@ -14,7 +14,54 @@ from equimo.layers.norm import LayerNorm2d, LayerScale, RMSNorm2d
 from equimo.layers.squeeze_excite import SEModule
 from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
+_CONV_REGISTRY: dict[str, type[eqx.Module]] = {}
 
+
+def register_conv(
+    name: Optional[str] = None,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new conv modules.
+
+    Why collision checking: Prevents third-party extensions from silently
+    overwriting core layers, which can silently corrupt the computational graph.
+    """
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _CONV_REGISTRY:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_CONV_REGISTRY[registry_name]}."
+            )
+
+        _CONV_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
+
+
+def get_conv(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get a conv ``eqx.Module`` class from its registered name."""
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _CONV_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_CONV_REGISTRY.keys())}"
+        )
+
+    return _CONV_REGISTRY[module_lower]
+
+
+@register_conv()
 class SingleConvBlock(eqx.Module):
     """A basic convolution block combining convolution, normalization and activation.
 
@@ -85,7 +132,7 @@ class SingleConvBlock(eqx.Module):
             self.norm = eqx.nn.Identity()
 
         self.dropout = eqx.nn.Dropout(dropout)
-        self.act = act_layer if act_layer else lambda x: x
+        self.act = act_layer if act_layer is not None else eqx.nn.Identity()
 
     def __call__(
         self,
@@ -100,6 +147,7 @@ class SingleConvBlock(eqx.Module):
         )
 
 
+@register_conv()
 class DoubleConvBlock(eqx.Module):
     """A residual convolutional block with normalization and regularization.
 
@@ -222,9 +270,11 @@ class DoubleConvBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_conv1, key_conv2 = jr.split(key, 2)
 
         out = self.conv1(x, inference=inference, key=key_conv1)
@@ -237,6 +287,7 @@ class DoubleConvBlock(eqx.Module):
         return out
 
 
+@register_conv()
 class Stem(eqx.Module):
     """Image-to-embedding stem network for vision transformers.
 
@@ -260,9 +311,9 @@ class Stem(eqx.Module):
     num_patches: int = eqx.field(static=True)
     patches_resolution: int = eqx.field(static=True)
 
-    conv1: eqx.nn.Conv
-    conv2: eqx.nn.Conv
-    conv3: eqx.nn.Conv
+    conv1: SingleConvBlock
+    conv2: eqx.nn.Sequential
+    conv3: eqx.nn.Sequential
 
     def __init__(
         self,
@@ -358,7 +409,6 @@ class Stem(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
         key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
@@ -370,6 +420,7 @@ class Stem(eqx.Module):
         return rearrange(x, "c h w -> (h w) c")
 
 
+@register_conv()
 class ConvBottleneck(eqx.Module):
     """YOLO's Bottleneck to be used into a C2F or C3k2 block."""
 
@@ -418,16 +469,23 @@ class ConvBottleneck(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
         key: Optional[PRNGKeyArray] = None,
-    ):
-        x1 = self.conv2(self.conv1(x))
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
+        k1, k2 = jr.split(key, 2)
+
+        x1 = self.conv2(
+            self.conv1(x, key=k1, inference=inference), key=k2, inference=inference
+        )
 
         if self.add:
             return x + x1
         return x1
 
 
+@register_conv()
 class C2f(eqx.Module):
     """YOLO's Fast CSP Bottleneck"""
 
@@ -487,21 +545,28 @@ class C2f(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
         key: Optional[PRNGKeyArray] = None,
-    ):
-        y = jnp.split(self.conv1(x), [self.hidden_channels])
-        y.extend(blk(y[-1]) for blk in self.blocks)
-        return self.conv2(jnp.concatenate(y, axis=0))
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
+        k1, k2, *k_blocks = jr.split(key, 2 + len(self.blocks))
+
+        y = list(jnp.split(self.conv1(x, key=k1, inference=inference), 2, axis=0))
+        for i, blk in enumerate(self.blocks):
+            y.append(blk(y[-1], key=k_blocks[i], inference=inference))
+
+        return self.conv2(jnp.concatenate(y, axis=0), key=k2, inference=inference)
 
 
+@register_conv()
 class C3k(eqx.Module):
     """YOLO's Fast CSP Bottleneck with 3 convolutions with customizable kernel"""
 
     conv1: SingleConvBlock
     conv2: SingleConvBlock
     conv3: SingleConvBlock
-    blocks: eqx.nn.Sequential
+    blocks: Tuple[ConvBottleneck, ...]
 
     def __init__(
         self,
@@ -547,32 +612,38 @@ class C3k(eqx.Module):
             key=key_conv3,
         )
 
-        self.blocks = eqx.nn.Sequential(
-            [
-                ConvBottleneck(
-                    in_channels=hidden_channels,
-                    out_channels=hidden_channels,
-                    shortcut=shortcut,
-                    groups=groups,
-                    kernel_sizes=kernel_sizes,
-                    expansion_ratio=1.0,
-                    key=key_blocks[i],
-                )
-                for i in range(n)
-            ]
+        self.blocks = tuple(
+            ConvBottleneck(
+                in_channels=hidden_channels,
+                out_channels=hidden_channels,
+                shortcut=shortcut,
+                groups=groups,
+                kernel_sizes=kernel_sizes,
+                expansion_ratio=1.0,
+                key=key_blocks[i],
+            )
+            for i in range(n)
         )
 
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
         key: Optional[PRNGKeyArray] = None,
-    ):
-        return self.conv3(
-            jnp.concatenate([self.blocks(self.conv1(x)), self.conv2(x)], axis=0)
-        )
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
+        k1, k2, k3, *k_blocks = jr.split(key, 3 + len(self.blocks))
+
+        y = self.conv1(x, key=k1, inference=inference)
+        for i, blk in enumerate(self.blocks):
+            y = blk(y, key=k_blocks[i], inference=inference)
+
+        out = jnp.concatenate([y, self.conv2(x, key=k2, inference=inference)], axis=0)
+        return self.conv3(out, key=k3, inference=inference)
 
 
+@register_conv()
 class C3(eqx.Module):
     """YOLO's Fast CSP Bottleneck with 3 convolutions"""
 
@@ -602,12 +673,13 @@ class C3(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
         key: Optional[PRNGKeyArray] = None,
-    ):
-        return self.c3k(x)
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        return self.c3k(x, key=key, inference=inference)
 
 
+@register_conv()
 class C3k2(eqx.Module):
     """YOLO's Fast CSP Bottleneck"""
 
@@ -679,14 +751,21 @@ class C3k2(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
         key: Optional[PRNGKeyArray] = None,
-    ):
-        y = jnp.split(self.conv1(x), [self.hidden_channels])
-        y.extend(blk(y[-1]) for blk in self.blocks)
-        return self.conv2(jnp.concatenate(y, axis=0))
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
+        k1, k2, *k_blocks = jr.split(key, 2 + len(self.blocks))
+
+        y = list(jnp.split(self.conv1(x, key=k1, inference=inference), 2, axis=0))
+        for i, blk in enumerate(self.blocks):
+            y.append(blk(y[-1], key=k_blocks[i], inference=inference))
+
+        return self.conv2(jnp.concatenate(y, axis=0), key=k2, inference=inference)
 
 
+@register_conv()
 class MBConv(eqx.Module):
     """MobileNet Conv Block with optional fusing from [1].
 
@@ -837,7 +916,7 @@ class MBConv(eqx.Module):
                 rd_ratio=1.0,
                 rd_divisor=4,
                 use_norm=False,
-                se_act_layer=jax.nn.hard_sigmoid,
+                act_layer=jax.nn.hard_sigmoid,
                 key=key_se,
             )
             if se
@@ -854,9 +933,11 @@ class MBConv(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
-    ):
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_spatial, key_inverted, key_depth, key_point, key_droppath = jr.split(key, 5)
         if self.fused:
             out = self.spatial_conv(x, inference=inference, key=key_spatial)
@@ -875,6 +956,7 @@ class MBConv(eqx.Module):
         return out
 
 
+@register_conv()
 class DSConv(eqx.Module):
     residual: bool = eqx.field(static=True)
 
@@ -962,9 +1044,11 @@ class DSConv(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
-    ):
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_depth, key_point, key_dropout, key_droppath = jr.split(key, 4)
 
         out = self.depth_conv(x, inference=inference, key=key_depth)
@@ -978,6 +1062,7 @@ class DSConv(eqx.Module):
         return out
 
 
+@register_conv()
 class UIB(eqx.Module):
     """MobileNet v4's Universal Inverted Bottleneck with optional fusing from [1].
 
@@ -985,7 +1070,7 @@ class UIB(eqx.Module):
         [1]: Qin, Danfeng, Chas Leichner, Manolis Delakis, Marco Fornoni,
         Shixin Luo, Fan Yang, Weijun Wang, Colby Banbury, Chengxi Ye, Berkin
         Akin, Vaibhav Aggarwal, Tenghui Zhu, Daniele Moro, and Andrew Howard.
-        2024. “MobileNetV4 -- Universal Models for the Mobile Ecosystem.”
+        2024. "MobileNetV4 -- Universal Models for the Mobile Ecosystem."
     """
 
     residual: bool = eqx.field(static=True)
@@ -1090,9 +1175,11 @@ class UIB(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
-    ):
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_sdwc, key_ec, key_mdwc, key_proj, key_dropout, key_droppath = jr.split(
             key, 6
         )
@@ -1117,6 +1204,7 @@ class UIB(eqx.Module):
         return out
 
 
+@register_conv()
 class IFormerStem(eqx.Module):
     conv1: SingleConvBlock
     fused_ib: MBConv
@@ -1139,7 +1227,7 @@ class IFormerStem(eqx.Module):
             stride=2,
             act_layer=act_layer,
             use_bias=False,
-            key=key,
+            key=key_conv1,
         )
         self.fused_ib = MBConv(
             in_channels=int(out_channels / 2),
@@ -1156,9 +1244,11 @@ class IFormerStem(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "nc nh nw"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_conv1, key_fusedib = jr.split(key, 2)
 
         x = self.conv1(x, inference=inference, key=key_conv1)
@@ -1167,6 +1257,7 @@ class IFormerStem(eqx.Module):
         return x
 
 
+@register_conv()
 class IFormerBlock(eqx.Module):
     residual: bool = eqx.field(static=True)
 
@@ -1234,9 +1325,11 @@ class IFormerBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_conv1, key_conv2, key_conv3, key_dropout, key_droppath = jr.split(key, 5)
 
         out = self.conv1(x, inference=inference, key=key_conv1)
@@ -1249,6 +1342,7 @@ class IFormerBlock(eqx.Module):
         return out
 
 
+@register_conv()
 class GenericGhostModule(eqx.Module):
     """GhostNet v3-like module with GroupNorm and training-time branch fusion.
 
@@ -1474,8 +1568,13 @@ class GenericGhostModule(eqx.Module):
         if not isinstance(self.primary_rpr_scale, eqx.nn.Identity):
             terms.append(self.primary_rpr_scale(x))
         terms.extend(conv(x) for conv in self.primary_rpr_conv)
-        x1_sum = jax.tree_util.tree_reduce(operator.add, terms)
-        x1 = self.primary_activation(self.primary_shared_norm(x1_sum))
+
+        if not terms:
+            # Fallback for traceable but empty branches (e.g. finalized model)
+            x1 = jnp.zeros((self.primary_conv.out_channels, x.shape[1], x.shape[2]))
+        else:
+            x1_sum = jax.tree_util.tree_reduce(operator.add, terms)
+            x1 = self.primary_activation(self.primary_shared_norm(x1_sum))
 
         # Cheap path pre-norm linear sum
         cheap_terms = []
@@ -1484,8 +1583,12 @@ class GenericGhostModule(eqx.Module):
         if not isinstance(self.cheap_rpr_scale, eqx.nn.Identity):
             cheap_terms.append(self.cheap_rpr_scale(x1))
         cheap_terms.extend(conv(x1) for conv in self.cheap_rpr_conv)
-        x2_sum = jax.tree_util.tree_reduce(operator.add, cheap_terms)
-        x2 = self.cheap_activation(self.cheap_shared_norm(x2_sum))
+
+        if not cheap_terms:
+            x2 = jnp.zeros((self.cheap_operation.out_channels, x1.shape[1], x1.shape[2]))
+        else:
+            x2_sum = jax.tree_util.tree_reduce(operator.add, cheap_terms)
+            x2 = self.cheap_activation(self.cheap_shared_norm(x2_sum))
 
         out = jnp.concatenate([x1, x2], axis=0)
         return out
@@ -1499,39 +1602,39 @@ class GenericGhostModule(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
-    ):
+    ) -> Float[Array, "channels height width"]:
         use_inference = self.inference if inference is None else inference
-        use_inference = jnp.asarray(use_inference, dtype=bool)
 
-        out = jax.lax.cond(
-            use_inference,
-            lambda x_: self.inference_features(x_),
-            lambda x_: self.training_features(x_),
-            operand=x,
-        )
+        # If inference is a literal bool, use Python if to avoid tracing other branch.
+        # This is necessary when training branches are removed (finalized).
+        if isinstance(use_inference, bool):
+            if use_inference:
+                out = self.inference_features(x)
+            else:
+                out = self.training_features(x)
+        else:
+            out = jax.lax.cond(
+                use_inference,
+                self.inference_features,
+                self.training_features,
+                operand=x,
+            )
 
-        def _shortcut_branch(ox):
-            out_, x_ = ox
-            res = self.short_conv(self.pool2(x_))
+        if self.mode == "shortcut":
+            res = self.short_conv(self.pool2(x))
             gating = jax.image.resize(
                 image=jax.nn.sigmoid(res / self.gate_scale),
-                shape=(res.shape[0], out_.shape[1], out_.shape[2]),
+                shape=(res.shape[0], out.shape[1], out.shape[2]),
                 method="nearest",
             )
-            return out_[: self.out_channels, :, :] * gating[: self.out_channels, :, :]
-
-        out = jax.lax.cond(
-            self.mode == "shortcut",
-            _shortcut_branch,
-            lambda ox: ox[0],
-            operand=(out, x),
-        )
+            out = out[: self.out_channels, :, :] * gating[: self.out_channels, :, :]
 
         return out
 
 
+@register_conv()
 class GhostBottleneck(eqx.Module):
     """Ghost bottleneck with optional SE and re-parameterizable depthwise stage."""
 
@@ -1568,6 +1671,7 @@ class GhostBottleneck(eqx.Module):
         use_shortcut_mode_in_ghost1: bool = True,
         allow_identity_residual: bool = True,
         key: PRNGKeyArray,
+        **kwargs,
     ):
         self.stride = stride
         self.dw_kernel_size = dw_kernel_size
@@ -1702,26 +1806,34 @@ class GhostBottleneck(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *,
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         use_inference = self.inference if inference is None else inference
-        use_inference = jax.numpy.asarray(use_inference, dtype=bool)
 
+        if key is None:
+            key = jr.PRNGKey(0)
         k_g1, k_g2 = jr.split(key, 2)
         residual = x
 
         x = self.ghost1(x, key=k_g1, inference=use_inference)
 
         if self.stride > 1:
-            x = jax.lax.cond(
-                use_inference,
-                lambda y: self.dw_shared_norm(self.dw_conv(y)),
-                lambda y: self.dw_shared_norm(
-                    jax.tree_util.tree_reduce(
-                        operator.add,
-                        (
+            if isinstance(use_inference, bool):
+                if use_inference:
+                    x = self.dw_shared_norm(self.dw_conv(x))
+                else:
+                    terms = [conv(x) for conv in self.dw_rpr_conv]
+                    if not isinstance(self.dw_rpr_scale, eqx.nn.Identity):
+                        terms.append(self.dw_rpr_scale(x))
+                    x = self.dw_shared_norm(jax.tree_util.tree_reduce(operator.add, terms))
+            else:
+                x = jax.lax.cond(
+                    use_inference,
+                    lambda y: self.dw_shared_norm(self.dw_conv(y)),
+                    lambda y: self.dw_shared_norm(
+                        jax.tree_util.tree_reduce(
+                            operator.add,
                             (
                                 []
                                 if isinstance(self.dw_rpr_scale, eqx.nn.Identity)
@@ -1729,10 +1841,9 @@ class GhostBottleneck(eqx.Module):
                             )
                             + [conv(y) for conv in self.dw_rpr_conv]
                         ),
-                    )
-                ),
-                operand=x,
-            )
+                    ),
+                    operand=x,
+                )
 
         x = self.se(x)
 
@@ -1931,6 +2042,7 @@ def finalize_ghostnet(
     return jax.tree_util.tree_map(_finalize_leaf, model, is_leaf=is_leaf)
 
 
+@register_conv()
 class PartialConv2d(eqx.Module):
     """Partial 2D convolution on the channel dimension.
 
@@ -2052,16 +2164,15 @@ class PartialConv2d(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        *args,
-        **kwargs,
+        key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         c = self.dim
-        x1 = x[:c, :, :]
-        y1 = self.conv(x1)
-
+        y1 = self.conv(x[:c, :, :])
         return x.at[:c, :, :].set(y1)
 
 
+@register_conv()
 class FasterNetBlock(eqx.Module):
     """
     FasterNet-style residual block with Partial Convolution-based spatial mixing
@@ -2110,8 +2221,9 @@ class FasterNetBlock(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        dim: int | None = None,
         *,
+        in_channels: int | None = None,
         key: PRNGKeyArray,
         n_dim: int = 4,
         mlp_ratio: int = 3,
@@ -2131,7 +2243,9 @@ class FasterNetBlock(eqx.Module):
         Initialize a FasterNetBlock.
 
         Parameters
-        - in_channels: Number of input/output channels `C`.
+        - dim: Number of input/output channels `C` (canonical name for modern blocks).
+               ``in_channels`` is accepted as a backward-compatible alias.
+        - in_channels: Backward-compatible alias for ``dim``.
         - key: PRNG key used to initialize submodules. Internally split for
           spatial mixing and pointwise convolutions.
         - n_dim: Divisor determining the fraction of channels convolved by
@@ -2164,16 +2278,21 @@ class FasterNetBlock(eqx.Module):
         - The same input/output channel count `C` is used throughout the block.
         """
 
+        assert dim is not None or in_channels is not None, (
+            "Provide either `dim` or `in_channels`."
+        )
+        dim = dim if dim is not None else in_channels
+
         key_sm, key_pw1, key_pw2 = jr.split(key, 3)
         self.residual = residual
 
         self.spatial_mixing = PartialConv2d(
-            in_channels=in_channels, n_dim=n_dim, key=key_sm
+            in_channels=dim, n_dim=n_dim, key=key_sm
         )
 
-        hidden_channels = mlp_ratio * in_channels
+        hidden_channels = mlp_ratio * dim
         self.pw_conv1 = eqx.nn.Conv2d(
-            in_channels,
+            dim,
             hidden_channels,
             kernel_size=1,
             stride=1,
@@ -2183,7 +2302,7 @@ class FasterNetBlock(eqx.Module):
         )
         self.pw_conv2 = eqx.nn.Conv2d(
             hidden_channels,
-            in_channels,
+            dim,
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -2203,7 +2322,7 @@ class FasterNetBlock(eqx.Module):
         self.dropout = eqx.nn.Dropout(dropout)
         self.drop_path = DropPathAdd(drop_path)
         self.ls = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None and self.residual
             else eqx.nn.Identity()
         )
@@ -2212,11 +2331,13 @@ class FasterNetBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_dropout, key_droppath = jr.split(key, 2)
-        x1 = self.spatial_mixing(x)
+        x1 = self.spatial_mixing(x, key=key, inference=inference)
         out = self.dropout(
             self.pw_conv2(self.act(self.norm(self.pw_conv1(x1)))),
             inference=inference,
@@ -2229,6 +2350,7 @@ class FasterNetBlock(eqx.Module):
         return out
 
 
+@register_conv()
 class GLUConv(eqx.Module):
     conv1: eqx.nn.Conv2d
     conv2: eqx.nn.Conv2d
@@ -2293,9 +2415,11 @@ class GLUConv(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_dr1, key_dr2 = jr.split(key, 2)
 
         x, v = jnp.split(self.conv1(x), 2)
@@ -2308,6 +2432,7 @@ class GLUConv(eqx.Module):
         return x
 
 
+@register_conv()
 class ATConv(eqx.Module):
     """
     Attentive Convolution (ATConv) layer that generates per-sample, per-channel 3×3 dynamic kernels
@@ -2407,7 +2532,7 @@ class ATConv(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         kernels = self._generate_kernels(x)
@@ -2431,6 +2556,7 @@ class ATConv(eqx.Module):
         return x
 
 
+@register_conv()
 class ATConvBlock(eqx.Module):
     residual: bool = eqx.field(static=True)
 
@@ -2445,8 +2571,9 @@ class ATConvBlock(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        dim: int | None = None,
         *,
+        in_channels: int | None = None,
         kernel_size: int = 3,
         exp_rate: float = 4.0,
         act_layer: Callable = jax.nn.gelu,
@@ -2460,22 +2587,24 @@ class ATConvBlock(eqx.Module):
         key: PRNGKeyArray,
         **kwargs,
     ):
+        assert dim is not None or in_channels is not None
+        dim = dim if dim is not None else in_channels
         key_tm, key_cm = jr.split(key, 2)
         self.residual = residual
 
-        hidden_features = int(in_channels * exp_rate)
+        hidden_features = int(dim * exp_rate)
         # NOTE: slightly different from the original paper
         glu_hidden_features = 32 * round(int(2 * hidden_features / 3) / 32)
 
         self.token_mixer = ATConv(
-            in_channels,
+            dim,
             kernel_size=kernel_size,
             act_layer=act_layer,
             use_bias=use_bias,
             key=key_tm,
         )
         self.channel_mixer = GLUConv(
-            in_channels,
+            dim,
             hidden_channels=glu_hidden_features,
             glu_norm=glu_norm,
             glu_dwconv=glu_dwconv,
@@ -2484,11 +2613,11 @@ class ATConvBlock(eqx.Module):
             key=key_cm,
         )
 
-        self.ls1 = LayerScale(in_channels) if use_layer_scale else eqx.nn.Identity()
-        self.ls2 = LayerScale(in_channels) if use_layer_scale else eqx.nn.Identity()
+        self.ls1 = LayerScale(dim) if use_layer_scale else eqx.nn.Identity()
+        self.ls2 = LayerScale(dim) if use_layer_scale else eqx.nn.Identity()
 
-        self.norm1 = LayerNorm2d(in_channels)
-        self.norm2 = LayerNorm2d(in_channels)
+        self.norm1 = LayerNorm2d(dim)
+        self.norm2 = LayerNorm2d(dim)
 
         if isinstance(drop_path, list):
             if (_l := len(drop_path)) == 1:
@@ -2510,9 +2639,11 @@ class ATConvBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_tm, key_cm, key_dr1, key_dr2 = jr.split(key, 4)
 
         x1 = self.token_mixer(self.norm1(x), inference=inference, key=key_tm)
@@ -2536,6 +2667,7 @@ class ATConvBlock(eqx.Module):
         return x2
 
 
+@register_conv()
 class S2Mixer(eqx.Module):
     """
     Sparse Sampling Mixer (S2-Mixer) from FreeNet.
@@ -2617,6 +2749,7 @@ class S2Mixer(eqx.Module):
         return jnp.concatenate(outs, axis=0)
 
 
+@register_conv()
 class ShiftNeck(eqx.Module):
     """
     ShiftNeck of the FreeNet model.
@@ -2668,7 +2801,12 @@ class ShiftNeck(eqx.Module):
             key=key_e,
         )
 
-    def __call__(self, x: Float[Array, "c h w"]) -> Float[Array, "c h w"]:
+    def __call__(
+        self,
+        x: Float[Array, "c h w"],
+        key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "c h w"]:
         gap = jnp.mean(x, axis=(1, 2), keepdims=True)
 
         bias = self.reduce(gap)
@@ -2678,6 +2816,7 @@ class ShiftNeck(eqx.Module):
         return x + bias
 
 
+@register_conv()
 class ShiftFFN(eqx.Module):
     """
     Shift Feed-Forward Network (ShiftFFN) matching Diagram (d).
@@ -2742,7 +2881,7 @@ class ShiftFFN(eqx.Module):
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         x_expanded = self.conv1(x)
-        x_biased = self.shift_neck(x_expanded)
+        x_biased = self.shift_neck(x_expanded, key=key, inference=inference)
 
         x_cat = jnp.concatenate([x_expanded, x_biased], axis=0)
         x_cat = self.act(x_cat)
@@ -2752,6 +2891,7 @@ class ShiftFFN(eqx.Module):
         return x_out
 
 
+@register_conv()
 class FreeNetBlock(eqx.Module):
     """
     FreeNet Block combining S2-Mixer and ShiftFFN.
@@ -2765,8 +2905,8 @@ class FreeNetBlock(eqx.Module):
 
     Reference:
         [1.] Yu, Hao, Haoyu Chen, Wei Peng, Xu Cheng, and Guoying Zhao. 2025.
-          “FreeNet: Liberating Depth-Wise Separable Operations for Building
-          Faster Mobile Vision Architectures.” in AAAI conference on artificial
+          "FreeNet: Liberating Depth-Wise Separable Operations for Building
+          Faster Mobile Vision Architectures." in AAAI conference on artificial
           intelligence (AAAI).
     """
 
@@ -2780,8 +2920,9 @@ class FreeNetBlock(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        dim: int | None = None,
         *,
+        in_channels: int | None = None,
         key: PRNGKeyArray,
         mixer_ratio: float = 0.125,
         mixer_kernel_sizes: Sequence[int] = [5, 7],
@@ -2795,11 +2936,13 @@ class FreeNetBlock(eqx.Module):
         residual: bool = True,
         **kwargs,
     ):
+        assert dim is not None or in_channels is not None
+        dim = dim if dim is not None else in_channels
         key_mix, key_ffn = jr.split(key, 2)
         self.residual = residual
 
         self.mixer = S2Mixer(
-            in_channels=in_channels,
+            in_channels=dim,
             sampling_ratio=mixer_ratio,
             kernel_sizes=mixer_kernel_sizes,
             dilations=mixer_dilations,
@@ -2807,22 +2950,22 @@ class FreeNetBlock(eqx.Module):
         )
 
         if norm_layer == eqx.nn.GroupNorm:
-            num_groups = nearest_power_of_2_divisor(in_channels, 32)
-            self.norm = eqx.nn.GroupNorm(num_groups, in_channels, **norm_kwargs)
+            num_groups = nearest_power_of_2_divisor(dim, 32)
+            self.norm = eqx.nn.GroupNorm(num_groups, dim, **norm_kwargs)
         elif norm_layer is not None:
-            self.norm = norm_layer(in_channels, **norm_kwargs)
+            self.norm = norm_layer(dim, **norm_kwargs)
         else:
             self.norm = eqx.nn.Identity()
 
         self.ffn = ShiftFFN(
-            in_channels=in_channels,
+            in_channels=dim,
             expansion_ratio_first=ffn_expansion,
             act_layer=act_layer,
             key=key_ffn,
         )
 
         self.ls = (
-            LayerScale(in_channels, axis=0, init_values=init_values)
+            LayerScale(dim, axis=0, init_values=init_values)
             if init_values is not None and self.residual
             else eqx.nn.Identity()
         )
@@ -2831,9 +2974,11 @@ class FreeNetBlock(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
         key_mix, key_ffn, key_dp = jr.split(key, 3)
 
         out = self.ffn(
