@@ -4,6 +4,7 @@ version = "1.0.0"
 description = "Implementation of popular vision models in Jax"
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
 dependencies = [
   "einops>=0.8.0",
   "equinox>=0.11.5",
@@ -19,8 +20,6 @@ classifiers = [
 
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-
-  "License :: OSI Approved :: MIT License",
 
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 
@@ -49,7 +48,7 @@ extras = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.10.12,<0.11.0"]
+requires = ["uv_build>=0.10.12,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
