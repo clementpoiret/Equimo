@@ -1,6 +1,8 @@
+import hashlib
 import tempfile
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -27,6 +29,15 @@ from equimo.utils import make_drop_path_schedule
 KEY = jr.PRNGKey(0)
 NUM_CLASSES = 10
 IMG_64 = jr.normal(KEY, (3, 64, 64))
+
+
+def _model_checksum(model) -> str:
+    """SHA-256 over all array leaves."""
+    h = hashlib.sha256()
+    for leaf in jax.tree_util.tree_leaves(model):
+        if hasattr(leaf, "tobytes"):
+            h.update(np.asarray(leaf).tobytes())
+    return h.hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +614,8 @@ def test_dinov2_vits14_reg_matches_timm():
 
     x = jnp.array(ref["img"])  # (3, 518, 518)
     model = load_model(cls="vit", identifier="dinov2_vits14_reg")
+    hash = _model_checksum(model)
+    assert hash == "82bc53567e4565f6"
 
     fwd = model.forward_features(x, key=key, inference=True)
     eq_cls = np.array(fwd["x_norm_cls_token"])  # (384,)

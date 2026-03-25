@@ -1,6 +1,8 @@
 import io
 import json
+import os
 import re
+import shutil
 import tarfile
 import tempfile
 from pathlib import Path
@@ -217,11 +219,20 @@ def download(
         logger.info("Archive already downloaded, using cached file.")
         return path
 
-    with requests.get(url, stream=True, timeout=timeout, verify=True) as res:
-        res.raise_for_status()
-        with open(path, "wb") as f:
-            for chunk in res.iter_content(chunk_size=65_536):
-                f.write(chunk)
+    tmp_path = path.with_suffix(".tmp")
+    fd, tmp_str = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_str)
+    try:
+        with requests.get(url, stream=True, timeout=timeout, verify=True) as res:
+            res.raise_for_status()
+            with open(tmp_path, "wb") as f:
+                for chunk in res.iter_content(chunk_size=65_536):
+                    f.write(chunk)
+        tmp_path.rename(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
     return path
 
@@ -277,16 +288,25 @@ def load_model(
     if path.suffixes == [".tar", ".lz4"]:
         logger.info("Decompressing...")
         decompressed_dir = path.with_suffix("").with_suffix("")
+        sentinel = decompressed_dir / ".complete"
 
-        if not decompressed_dir.exists() or (
-            decompressed_dir.stat().st_mtime < path.stat().st_mtime
-        ):
-            decompressed_dir.mkdir(parents=True, exist_ok=True)
-            with lz4.frame.open(path, "rb") as f_in:
-                with tarfile.open(fileobj=f_in, mode="r") as tar:
-                    # filter="data" (Python 3.12+) strips dangerous tar metadata
-                    # and raises on path-traversal entries (zip-slip protection).
-                    tar.extractall(decompressed_dir, filter="data")
+        # Re-extract if sentinel is missing or stale, survives interrupted extractions
+        if not sentinel.exists() or (sentinel.stat().st_mtime < path.stat().st_mtime):
+            tmp_dir = Path(
+                tempfile.mkdtemp(dir=decompressed_dir.parent, prefix=".tmp_extract_")
+            )
+            try:
+                with lz4.frame.open(path, "rb") as f_in:
+                    with tarfile.open(fileobj=f_in, mode="r") as tar:
+                        tar.extractall(tmp_dir, filter="data")
+                # Write sentinel INSIDE the temp dir before the atomic swap
+                (tmp_dir / ".complete").touch()
+                if decompressed_dir.exists():
+                    shutil.rmtree(decompressed_dir)
+                tmp_dir.rename(decompressed_dir)
+            except BaseException:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise
 
         load_path = decompressed_dir
 
