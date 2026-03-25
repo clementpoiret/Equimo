@@ -1,3 +1,63 @@
+__all__ = [
+    "VisionTransformer",
+    # Standard ViT presets
+    "vit_tiny_patch16_224",
+    "vit_tiny_patch32_224",
+    "vit_small_patch16_224",
+    "vit_small_patch32_224",
+    "vit_base_patch16_224",
+    "vit_base_patch32_224",
+    "vit_large_patch16_224",
+    "vit_large_patch32_224",
+    "vit_huge_patch14_224",
+    "vit_huge_patch16_224",
+    # DINOv2
+    "dinov2_vits14",
+    "dinov2_vits14_reg",
+    "dinov2_vitb14",
+    "dinov2_vitb14_reg",
+    "dinov2_vitl14",
+    "dinov2_vitl14_reg",
+    "dinov2_vitg14",
+    "dinov2_vitg14_reg",
+    # DINOv3
+    "dinov3_vits16_pretrain_lvd1689m",
+    "dinov3_vits16plus_pretrain_lvd1689m",
+    "dinov3_vitb16_pretrain_lvd1689m",
+    "dinov3_vitl16_pretrain_lvd1689m",
+    "dinov3_vith16plus_pretrain_lvd1689m",
+    "dinov3_vit7b16_pretrain_lvd1689m",
+    "dinov3_vitl16_pretrain_sat493m",
+    "dinov3_vit7b16_pretrain_sat493m",
+    # EUPE
+    "eupe_vitt16",
+    "eupe_vits16",
+    "eupe_vitb16",
+    # SigLIP2
+    "siglip2_vitb16_224",
+    "siglip2_vitb16_256",
+    "siglip2_vitb16_384",
+    "siglip2_vitb16_512",
+    "siglip2_vitb32_256",
+    "siglip2_vitl16_256",
+    "siglip2_vitl16_384",
+    "siglip2_vitl16_512",
+    "siglip2_vitso400m14_224",
+    "siglip2_vitso400m14_378",
+    "siglip2_vitso400m16_256",
+    "siglip2_vitso400m16_384",
+    "siglip2_vitso400m16_512",
+    "siglip2_vitgiantopt16_256",
+    "siglip2_vitgiantopt16_384",
+    # TIPS
+    "tips_vits14_hr",
+    "tips_vitb14_hr",
+    "tips_vitl14_hr",
+    "tips_vitso400m14_hr",
+    "tips_vitg14_lr",
+    "tips_vitg14_hr",
+]
+
 from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
@@ -17,7 +77,7 @@ from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
-from equimo.layers.posemb import DinoRoPE, LearnedPosEmbed, VisionRoPE
+from equimo.layers.posemb import LearnedPosEmbed, VisionRoPE
 from equimo.models.registry import register_model
 from equimo.utils import pool_sd, to_list
 
@@ -32,7 +92,8 @@ class VisionTransformer(eqx.Module):
 
     Attributes:
         patch_embed: Patch embedding layer
-        pos_embed: Positional embedding array
+        global_pos_embed: Model-level positional embedding applied after patching (e.g. APE)
+        local_pos_embed: Block-level positional embedding passed to each attention block (e.g. RoPE)
         cls_token: Class token for classification (optional)
         reg_tokens: Registration tokens for alignment (optional)
         blocks: List of transformer blocks
@@ -53,7 +114,8 @@ class VisionTransformer(eqx.Module):
     """
 
     patch_embed: PatchEmbedding
-    pos_embed: LearnedPosEmbed | DinoRoPE
+    global_pos_embed: LearnedPosEmbed | None
+    local_pos_embed: VisionRoPE | None
     cls_token: jax.Array | None
     reg_tokens: jax.Array | None
     mask_token: jax.Array | None
@@ -72,7 +134,6 @@ class VisionTransformer(eqx.Module):
     num_embedded_prefix_tokens: int = eqx.field(static=True)
     no_embed_class: bool = eqx.field(static=True)
     pos_embed_reg_tokens: bool = eqx.field(static=True)
-    use_rope_pos_embed: bool = eqx.field(static=True)
     embed_len: int = eqx.field(static=True)
     dynamic_img_size: bool = eqx.field(static=True)
     antialias: bool = eqx.field(static=True)
@@ -93,15 +154,14 @@ class VisionTransformer(eqx.Module):
         class_token: bool = True,
         no_embed_class: bool = False,
         reg_tokens: int = 4,
-        use_rope_pos_embed: bool = False,
-        rope_pos_embed_base: float = 100.0,
-        rope_pos_embed_min_period: Optional[float] = None,
-        rope_pos_embed_max_period: Optional[float] = None,
-        rope_pos_embed_normalize_coords: Literal["min", "max", "separate"] = "separate",
-        rope_pos_embed_shift_coords: Optional[float] = None,
-        rope_pos_embed_jitter_coords: Optional[float] = None,
-        rope_pos_embed_rescale_coords: Optional[float] = None,
-        rope_pos_embed_dtype: jnp.dtype = jnp.float32,
+        use_global_pos_embed: bool = True,
+        use_local_pos_embed: bool = False,
+        local_pos_embed_config: dict = {
+            "strategy": "period",
+            "base": 100.0,
+            "normalize_coords": "separate",
+            "dtype": jnp.float32,
+        },
         pos_embed_reg_tokens: bool = False,
         pos_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
@@ -142,7 +202,6 @@ class VisionTransformer(eqx.Module):
         self.pos_embed_reg_tokens = pos_embed_reg_tokens
         self.global_pool = global_pool
         self.embed_size = img_size // patch_size
-        self.use_rope_pos_embed = use_rope_pos_embed
 
         block = get_attn_block(block)
         attn_layer = get_attn(attn_layer)
@@ -177,25 +236,8 @@ class VisionTransformer(eqx.Module):
             self.num_embedded_prefix_tokens += 1
             self.embed_len = self.num_patches + 1
 
-        if use_rope_pos_embed:
-            if not isinstance(num_heads, int):
-                raise ValueError(
-                    "RoPE pos embedding currently requires a static number of heads."
-                )
-            self.pos_embed = DinoRoPE(
-                dim=dim,
-                num_heads=num_heads,
-                base=rope_pos_embed_base,
-                min_period=rope_pos_embed_min_period,
-                max_period=rope_pos_embed_max_period,
-                normalize_coords=rope_pos_embed_normalize_coords,
-                shift_coords=rope_pos_embed_shift_coords,
-                jitter_coords=rope_pos_embed_jitter_coords,
-                rescale_coords=rope_pos_embed_rescale_coords,
-                dtype=rope_pos_embed_dtype,
-            )
-        else:
-            self.pos_embed = LearnedPosEmbed(
+        if use_global_pos_embed:
+            self.global_pos_embed = LearnedPosEmbed(
                 weight=jr.normal(key_posemb, (self.embed_len, dim)),
                 dim=dim,
                 embed_size=self.embed_size,
@@ -205,6 +247,21 @@ class VisionTransformer(eqx.Module):
                 pos_embed_reg_tokens=self.pos_embed_reg_tokens,
                 antialias=interpolate_antialias,
             )
+        else:
+            self.global_pos_embed = None
+
+        if use_local_pos_embed:
+            if not isinstance(num_heads, int):
+                raise ValueError(
+                    "Local pos embedding (RoPE) currently requires a static number of heads."
+                )
+            self.local_pos_embed = VisionRoPE(
+                dim=dim,
+                num_heads=num_heads,
+                **local_pos_embed_config,
+            )
+        else:
+            self.local_pos_embed = None
         self.pos_drop = eqx.nn.Dropout(pos_drop_rate)
 
         if drop_path_uniform:
@@ -292,39 +349,40 @@ class VisionTransformer(eqx.Module):
                 value = self.mask_token
             x = jnp.where(mask, x, value.astype(x.dtype))
 
-        if self.use_rope_pos_embed:
-            # In models like Dinov3, RoPE is not applied here, but in self attention blocks
-            # It means that we have to dumbly cat prefix token and flattened x manually
-            _, H, W = x.shape
-            rope_sincos = None
-            if inference:
-                rope_sincos = self.pos_embed.get_sincos(
-                    H=H, W=W, inference=inference, key=key_pos
-                )
-            prefix = [t for t in (self.cls_token, self.reg_tokens) if t is not None]
-            x = jnp.concatenate(
-                [*prefix, rearrange(x, "c h w -> (h w) c")],
-                axis=0,
-            )
-        else:
-            # TODO: pos drop
-            rope_sincos = None
-            x = self.pos_embed(
+        # Resolve spatial dims for local pos embed before flattening
+        if self.local_pos_embed is not None:
+            if self.dynamic_img_size:
+                _, H, W = x.shape
+            else:
+                H = W = self.embed_size
+
+        # Apply global (model-level) positional embedding (e.g. APE)
+        if self.global_pos_embed is not None:
+            x = self.global_pos_embed(
                 x,
                 cls_token=self.cls_token,
                 reg_tokens=self.reg_tokens,
                 dynamic_img_size=self.dynamic_img_size,
             )
+        else:
+            # No global pos embed: manually cat prefix tokens and flatten
+            prefix = [t for t in (self.cls_token, self.reg_tokens) if t is not None]
+            if self.dynamic_img_size:
+                x = rearrange(x, "c h w -> (h w) c")
+            x = jnp.concatenate([*prefix, x], axis=0) if prefix else x
+
+        # Compute local (block-level) positional embedding (e.g. RoPE)
+        rope_sincos = None
+        if self.local_pos_embed is not None and inference:
+            rope_sincos = self.local_pos_embed.get_sincos(
+                H=H, W=W, inference=inference, key=key_pos
+            )
 
         for blk, key_block in zip(self.blocks, block_subkeys):
-            if self.use_rope_pos_embed and not inference:
+            if self.local_pos_embed is not None and not inference:
                 key_pos, key_rope = jr.split(key_pos, 2)
-                rope_sincos = (
-                    self.pos_embed.get_sincos(
-                        H=H, W=W, inference=inference, key=key_rope
-                    )
-                    if self.use_rope_pos_embed
-                    else None
+                rope_sincos = self.local_pos_embed.get_sincos(
+                    H=H, W=W, inference=inference, key=key_rope
                 )
             x = blk(
                 x, rope_sincos=rope_sincos, inference=inference, key=key_block, **kwargs
@@ -420,7 +478,28 @@ _DINOV3_BASE_CFG: dict = {
     "patch_size": 16,
     "num_classes": 0,
     "use_mask_token": True,
-    "use_rope_pos_embed": True,
+    "use_global_pos_embed": False,
+    "use_local_pos_embed": True,
+    "reg_tokens": 4,
+    "init_values": 1e-5,
+    "eps": 1e-5,
+    "dynamic_img_size": True,
+    "act_layer": "exactgelu",
+}
+_EUPE_BASE_CFG: dict = {
+    "img_size": 224,
+    "in_channels": 3,
+    "patch_size": 16,
+    "num_classes": 0,
+    "use_mask_token": True,
+    "use_global_pos_embed": False,
+    "use_local_pos_embed": True,
+    "local_pos_embed_config": {
+        "strategy": "period",
+        "base": 100.0,
+        "normalize_coords": "separate",
+        "rescale_coords": 2.0,
+    },
     "reg_tokens": 4,
     "init_values": 1e-5,
     "eps": 1e-5,
@@ -461,7 +540,8 @@ _VIT5_BASE_CFG: dict = {
     "use_mask_token": False,
     "dynamic_img_size": False,
     "act_layer": "gelu",
-    "use_rope_pos_embed": True,
+    "use_global_pos_embed": True,
+    "use_local_pos_embed": True,
     "init_values": 1e-4,
     "norm_layer": "rmsnorm",
     "qkv_bias": False,
@@ -621,6 +701,19 @@ _VIT_REGISTRY: dict[str, tuple[dict, dict]] = {
             "ffn_layer": "swiglu",
             "ffn_kwargs": {"align_to": 64},
         },
+    ),
+    # EUPE
+    "eupe_vitt16": (
+        _EUPE_BASE_CFG,
+        {"dim": 192, "num_heads": 3, "depths": [12]},
+    ),
+    "eupe_vits16": (
+        _EUPE_BASE_CFG,
+        {"dim": 384, "num_heads": 6, "depths": [12]},
+    ),
+    "eupe_vitb16": (
+        _EUPE_BASE_CFG,
+        {"dim": 768, "num_heads": 12, "depths": [12]},
     ),
     # SigLIP2
     "siglip2_vitb16_224": (
@@ -971,6 +1064,21 @@ def dinov3_vit7b16_pretrain_sat493m(
     return _build_vit(
         "dinov3_vit7b16_pretrain_sat493m", pretrained=pretrained, **kwargs
     )
+
+
+def eupe_vitt16(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """EUPE ViT-T/16 (vit_tiny)."""
+    return _build_vit("eupe_vitt16", pretrained=pretrained, **kwargs)
+
+
+def eupe_vits16(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """EUPE ViT-S/16 (vit_small)."""
+    return _build_vit("eupe_vits16", pretrained=pretrained, **kwargs)
+
+
+def eupe_vitb16(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """EUPE ViT-B/16 (vit_base)."""
+    return _build_vit("eupe_vitb16", pretrained=pretrained, **kwargs)
 
 
 def siglip2_vitb16_224(pretrained: bool = False, **kwargs) -> VisionTransformer:
