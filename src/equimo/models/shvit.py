@@ -212,7 +212,7 @@ class SHViT(eqx.Module):
                 },
                 downsampler=PWSEDownsampler if i < len(depths) - 1 else None,
                 downsampler_kwargs=(
-                    {"dim": dims[i], "out_dim": dims[i + 1]}
+                    {"in_channels": dims[i], "out_channels": dims[i + 1]}
                     if i < len(depths) - 1
                     else {}
                 ),

@@ -1,25 +1,61 @@
-from typing import Callable
+from typing import Callable, Optional
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.utils import nearest_power_of_2_divisor
+from equimo.utils import make_divisible, nearest_power_of_2_divisor
+
+_SE_REGISTRY: dict[str, type[eqx.Module]] = {}
 
 
-def make_divisible(v, divisor=8, min_value=None, round_limit=0.9):
+def register_se(
+    name: Optional[str] = None,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new SE modules.
+
+    Why collision checking: Prevents third-party extensions from silently
+    overwriting core layers, which can silently corrupt the computational graph.
     """
-    Helper function to compute the number of channels for the SE Modules.
-    Taken from: https://github.com/pprp/timm/blob/e9aac412de82310e6905992e802b1ee4dc52b5d1/timm/layers/helpers.py#L25
-    """
-    min_value = min_value or divisor
-    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    if new_v < round_limit * v:
-        new_v += divisor
-    return new_v
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _SE_REGISTRY:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_SE_REGISTRY[registry_name]}."
+            )
+
+        _SE_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
 
 
+def get_se(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get an SE ``eqx.Module`` class from its registered name."""
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _SE_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_SE_REGISTRY.keys())}"
+        )
+
+    return _SE_REGISTRY[module_lower]
+
+
+@register_se()
 class SEModule(eqx.Module):
     """Squeeze-and-Excite Module as defined in original SE-Nets [1] paper.
 
@@ -31,10 +67,13 @@ class SEModule(eqx.Module):
     This implementation uses GroupNorm instead of the original BatchNorm for
     better stability in small batch scenarios.
 
+    Output dtype always matches the input dtype.
+
     Attributes:
         fc1: First conv layer (channel reduction)
         fc2: Second conv layer (channel expansion)
         norm: GroupNorm layer or Identity if use_norm=False
+        act: Gate activation function (default: sigmoid)
 
     Reference:
         [1]: Hu, et al., Squeeze-and-Excitation Networks. 2017.
@@ -44,7 +83,7 @@ class SEModule(eqx.Module):
     fc1: eqx.nn.Conv
     fc2: eqx.nn.Conv
     norm: eqx.Module
-    se_act: Callable
+    act: Callable
 
     def __init__(
         self,
@@ -55,12 +94,25 @@ class SEModule(eqx.Module):
         rd_divisor: int = 8,
         use_norm: bool = False,
         norm_max_group: int = 32,
-        se_act_layer: Callable = jax.nn.sigmoid,
+        act_layer: Callable = jax.nn.sigmoid,
         **kwargs,
     ):
+        """Initialize SEModule.
+
+        Args:
+            in_channels: Number of input (and output) spatial channels.
+            key: PRNG key for initialization.
+            rd_ratio: Reduction ratio for the bottleneck hidden channels.
+            rd_divisor: Hidden channel count is rounded to a multiple of this.
+            use_norm: If True, insert GroupNorm after the first FC layer.
+            norm_max_group: Maximum group count for GroupNorm.
+            act_layer: Gate activation function applied to the excitation output
+                (default: sigmoid).
+            **kwargs: Ignored; present for drop-in use via the registry.
+        """
         key_fc1, key_fc2 = jr.split(key, 2)
         rd_channels = make_divisible(
-            in_channels * rd_ratio, rd_divisor, round_limit=0.0
+            in_channels * rd_ratio, rd_divisor, round_down_protect=False
         )
         self.fc1 = eqx.nn.Conv(
             num_spatial_dims=2,
@@ -73,10 +125,7 @@ class SEModule(eqx.Module):
         )
         num_groups = nearest_power_of_2_divisor(rd_channels, norm_max_group)
         self.norm = (
-            eqx.nn.GroupNorm(
-                num_groups,
-                rd_channels,
-            )
+            eqx.nn.GroupNorm(num_groups, rd_channels)
             if use_norm
             else eqx.nn.Identity()
         )
@@ -89,32 +138,44 @@ class SEModule(eqx.Module):
             padding=0,
             key=key_fc2,
         )
-        self.se_act = se_act_layer
+        self.act = act_layer
 
     def __call__(
         self,
         x: Float[Array, "channels height width"],
     ) -> Float[Array, "channels height width"]:
-        x_se = x.mean(axis=[1, 2], keepdims=True)
+        """Apply squeeze-and-excitation attention.
+
+        Args:
+            x: Input spatial feature map of shape (C, H, W).
+
+        Returns:
+            Channel-recalibrated feature map of the same shape and dtype.
+        """
+        dtype = x.dtype
+        x_se = x.mean(axis=(1, 2), keepdims=True).astype(jnp.float32)
         x_se = jax.nn.relu(self.norm(self.fc1(x_se)))
         x_se = self.fc2(x_se)
+        return x * self.act(x_se).astype(dtype)
 
-        return x * self.se_act(x_se)
 
-
+@register_se()
 class EffectiveSEModule(eqx.Module):
     """Efficient variant of Squeeze-and-Excitation Module.
 
     Simplifies the original SE module by:
     1. Using a single conv layer instead of two
-    2. Replacing sigmoid with hard_sigmoid activation
+    2. Using hard_sigmoid activation by default (faster than sigmoid)
     3. Removing the dimensionality reduction
 
     These modifications reduce computational cost while maintaining
     effectiveness for channel attention.
 
+    Output dtype always matches the input dtype.
+
     Attributes:
-        fc: Single convolution layer for channel attention
+        fc: Single convolution layer for channel attention.
+        act: Gate activation function (default: hard_sigmoid).
 
     Reference:
         [1]: CenterMask: Real-Time Anchor-Free Instance Segmentation,
@@ -122,14 +183,24 @@ class EffectiveSEModule(eqx.Module):
     """
 
     fc: eqx.nn.Conv
+    act: Callable
 
     def __init__(
         self,
         in_channels: int,
         *,
         key: PRNGKeyArray,
+        act_layer: Callable = jax.nn.hard_sigmoid,
         **kwargs,
     ):
+        """Initialize EffectiveSEModule.
+
+        Args:
+            in_channels: Number of input (and output) spatial channels.
+            key: PRNG key for initialization.
+            act_layer: Gate activation function (default: hard_sigmoid).
+            **kwargs: Ignored; present for drop-in use via the registry.
+        """
         self.fc = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=in_channels,
@@ -139,12 +210,21 @@ class EffectiveSEModule(eqx.Module):
             padding=0,
             key=key,
         )
+        self.act = act_layer
 
     def __call__(
         self,
         x: Float[Array, "channels height width"],
     ) -> Float[Array, "channels height width"]:
-        x_se = x.mean(axis=[1, 2], keepdims=True)
-        x_se = self.fc(x_se)
+        """Apply efficient squeeze-and-excitation attention.
 
-        return x * jax.nn.hard_sigmoid(x_se)
+        Args:
+            x: Input spatial feature map of shape (C, H, W).
+
+        Returns:
+            Channel-recalibrated feature map of the same shape and dtype.
+        """
+        dtype = x.dtype
+        x_se = x.mean(axis=(1, 2), keepdims=True).astype(jnp.float32)
+        x_se = self.fc(x_se)
+        return x * self.act(x_se).astype(dtype)

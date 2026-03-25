@@ -1,4 +1,10 @@
 from .activation import get_act, register_act
+from .downsample import (
+    ConvNormDownsampler,
+    PWSEDownsampler,
+    get_downsampler,
+    register_downsampler,
+)
 from .dropout import DropPath, DropPathAdd, get_dropout, register_dropout
 from .ffn import (
     DINOHead,
@@ -39,12 +45,23 @@ from .posemb import (
     get_posemb,
     register_posemb,
 )
+from .squeeze_excite import (
+    EffectiveSEModule,
+    SEModule,
+    get_se,
+    register_se,
+)
 from .wavelet import HWDConv, get_wavelet, register_wavelet
 
 __all__ = [
     # Activation
     "get_act",
     "register_act",
+    # Downsampler
+    "ConvNormDownsampler",
+    "PWSEDownsampler",
+    "get_downsampler",
+    "register_downsampler",
     # Dropout
     "DropPath",
     "DropPathAdd",
@@ -91,6 +108,11 @@ __all__ = [
     "RoPE",
     "get_posemb",
     "register_posemb",
+    # Squeeze-and-Excitation
+    "EffectiveSEModule",
+    "SEModule",
+    "get_se",
+    "register_se",
     # Wavelet
     "HWDConv",
     "get_wavelet",
