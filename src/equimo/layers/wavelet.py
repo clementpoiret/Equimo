@@ -104,11 +104,12 @@ def _depthwise_conv2d_stride2(x_chw: Array, k2x2: Array) -> Array:
     return y[0]  # (C, H/2, W/2)
 
 
-def haar_dwt_split(
+def haar_dwt_split_conv(
     x_chw: Array, dtype=jnp.float32
 ) -> Tuple[Array, Array, Array, Array]:
     """
     Return (LL, HL, LH, HH), each (C, H/2, W/2)
+    Naive implementation using strided convolutions.
     """
     kLL, kHL, kLH, kHH = _haar_2d_kernels(dtype)
     LL = _depthwise_conv2d_stride2(x_chw, kLL)
@@ -118,10 +119,10 @@ def haar_dwt_split(
     return LL, HL, LH, HH
 
 
-def haar_dwt_split_linear(
+def haar_dwt_split(
     x_chw: Array, dtype=jnp.float32
 ) -> Tuple[Array, Array, Array, Array]:
-    """Haar DWT via polyphase slicing; drop-in replacement for haar_dwt_split.
+    """Haar DWT via polyphase slicing; drop-in replacement for haar_dwt_split_conv.
 
     Replaces 4 depthwise conv dispatches with strided indexing + fused
     arithmetic.  A separable factorisation shares row-wise intermediates
@@ -153,7 +154,7 @@ def haar_dwt_split_linear(
     return LL, HL, LH, HH
 
 
-def inverse_haar_dwt_split_linear(
+def inverse_haar_dwt_split(
     LL: Array,
     HL: Array,
     LH: Array,
@@ -279,7 +280,7 @@ class HWDConv(eqx.Module):
     def __call__(
         self, x: Array, *, key: PRNGKeyArray, inference: bool = False
     ) -> Array:
-        LL, HL, LH, HH = haar_dwt_split_linear(x, dtype=x.dtype)  # each (C, H/2, W/2)
+        LL, HL, LH, HH = haar_dwt_split(x, dtype=x.dtype)  # each (C, H/2, W/2)
 
         if self.mode == "h_discard":
             y = LL  # (C, H/2, W/2)

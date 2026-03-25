@@ -343,7 +343,7 @@ wheels = [
 
 [[package]]
 name = "equimo"
-version = "0.5.0a18"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },

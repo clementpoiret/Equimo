@@ -14,8 +14,8 @@ from equimo.layers.wavelet import (
     _haar_2d_kernels,
     get_wavelet,
     haar_dwt_split,
-    haar_dwt_split_linear,
-    inverse_haar_dwt_split_linear,
+    haar_dwt_split_conv,
+    inverse_haar_dwt_split,
     register_wavelet,
 )
 
@@ -51,14 +51,14 @@ class TestHaarHelpers:
 
     def test_haar_dwt_split_shapes(self):
         x = jnp.ones((4, 32, 32))
-        LL, HL, LH, HH = haar_dwt_split(x)
+        LL, HL, LH, HH = haar_dwt_split_conv(x)
         for band in (LL, HL, LH, HH):
             assert band.shape == (4, 16, 16)
 
     def test_haar_dwt_split_energy_conservation(self):
         """Reconstruction from LL + detail bands must approximately preserve energy."""
         x = jr.normal(KEY, (4, 8, 8))
-        LL, HL, LH, HH = haar_dwt_split(x)
+        LL, HL, LH, HH = haar_dwt_split_conv(x)
         # Each band has 1/4 the spatial area; 4 bands restore original energy
         total_energy = sum(jnp.sum(b**2) for b in (LL, HL, LH, HH))
         assert jnp.allclose(total_energy, jnp.sum(x**2), rtol=1e-4)
@@ -66,7 +66,7 @@ class TestHaarHelpers:
     def test_haar_dwt_split_odd_size_no_crash(self):
         """haar_dwt_split should not crash on odd spatial dimensions (SAME padding)."""
         x = jr.normal(KEY, (4, 17, 15))
-        LL, HL, LH, HH = haar_dwt_split(x)
+        LL, HL, LH, HH = haar_dwt_split_conv(x)
         assert LL.shape[0] == 4
 
 
@@ -75,13 +75,13 @@ class TestHaarLinear:
 
     def test_shapes_even(self):
         x = jnp.ones((8, 16, 16))
-        LL, HL, LH, HH = haar_dwt_split_linear(x)
+        LL, HL, LH, HH = haar_dwt_split(x)
         for band in (LL, HL, LH, HH):
             assert band.shape == (8, 8, 8)
 
     def test_shapes_odd(self):
         x = jr.normal(KEY, (4, 17, 15))
-        LL, HL, LH, HH = haar_dwt_split_linear(x)
+        LL, HL, LH, HH = haar_dwt_split(x)
         # ceil(17/2)=9, ceil(15/2)=8
         for band in (LL, HL, LH, HH):
             assert band.shape == (4, 9, 8)
@@ -89,20 +89,20 @@ class TestHaarLinear:
     def test_energy_conservation(self):
         """Parseval's theorem: sum of squared sub-band coefficients == input energy."""
         x = jr.normal(KEY, (4, 8, 8))
-        LL, HL, LH, HH = haar_dwt_split_linear(x)
+        LL, HL, LH, HH = haar_dwt_split(x)
         total_energy = sum(jnp.sum(b**2) for b in (LL, HL, LH, HH))
         assert jnp.allclose(total_energy, jnp.sum(x**2), rtol=1e-4)
 
     def test_dtype_preserved(self):
         for dtype in (jnp.float32, jnp.bfloat16, jnp.float16):
             x = jr.normal(KEY, (2, 8, 8)).astype(dtype)
-            LL, _, _, _ = haar_dwt_split_linear(x, dtype=dtype)
+            LL, _, _, _ = haar_dwt_split(x, dtype=dtype)
             assert LL.dtype == dtype
 
     def test_constant_input_ll_only(self):
         """A spatially constant signal has zero energy in all detail bands."""
         x = jnp.ones((2, 8, 8)) * 3.0
-        LL, HL, LH, HH = haar_dwt_split_linear(x)
+        LL, HL, LH, HH = haar_dwt_split(x)
         assert jnp.allclose(HL, 0.0, atol=1e-7)
         assert jnp.allclose(LH, 0.0, atol=1e-7)
         assert jnp.allclose(HH, 0.0, atol=1e-7)
@@ -110,14 +110,14 @@ class TestHaarLinear:
 
     def test_jit_compatible(self):
         x = jr.normal(KEY, (4, 16, 16))
-        fn = jax.jit(lambda x: haar_dwt_split_linear(x))
+        fn = jax.jit(lambda x: haar_dwt_split(x))
         LL, HL, LH, HH = fn(x)
         assert LL.shape == (4, 8, 8)
 
     def test_minimal_input(self):
         """1×1 spatial input (pad to 2×2)."""
         x = jnp.ones((1, 1, 1)) * 2.0
-        LL, HL, LH, HH = haar_dwt_split_linear(x)
+        LL, HL, LH, HH = haar_dwt_split(x)
         assert LL.shape == (1, 1, 1)
 
     @pytest.mark.parametrize(
@@ -135,8 +135,8 @@ class TestHaarLinear:
     def test_equivalence_conv_vs_linear(self, shape):
         """Linear and conv implementations must produce matching results."""
         x = jr.normal(KEY, shape)
-        conv_bands = haar_dwt_split(x)
-        linear_bands = haar_dwt_split_linear(x)
+        conv_bands = haar_dwt_split_conv(x)
+        linear_bands = haar_dwt_split(x)
         for c, l in zip(conv_bands, linear_bands):
             assert c.shape == l.shape
             assert jnp.allclose(c, l, atol=1e-6, rtol=1e-5), (
@@ -146,8 +146,8 @@ class TestHaarLinear:
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
     def test_equivalence_conv_vs_linear_dtypes(self, dtype):
         x = jr.normal(KEY, (4, 16, 16)).astype(dtype)
-        conv_bands = haar_dwt_split(x, dtype=dtype)
-        linear_bands = haar_dwt_split_linear(x, dtype=dtype)
+        conv_bands = haar_dwt_split_conv(x, dtype=dtype)
+        linear_bands = haar_dwt_split(x, dtype=dtype)
         atol = 1e-6 if dtype == jnp.float32 else 8e-2
         for c, l in zip(conv_bands, linear_bands):
             assert jnp.allclose(c, l, atol=atol), (
@@ -164,7 +164,7 @@ class TestHaarLinear:
         out_layer = layer(x, key=KEY)
 
         # Manually reproduce with conv-based split
-        LL, HL, LH, HH = haar_dwt_split(x, dtype=x.dtype)
+        LL, HL, LH, HH = haar_dwt_split_conv(x, dtype=x.dtype)
         y_conv = jnp.concatenate([LL, HL, LH, HH], axis=0)
         y_conv = layer.pre_norm(y_conv)
         y_conv = layer.proj(y_conv)
@@ -192,8 +192,8 @@ class TestInverseHaarLinear:
     def test_perfect_reconstruction_even(self, shape):
         """Forward → inverse must recover the original signal (even dims)."""
         x = jr.normal(KEY, shape)
-        bands = haar_dwt_split_linear(x)
-        x_rec = inverse_haar_dwt_split_linear(*bands, dtype=x.dtype)
+        bands = haar_dwt_split(x)
+        x_rec = inverse_haar_dwt_split(*bands, dtype=x.dtype)
         assert x_rec.shape == x.shape
         assert jnp.allclose(x_rec, x, atol=1e-6), (
             f"Max abs err: {float(jnp.max(jnp.abs(x_rec - x)))}"
@@ -214,8 +214,8 @@ class TestInverseHaarLinear:
         """Forward → inverse with orig dims must recover the signal (odd dims)."""
         C, H, W = shape
         x = jr.normal(KEY, shape)
-        bands = haar_dwt_split_linear(x)
-        x_rec = inverse_haar_dwt_split_linear(*bands, orig_h=H, orig_w=W, dtype=x.dtype)
+        bands = haar_dwt_split(x)
+        x_rec = inverse_haar_dwt_split(*bands, orig_h=H, orig_w=W, dtype=x.dtype)
         assert x_rec.shape == x.shape
         assert jnp.allclose(x_rec, x, atol=1e-6), (
             f"Max abs err: {float(jnp.max(jnp.abs(x_rec - x)))}"
@@ -224,30 +224,30 @@ class TestInverseHaarLinear:
     def test_reconstruction_without_crop_oversized(self):
         """Without orig dims, inverse of an odd-dim input is zero-padded at boundary."""
         x = jr.normal(KEY, (2, 7, 5))
-        bands = haar_dwt_split_linear(x)
-        x_rec = inverse_haar_dwt_split_linear(*bands, dtype=x.dtype)
+        bands = haar_dwt_split(x)
+        x_rec = inverse_haar_dwt_split(*bands, dtype=x.dtype)
         assert x_rec.shape == (2, 8, 6)
         assert jnp.allclose(x_rec[:, :7, :5], x, atol=1e-6)
 
     def test_constant_signal_roundtrip(self):
         x = jnp.ones((2, 8, 8)) * 3.0
-        bands = haar_dwt_split_linear(x)
-        x_rec = inverse_haar_dwt_split_linear(*bands, dtype=x.dtype)
+        bands = haar_dwt_split(x)
+        x_rec = inverse_haar_dwt_split(*bands, dtype=x.dtype)
         assert jnp.allclose(x_rec, x, atol=1e-7)
 
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
     def test_dtype_preserved(self, dtype):
         x = jr.normal(KEY, (4, 16, 16)).astype(dtype)
-        bands = haar_dwt_split_linear(x, dtype=dtype)
-        x_rec = inverse_haar_dwt_split_linear(*bands, dtype=dtype)
+        bands = haar_dwt_split(x, dtype=dtype)
+        x_rec = inverse_haar_dwt_split(*bands, dtype=dtype)
         assert x_rec.dtype == dtype
 
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
     def test_roundtrip_dtype_accuracy(self, dtype):
         """Roundtrip stays within dtype-appropriate tolerance."""
         x = jr.normal(KEY, (4, 16, 16)).astype(dtype)
-        bands = haar_dwt_split_linear(x, dtype=dtype)
-        x_rec = inverse_haar_dwt_split_linear(*bands, dtype=dtype)
+        bands = haar_dwt_split(x, dtype=dtype)
+        x_rec = inverse_haar_dwt_split(*bands, dtype=dtype)
         atol = 1e-6 if dtype == jnp.float32 else 5e-2
         assert jnp.allclose(x_rec, x, atol=atol), (
             f"dtype={dtype}, max diff: {float(jnp.max(jnp.abs(x_rec - x)))}"
@@ -256,19 +256,19 @@ class TestInverseHaarLinear:
     def test_inverse_of_conv_forward(self):
         """Inverse of linear impl must also invert the conv-based forward."""
         x = jr.normal(KEY, (4, 8, 8))
-        conv_bands = haar_dwt_split(x)
-        x_rec = inverse_haar_dwt_split_linear(*conv_bands, dtype=x.dtype)
+        conv_bands = haar_dwt_split_conv(x)
+        x_rec = inverse_haar_dwt_split(*conv_bands, dtype=x.dtype)
         assert jnp.allclose(x_rec, x, atol=1e-5), (
             f"Max abs err: {float(jnp.max(jnp.abs(x_rec - x)))}"
         )
 
     def test_jit_compatible(self):
         x = jr.normal(KEY, (4, 16, 16))
-        bands = haar_dwt_split_linear(x)
+        bands = haar_dwt_split(x)
 
         @jax.jit
         def roundtrip(LL, HL, LH, HH):
-            return inverse_haar_dwt_split_linear(LL, HL, LH, HH)
+            return inverse_haar_dwt_split(LL, HL, LH, HH)
 
         x_rec = roundtrip(*bands)
         assert jnp.allclose(x_rec, x, atol=1e-6)
@@ -276,17 +276,17 @@ class TestInverseHaarLinear:
     def test_minimal_input(self):
         """1×1 spatial → pad to 2×2, sub-bands are 1×1, inverse recovers 1×1."""
         x = jnp.array([[[5.0]]])
-        bands = haar_dwt_split_linear(x)
-        x_rec = inverse_haar_dwt_split_linear(*bands, orig_h=1, orig_w=1, dtype=x.dtype)
+        bands = haar_dwt_split(x)
+        x_rec = inverse_haar_dwt_split(*bands, orig_h=1, orig_w=1, dtype=x.dtype)
         assert x_rec.shape == (1, 1, 1)
         assert jnp.allclose(x_rec, x, atol=1e-6)
 
     def test_energy_conservation_inverse(self):
         """Orthogonal transform: energy(sub-bands) == energy(reconstruction)."""
         x = jr.normal(KEY, (4, 8, 8))
-        bands = haar_dwt_split_linear(x)
+        bands = haar_dwt_split(x)
         band_energy = sum(jnp.sum(b**2) for b in bands)
-        x_rec = inverse_haar_dwt_split_linear(*bands, dtype=x.dtype)
+        x_rec = inverse_haar_dwt_split(*bands, dtype=x.dtype)
         rec_energy = jnp.sum(x_rec**2)
         assert jnp.allclose(band_energy, rec_energy, rtol=1e-5)
 
