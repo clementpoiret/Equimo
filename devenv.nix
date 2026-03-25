@@ -22,9 +22,9 @@ in
     };
   };
 
-  enterShell = ''
-    . .devenv/state/venv/bin/activate
-  '';
+  # enterShell = ''
+  #   . .devenv/state/venv/bin/activate
+  # '';
 
   enterTest = "uv run pytest tests/";
 }
