@@ -1,5 +1,5 @@
 import math
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -11,26 +11,97 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from equimo.layers.norm import RMSNormGated
 from equimo.ops.scan import non_causal_linear_attn
 
+_MIXER_REGISTRY: dict[str, type[eqx.Module]] = {}
 
+
+def register_mixer(
+    name: Optional[str] = None,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new mixer modules.
+
+    Why collision checking: Prevents third-party extensions from silently
+    overwriting core layers, which can silently corrupt the computational graph.
+    """
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _MIXER_REGISTRY:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_MIXER_REGISTRY[registry_name]}."
+            )
+
+        _MIXER_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
+
+
+def get_mixer(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get a mixer `eqx.Module` class from its registered name.
+
+    This is necessary because configs have to be stringified and stored as
+    json files to allow (de)serialization.
+    """
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _MIXER_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_MIXER_REGISTRY.keys())}"
+        )
+
+    return _MIXER_REGISTRY[module_lower]
+
+
+@register_mixer()
 class Mamba2Mixer(eqx.Module):
     """Mamba2 Mixer.
 
-    This class implements the a Mamba2 Mixer using State Space Duality (SSD),
+    This class implements the Mamba2 Mixer using State Space Duality (SSD),
     from Mamba2 [1]. Also supports implementation details from Visual State Space
     Duality (VSSD) [2].
 
     Attributes:
-        in_proj (eqx.nn.Linear): Input projection layer.
-        conv (eqx.nn.Conv): Convolutional layer for processing input.
-        dt_bias (eqx.nn.Param): Bias for delta time.
-        A_log (eqx.nn.Param): Logarithm of the state transition matrix A.
-        D (eqx.nn.Param): Direct feedthrough matrix D.
-        norm (eqx.nn.RMSNorm): Root Mean Square Layer Normalization.
-        out_proj (eqx.nn.Linear): Output projection layer.
+        d_inner: Expanded inner dimension (dim * expand).
+        n_heads: Number of SSM heads.
+        head_dim: Dimension per SSM head.
+        n_groups: Number of groups for grouped B/C projections.
+        indices_xBC: Split indices for the xBC tensor.
+        in_proj: Input projection layer.
+        conv: Depthwise 1D convolution over the xBC channels.
+        dt_bias: Bias for the softplus time step.
+        A_log: Log of the SSM state-decay matrix A.
+        D: Direct skip connection per head.
+        norm: Post-SSM normalization layer.
+        out_proj: Output projection layer.
 
     Args:
-        config (MambaConfig): Configuration object for the Mamba2VisionMixer.
-        rngs (nnx.Rngs): Random number generators for parameter initialization.
+        dim: Input/output token dimension.
+        key: PRNG key for parameter initialisation.
+        expand: Channel expansion ratio for the inner dimension.
+        n_groups: Number of groups for B/C projections.
+        head_dim: Dimension per SSM head.
+        d_state: SSM state size.
+        d_conv: Depthwise convolution kernel size.
+        dt_min: Minimum time-step for initialisation.
+        dt_max: Maximum time-step for initialisation.
+        dt_init_floor: Floor for the time-step initialisation.
+        A_init_range: Uniform range for A initialisation.
+        use_bias: Whether to use bias in linear projections.
+        conv_bias: Whether to use bias in the depthwise convolution.
+        norm_layer: Normalisation class applied after the SSM. Must accept
+            ``dim`` as its sole positional argument. Use ``RMSNormGated``
+            for fused gating, or any standard norm (e.g. ``eqx.nn.LayerNorm``)
+            for additive gating via SiLU(z).
 
     Notes:
         This implementation is heavily based on wlln/scratch.
@@ -53,7 +124,7 @@ class Mamba2Mixer(eqx.Module):
     dt_bias: Float[Array, "n_heads"]
     A_log: Float[Array, "n_heads"]
     D: Float[Array, "n_heads"]
-    norm: eqx.nn.LayerNorm
+    norm: eqx.Module
     out_proj: eqx.nn.Linear
 
     def __init__(
@@ -72,6 +143,7 @@ class Mamba2Mixer(eqx.Module):
         A_init_range: Tuple[int, int] = (1, 16),
         use_bias: bool = False,
         conv_bias: bool = True,
+        norm_layer: type[eqx.Module] = eqx.nn.LayerNorm,
         **kwargs,
     ):
         key_inproj, key_outproj, key_conv, key_randvals, key_a = jr.split(key, 5)
@@ -116,7 +188,7 @@ class Mamba2Mixer(eqx.Module):
 
         self.D = jnp.ones(self.n_heads)
 
-        self.norm = eqx.nn.LayerNorm(self.d_inner)
+        self.norm = norm_layer(self.d_inner)
         self.out_proj = eqx.nn.Linear(
             self.d_inner, dim, use_bias=use_bias, key=key_outproj
         )
@@ -124,10 +196,15 @@ class Mamba2Mixer(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
+        *,
         key: PRNGKeyArray,
-        inference: Optional[bool] = None,
+        inference: bool = False,
     ) -> Float[Array, "seqlen dim"]:
-        A = -jnp.exp(self.A_log)
+        dtype = x.dtype
+
+        # Promote to float32 for numerical stability in exp/softplus
+        A = -jnp.exp(self.A_log.astype(jnp.float32))
+
         zxbcdt = jax.vmap(self.in_proj)(x)
 
         z, xbc, dt = jnp.split(
@@ -136,33 +213,36 @@ class Mamba2Mixer(eqx.Module):
             axis=-1,
         )
 
-        dt = jax.nn.softplus(dt + self.dt_bias)
+        dt = jax.nn.softplus(
+            dt.astype(jnp.float32) + self.dt_bias.astype(jnp.float32)
+        )
 
-        # Pad or truncate the xbc tensor to match the conv kernel size
-        # xbc_rearranged = rearrange(xbc, "b l d -> b d l")
-        # conv_state = pad_or_truncate_to_length(xbc_rearranged, self.config.d_conv)
-
-        # apply 1d convolution and silu activation
+        # apply 1d depthwise convolution and silu activation
         xbc_conv = rearrange(self.conv(rearrange(xbc, "s d -> d s")), "d s -> s d")
         xbc_silu = jax.nn.silu(xbc_conv[: x.shape[0], :])
 
-        # split the conv state into the conv kernel and the conv state
-        x, B, C = jnp.split(xbc_silu, self.indices_xBC, axis=-1)
+        # split the conv output into the SSM inputs
+        x_inner, B, C = jnp.split(xbc_silu, self.indices_xBC, axis=-1)
 
-        x = rearrange(x, "l (h p) -> l h p", p=self.head_dim)
+        x_inner = rearrange(x_inner, "l (h p) -> l h p", p=self.head_dim)
 
         y = non_causal_linear_attn(
-            x, dt=dt, A=A, B=B, C=C, D=self.D, n_groups=self.n_groups
+            x_inner,
+            dt=dt.astype(dtype),
+            A=A.astype(dtype),
+            B=B,
+            C=C,
+            D=self.D,
+            n_groups=self.n_groups,
         )
 
         y = rearrange(y, "l h p -> l (h p)")
 
-        # apply the output projection
+        # apply normalisation with SiLU gating
         if isinstance(self.norm, RMSNormGated):
             y = self.norm(y, jax.nn.silu(z))
         else:
-            # Should be LayerNorm
-            y = jax.vmap(self.norm)(y) * z
+            y = jax.vmap(self.norm)(y) * jax.nn.silu(z)
 
         y = jax.vmap(self.out_proj)(y)
 

@@ -59,15 +59,17 @@ def selective_scan(
     if delta_softplus:
         delta = jax.nn.softplus(delta)
 
-    # Discretize continuous parameters (A, B)
-    deltaA = jnp.exp(einsum(delta, A, "d l, d n -> l d n"))
+    # Discretize continuous parameters (A, B) — promote to float32 for exp stability
+    deltaA = jnp.exp(
+        einsum(delta.astype(jnp.float32), A.astype(jnp.float32), "d l, d n -> l d n")
+    )
     deltaB_u = einsum(delta, B, u, "d l, n l, d l -> l d n")
 
     # Define the scan function
-    def scan_fn(carry, x):
+    def scan_fn(carry, t):
         x_prev, _ = carry
-        x_next = deltaA[:, x] * x_prev + deltaB_u[:, x]
-        y = einsum(x_next, C[:, :, x], "d n, n -> d")
+        x_next = deltaA[t] * x_prev + deltaB_u[t]
+        y = einsum(x_next, C[:, t], "d n, n -> d")
         return (x_next, None), y
 
     x_init = jnp.zeros((d_in, A.shape[1]))
@@ -93,28 +95,12 @@ def segsum(x: jnp.ndarray):
     """
     T = x.shape[-1]
     x = repeat(x, "... d -> ... d e", e=T)
-    mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bool), -1)
+    mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bool_), -1)
     x = jnp.where(mask, x, 0)
     x_segsum = jnp.cumsum(x, axis=-2)
-    mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bool), 0)
+    mask = jnp.tril(jnp.ones((T, T), dtype=jnp.bool_), 0)
     x_segsum = jnp.where(mask, x_segsum, -jnp.inf)
     return x_segsum
-
-
-def find_closest_divisor(n: int, target: int):
-    """Find the closest divisor of n to the target value."""
-    divisors = jnp.arange(1, n + 1)
-    is_divisor = n % divisors == 0
-
-    # Replace non-divisors with a large value
-    large_value = jnp.iinfo(jnp.int32).max
-    valid_divisors = jnp.where(is_divisor, divisors, large_value)
-
-    # Find the index of the closest divisor
-    closest_index = jnp.argmin(jnp.abs(valid_divisors - target))
-
-    # Return the closest divisor
-    return divisors[closest_index]
 
 
 def ssd(
@@ -153,8 +139,10 @@ def ssd(
     Implementation taken from:
         https://github.com/walln/scratch/blob/ab0b6b891830375b7aa64c8e46e77783b843f5ca/src/scratch/language_modeling/mamba/mamba.py#L537
     """
-    # adjusted_chunk_size = find_closest_divisor(x.shape[0], chunk_size)
-    assert x.shape[0] % chunk_size == 0
+    if x.shape[0] % chunk_size != 0:
+        raise ValueError(
+            f"Sequence length {x.shape[0]} must be divisible by chunk_size {chunk_size}."
+        )
 
     # Rearrange into chunks
     x, A, B, C = (
@@ -164,13 +152,16 @@ def ssd(
     A = rearrange(A, "c l h -> h c l")
     A_cumsum = jnp.cumsum(A, axis=-1)
 
+    # Promote to float32 for exp stability
+    A_cumsum_f32 = A_cumsum.astype(jnp.float32)
+
     # Compute intra-chunk state (diagonal blocks)
-    L = jnp.exp(segsum(A))
+    L = jnp.exp(segsum(A_cumsum_f32))
     Y_diag = jnp.einsum("clhn, cshn, hcls, cshp -> clhp", C, B, L, x)
 
     # Compute intra-chunk state - the right term of low rank factorization of the
     # off diagonal blocks; B terms
-    decay_states = jnp.exp(A_cumsum[:, :, -1:] - A_cumsum)
+    decay_states = jnp.exp(A_cumsum_f32[:, :, -1:] - A_cumsum_f32)
     states = jnp.einsum("clhn, hcl, clhp -> chpn", B, decay_states, x)
 
     # Compute the inter-chunk SSM recurrence. Producing the correct SSM states at chunk
@@ -178,14 +169,16 @@ def ssd(
     if initial_states is None:
         initial_states = jnp.zeros_like(states[:, :1])
 
-    states = jnp.concat([initial_states, states], axis=1)
-    decay_chunk = jnp.exp(segsum(jnp.pad(A_cumsum[:, :, -1], ((0, 0), (0, 0), (1, 0)))))
+    states = jnp.concatenate([initial_states, states], axis=1)
+    decay_chunk = jnp.exp(
+        segsum(jnp.pad(A_cumsum_f32[:, :, -1], ((0, 0), (0, 0), (1, 0))))
+    )
     new_states = jnp.einsum("hzc, chpn -> zhpn", decay_chunk, states)
-    states, final_state = new_states[:, :-1], new_states[:, -1]  # TODO: check
+    states, final_state = new_states[:, :-1], new_states[:, -1]
 
     # Compute state and output conversion per chunk
     # the left term of low rank factorization of the off diagonal blocks; C terms
-    state_decay_out = jnp.exp(A_cumsum)
+    state_decay_out = jnp.exp(A_cumsum_f32)
     Y_off = jnp.einsum("clhn, chpn, hcl -> clhp", C, states, state_decay_out)
 
     # Add the output of intra-chunk and inter-chunk states
@@ -205,7 +198,7 @@ def non_causal_linear_attn(
 ):
     """Non-causal attention duality from the VSSD paper."""
     l, h, d = x.shape
-    d_state = B.shape[1]  # TODO: initially 2, check
+    d_state = B.shape[1]
     V = rearrange(x, "l h d -> h l d")
     dt = rearrange(dt, "l h -> h l")
     dA = dt[..., None] * jnp.broadcast_to(A[:, None, None], (A.shape[0], l, 1))

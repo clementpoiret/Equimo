@@ -8,6 +8,7 @@ from .ffn import (
     register_ffn,
 )
 from .generic import BlockChunk, Residual, WindowedSequence
+from .mamba import Mamba2Mixer, get_mixer, register_mixer
 from .norm import (
     DyT,
     LayerNorm2d,
@@ -39,6 +40,10 @@ __all__ = [
     "WeightNormLinear",
     "get_ffn",
     "register_ffn",
+    # Mixer
+    "Mamba2Mixer",
+    "get_mixer",
+    "register_mixer",
     # Norm
     "DyT",
     "LayerNorm2d",
