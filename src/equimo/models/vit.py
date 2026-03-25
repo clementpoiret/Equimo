@@ -56,6 +56,11 @@ __all__ = [
     "tips_vitso400m14_hr",
     "tips_vitg14_lr",
     "tips_vitg14_hr",
+    # ViT-5
+    "vit5_small",
+    "vit5_base",
+    "vit5_large",
+    "vit5_xlarge",
 ]
 
 from typing import Callable, Literal, Optional, Tuple

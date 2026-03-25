@@ -47,6 +47,8 @@ Beyond a standard ViT (e.g., DINOv2 or SigLIP), Equimo provides other SotA archi
 | LowFormer     | [LowFormer: Hardware Efficient Design for Convolutional Transformer Backbones](https://arxiv.org/abs/2409.03460)                                                | 2024 | ✅        |
 | DINOv3        | [DINOv3](https://arxiv.org/abs/2508.10104)                                                                                                                      | 2025 | ✅†       |
 | FreeNet       | [FreeNet: Liberating Depth-Wise Separable Operations for Building Faster Mobile Vision Architectures](https://ojs.aaai.org/index.php/AAAI/article/view/33041)   | 2025 | ✅‡       |
+| EUPE          | [Efficient Universal Perception Encoder](https://arxiv.org/abs/2603.22387)                                                                                      | 2026 | ✅        |
+| ViT-5         | [ViT-5: Vision Transformers for The Mid-2020s](https://arxiv.org/abs/2602.08071)                                                                                | 2026 | ✅        |
 
 \*: Only contains the [Linear Angular Attention](https://github.com/clementpoiret/Equimo/blob/f8fcc79e45ca65e9deb1d970c4286c0b8562f9c2/equimo/layers/attention.py#L1407) module. It is straightforward to build a ViT around it, but may require an additional `__call__` kwarg to control the `sparse_reg` bool.
 
@@ -87,7 +89,7 @@ Every model family ships convenience constructors that encode the canonical
 hyperparameters for each published variant. Under the hood each constructor
 resolves through a two-level registry: a shared **base config** (e.g.
 `in_channels=3`) and a **variant config** (depths, widths, …) that are merged
-before the model is instantiated.  Any key can be overridden at call time via
+before the model is instantiated. Any key can be overridden at call time via
 `**kwargs`.
 
 ```python
@@ -108,14 +110,15 @@ model = em.dinov2_vitb14(pretrained=True)
 
 ### Available variants
 
-| Family | Constructors |
-| --- | --- |
-| `VisionTransformer` | `vit_tiny/small/base/large/huge_patch{16,32}_224`, `vit_huge_patch14_224`, `dinov2_vit{s,b,l,g}14{_reg}`, `dinov3_vit*`, `siglip2_vit*`, `tips_vit*` |
-| `AttNet` | `attnet_{xxs,xs,s,t1,t2,t3,t4}` |
-| `IFormer` | `iformer_{t,s,m,m_faster,l,l_faster}` |
-| `LowFormer` | `lowformer_backbone_{b0,b1,b2,b3}` |
-| `ReduceFormer` | `reduceformer_backbone_{b1,b2,b3}` |
-| `MobileNetv3` | `mobilenetv3_{small,large}` |
+| Family              | Constructors                                                                                                                                                   |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VisionTransformer` | `vit_tiny/small/base/large/huge_patch{16,32}_224`, `vit_huge_patch14_224`, `dinov2_vit{s,b,l,g}14{_reg}`, `dinov3_vit*`, `siglip2_vit*`, `tips_vit*`, `vit5_*` |
+| `ConvNeXt`          | `convnext_*`, `eupe_convnext_tiny/small/base`                                                                                                                  |
+| `AttNet`            | `attnet_{xxs,xs,s,t1,t2,t3,t4}`                                                                                                                                |
+| `IFormer`           | `iformer_{t,s,m,m_faster,l,l_faster}`                                                                                                                          |
+| `LowFormer`         | `lowformer_backbone_{b0,b1,b2,b3}`                                                                                                                             |
+| `ReduceFormer`      | `reduceformer_backbone_{b1,b2,b3}`                                                                                                                             |
+| `MobileNetv3`       | `mobilenetv3_{small,large}`                                                                                                                                    |
 
 > `LowFormer` requires `attention_type` (`"softmax"` or `"sigmoid"`) which has
 > no sensible default and must be supplied by the caller.
@@ -459,6 +462,7 @@ The following models have pretrained weights available in Equimo:
 - [DINOv3](https://arxiv.org/abs/2508.10104)
 - [SigLIP2](https://arxiv.org/abs/2502.14786)
 - [TIPS](https://arxiv.org/abs/2410.16512)
+- [EUPE](https://arxiv.org/abs/2603.22387) (both ViT and ConvNeXt variants)
 
 Model identifiers map to filenames in Equimo's [HuggingFace repository](https://huggingface.co/poiretclement/equimo/tree/main/models/default).
 
