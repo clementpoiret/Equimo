@@ -7,6 +7,56 @@ from jaxtyping import Array, PRNGKeyArray
 
 from equimo.utils import nearest_power_of_2_divisor
 
+_WAVELET_REGISTRY: dict[str, type[eqx.Module]] = {}
+
+
+def register_wavelet(
+    name: Optional[str] = None,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new wavelet modules.
+
+    Why collision checking: Prevents third-party extensions from silently
+    overwriting core layers, which can silently corrupt the computational graph.
+    """
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _WAVELET_REGISTRY:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_WAVELET_REGISTRY[registry_name]}."
+            )
+
+        _WAVELET_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
+
+
+def get_wavelet(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get a wavelet `eqx.Module` class from its registered name.
+
+    This is necessary because configs have to be stringified and stored as
+    json files to allow (de)serialization.
+    """
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _WAVELET_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_WAVELET_REGISTRY.keys())}"
+        )
+
+    return _WAVELET_REGISTRY[module_lower]
+
 
 def _haar_1d(dtype=jnp.float32) -> Tuple[Array, Array]:
     s2 = jnp.sqrt(jnp.array(2.0, dtype=dtype))
@@ -62,6 +112,7 @@ def haar_dwt_split(
     return LL, HL, LH, HH
 
 
+@register_wavelet()
 class HWDConv(eqx.Module):
     mode: Literal["h_discard", "band_grouped", "accurate"] = eqx.field(static=True)
 
@@ -125,7 +176,10 @@ class HWDConv(eqx.Module):
     def __call__(
         self, x: Array, *, key: PRNGKeyArray, inference: bool = False
     ) -> Array:
-        LL, HL, LH, HH = haar_dwt_split(x, dtype=x.dtype)  # each (C, H/2, W/2)
+        dtype = x.dtype
+        x = x.astype(jnp.float32)
+
+        LL, HL, LH, HH = haar_dwt_split(x, dtype=jnp.float32)  # each (C, H/2, W/2)
 
         if self.mode == "h_discard":
             y = LL  # (C, H/2, W/2)
@@ -141,4 +195,4 @@ class HWDConv(eqx.Module):
 
         y = self.dropout(y, inference=inference, key=key)
 
-        return y
+        return y.astype(dtype)
