@@ -40,6 +40,37 @@ def _validate_identifier(identifier: str) -> None:
         )
 
 
+def _decompress_archive(path: Path) -> Path:
+    """Decompress a ``.tar.lz4`` archive to a sibling directory.
+
+    Uses a sentinel file (``.complete``) so interrupted extractions are
+    automatically retried on the next call.
+
+    Returns:
+        Path to the decompressed directory.
+    """
+    decompressed_dir = path.with_suffix("").with_suffix("")
+    sentinel = decompressed_dir / ".complete"
+
+    if not sentinel.exists() or (sentinel.stat().st_mtime < path.stat().st_mtime):
+        tmp_dir = Path(
+            tempfile.mkdtemp(dir=decompressed_dir.parent, prefix=".tmp_extract_")
+        )
+        try:
+            with lz4.frame.open(path, "rb") as f_in:
+                with tarfile.open(fileobj=f_in, mode="r") as tar:
+                    tar.extractall(tmp_dir, filter="data")
+            (tmp_dir / ".complete").touch()
+            if decompressed_dir.exists():
+                shutil.rmtree(decompressed_dir)
+            tmp_dir.rename(decompressed_dir)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+    return decompressed_dir
+
+
 def save_model(
     path: Path,
     model: eqx.Module,
@@ -157,6 +188,78 @@ def download(
     return path
 
 
+def _resolve_weights_dir(
+    identifier: str | None,
+    path: Path | None,
+    repository: str,
+) -> Path:
+    """Return the local directory containing ``weights.eqx``.
+
+    Handles downloading (when *identifier* is given) and decompression of
+    ``.tar.lz4`` archives transparently.
+
+    Raises:
+        ValueError: If both or neither of *identifier*/*path* are provided.
+    """
+    if identifier is None and path is None:
+        raise ValueError(
+            "Both `identifier` and `path` are None. Please provide one of them."
+        )
+    if identifier is not None and path is not None:
+        raise ValueError(
+            "Both `identifier` and `path` are defined. Please provide only one of them."
+        )
+
+    if identifier is not None:
+        path = download(identifier, repository)
+
+    if path.suffixes == [".tar", ".lz4"]:
+        logger.info("Decompressing...")
+        path = _decompress_archive(path)
+
+    return path
+
+
+def load_weights(
+    model: eqx.Module,
+    identifier: str | None = None,
+    path: Path | None = None,
+    repository: str = DEFAULT_REPOSITORY_URL,
+    inference_mode: bool = True,
+) -> eqx.Module:
+    """Deserialise saved weights into an already-constructed model.
+
+    This is the preferred loading path when using factory functions that
+    already know the model configuration.  Unlike :func:`load_model`, no
+    ``metadata.json`` is read — the caller is responsible for building the
+    model tree with the correct architecture.
+
+    Args:
+        model: A freshly-constructed model whose leaf shapes match the
+            serialised checkpoint.
+        identifier: Remote model identifier for downloading.  Mutually
+            exclusive with *path*.
+        path: Local path (directory or ``.tar.lz4`` archive) that contains
+            ``weights.eqx``.  Mutually exclusive with *identifier*.
+        repository: Base URL for model download.
+            Defaults to :data:`DEFAULT_REPOSITORY_URL`.
+        inference_mode: Pass ``True`` (default) to disable dropout for
+            evaluation; ``False`` to keep training behaviour.
+
+    Returns:
+        Model with deserialised weights.  Dtype is whatever was stored
+        (bf16 checkpoints are loaded as bf16).
+    """
+    load_path = _resolve_weights_dir(identifier, path, repository)
+    logger.info("Loading weights...")
+
+    model = eqx.tree_deserialise_leaves(load_path / "weights.eqx", model)
+    model = eqx.nn.inference_mode(model, inference_mode)
+
+    logger.info("Weights loaded successfully.")
+    return model
+
+
 def load_model(
     cls: str | type[eqx.Module],
     identifier: str | None = None,
@@ -166,6 +269,11 @@ def load_model(
     **model_kwargs,
 ) -> eqx.Module:
     """Load an Equinox model from a local path or remote repository.
+
+    .. deprecated::
+        Prefer factory functions (e.g. ``dinov2_vits14(pretrained=True)``)
+        combined with :func:`load_weights`.  This function is kept for
+        backward compatibility with archives that embed ``metadata.json``.
 
     Args:
         cls: Model class or registered name (case-insensitive). Use
@@ -189,46 +297,10 @@ def load_model(
         ValueError: If both or neither of *identifier*/*path* are given,
             or if *cls* is not a registered model name.
     """
-    if identifier is None and path is None:
-        raise ValueError(
-            "Both `identifier` and `path` are None. Please provide one of them."
-        )
-    if identifier is not None and path is not None:
-        raise ValueError(
-            "Both `identifier` and `path` are defined. Please provide only one of them."
-        )
-
-    if identifier is not None:
-        path = download(identifier, repository)
-
-    load_path = path
     model_cls = get_model_cls(cls)
     logger.info(f"Loading a {model_cls.__name__} model...")
 
-    if path.suffixes == [".tar", ".lz4"]:
-        logger.info("Decompressing...")
-        decompressed_dir = path.with_suffix("").with_suffix("")
-        sentinel = decompressed_dir / ".complete"
-
-        # Re-extract if sentinel is missing or stale, survives interrupted extractions
-        if not sentinel.exists() or (sentinel.stat().st_mtime < path.stat().st_mtime):
-            tmp_dir = Path(
-                tempfile.mkdtemp(dir=decompressed_dir.parent, prefix=".tmp_extract_")
-            )
-            try:
-                with lz4.frame.open(path, "rb") as f_in:
-                    with tarfile.open(fileobj=f_in, mode="r") as tar:
-                        tar.extractall(tmp_dir, filter="data")
-                # Write sentinel INSIDE the temp dir before the atomic swap
-                (tmp_dir / ".complete").touch()
-                if decompressed_dir.exists():
-                    shutil.rmtree(decompressed_dir)
-                tmp_dir.rename(decompressed_dir)
-            except BaseException:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                raise
-
-        load_path = decompressed_dir
+    load_path = _resolve_weights_dir(identifier, path, repository)
 
     with open(load_path / "metadata.json", "r") as f:
         metadata = json.load(f)

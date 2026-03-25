@@ -1,3 +1,4 @@
+from equimo.models.vit import dinov2_vits14_reg, dinov3_vits16_pretrain_lvd1689m
 import hashlib
 import tempfile
 from pathlib import Path
@@ -549,7 +550,7 @@ def test_save_load_model_uncompressed():
 def test_load_pretrained_model():
     """Test loading a pretrained model from the repository."""
     key = jr.PRNGKey(42)
-    model = load_model(cls="vit", identifier="dinov2_vits14_reg", dynamic_img_size=True)
+    model = dinov2_vits14_reg(pretrained=True, dynamic_img_size=True)
 
     x = jr.normal(key, (3, 224, 224))
     features = model.features(x, key=key)
@@ -562,7 +563,7 @@ def test_dinov3():
     key = jr.PRNGKey(42)
 
     x = jnp.ones((3, 64, 64))
-    model = load_model(cls="vit", identifier="dinov3_vits16_pretrain_lvd1689m")
+    model = dinov3_vits16_pretrain_lvd1689m(pretrained=True)
     y_hat = model(x, key=key)
 
     assert jnp.abs(y_hat[0] - -0.25373647) < 1e-6
@@ -584,7 +585,7 @@ def test_dinov2_vits14_reg_matches_timm():
     ref = np.load(Path(__file__).parent / "data" / "dinov2_vits14_reg_reference.npz")
 
     x = jnp.array(ref["img"])  # (3, 518, 518)
-    model = load_model(cls="vit", identifier="dinov2_vits14_reg")
+    model = dinov2_vits14_reg(pretrained=True)
     hash = _model_checksum(model)
     assert hash == "82bc53567e4565f6"
 

@@ -125,274 +125,237 @@ class IFormer(eqx.Module):
         return x
 
 
+_IFORMER_BASE_CFG: dict = {
+    "in_channels": 3,
+    "modules": [
+        "iformerblock",
+        "iformerblock",
+        "iformerblock",
+        "shmablock",
+        "iformerblock",
+        "shmablock",
+    ],
+    "downsamplers": [
+        "iformerstem",
+        "convnormdownsampler",
+        "convnormdownsampler",
+        None,
+        None,
+        "convnormdownsampler",
+    ],
+    "downsampler_kwargs": [{}, {}, {}, {}, {}, {}],
+    "downsample_last": False,
+}
+
+_IFORMER_REGISTRY: dict[str, tuple[dict, dict]] = {
+    "iformer_t": (
+        _IFORMER_BASE_CFG,
+        {
+            "dims": [32, 64, 128, 128, 128, 256],
+            "depths": [2, 2, 6, 3, 1, 2],
+            "module_kwargs": [
+                {"kernel_size": 7, "expand_ratio": 3.0},
+                {"kernel_size": 7, "expand_ratio": 3.0},
+                {"kernel_size": 7, "expand_ratio": 3.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 2,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 2.0,
+                },
+                {"kernel_size": 7, "expand_ratio": 3.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 4,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 2.0,
+                },
+            ],
+        },
+    ),
+    "iformer_s": (
+        _IFORMER_BASE_CFG,
+        {
+            "dims": [32, 64, 176, 176, 176, 320],
+            "depths": [2, 2, 9, 3, 1, 2],
+            "module_kwargs": [
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 2,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 4,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+            ],
+        },
+    ),
+    "iformer_m": (
+        _IFORMER_BASE_CFG,
+        {
+            "dims": [48, 96, 192, 192, 192, 384],
+            "depths": [2, 2, 9, 4, 1, 2],
+            "module_kwargs": [
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 2,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 4,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+            ],
+        },
+    ),
+    # TODO: share windowing to avoid intermediate resizes
+    "iformer_m_faster": (
+        _IFORMER_BASE_CFG,
+        {
+            "dims": [48, 96, 192, 192, 192, 384],
+            "depths": [2, 2, 9, 4, 1, 2],
+            "module_kwargs": [
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 2,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                    "window_size": 16,
+                },
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 4,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+            ],
+        },
+    ),
+    "iformer_l": (
+        _IFORMER_BASE_CFG,
+        {
+            "dims": [48, 96, 256, 256, 256, 384],
+            "depths": [2, 2, 8, 8, 1, 2],
+            "module_kwargs": [
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 2,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 4,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+            ],
+        },
+    ),
+    # TODO: share windowing to avoid intermediate resizes
+    "iformer_l_faster": (
+        _IFORMER_BASE_CFG,
+        {
+            "dims": [48, 96, 256, 256, 256, 384],
+            "depths": [2, 2, 8, 8, 1, 2],
+            "module_kwargs": [
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 2,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                    "window_size": 16,
+                },
+                {"kernel_size": 7, "expand_ratio": 4.0},
+                {
+                    "num_heads": 1,
+                    "head_dim_reduce_ratio": 4,
+                    "attn_ratio": 1.0,
+                    "ffn_ratio": 3.0,
+                },
+            ],
+        },
+    ),
+}
+
+
+def _build_iformer(
+    variant: str,
+    pretrained: bool = False,
+    inference_mode: bool = True,
+    key: PRNGKeyArray | None = None,
+    **overrides,
+) -> IFormer:
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    base_cfg, variant_cfg = _IFORMER_REGISTRY[variant]
+    cfg = base_cfg | variant_cfg | overrides
+    model = IFormer(**cfg, key=key)
+
+    if pretrained:
+        from equimo.io import load_weights
+
+        model = load_weights(
+            model,
+            identifier=variant,
+            inference_mode=inference_mode,
+        )
+
+    return model
+
+
 def iformer_t(**kwargs) -> IFormer:
-    backbone = IFormer(
-        modules=[
-            "iformerblock",
-            "iformerblock",
-            "iformerblock",
-            "shmablock",
-            "iformerblock",
-            "shmablock",
-        ],
-        module_kwargs=[
-            {"kernel_size": 7, "expand_ratio": 3.0},
-            {"kernel_size": 7, "expand_ratio": 3.0},
-            {"kernel_size": 7, "expand_ratio": 3.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 2,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 2.0,
-            },
-            {"kernel_size": 7, "expand_ratio": 3.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 4,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 2.0,
-            },
-        ],
-        downsamplers=[
-            "iformerstem",
-            "convnormdownsampler",
-            "convnormdownsampler",
-            None,
-            None,
-            "convnormdownsampler",
-        ],
-        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
-        downsample_last=False,
-        dims=[32, 64, 128, 128, 128, 256],
-        depths=[2, 2, 6, 3, 1, 2],
-        **kwargs,
-    )
-    return backbone
+    """IFormer-T — 32→256 dims, depths [2,2,6,3,1,2], expand_ratio 3.0."""
+    return _build_iformer("iformer_t", **kwargs)
 
 
 def iformer_s(**kwargs) -> IFormer:
-    backbone = IFormer(
-        modules=[
-            "iformerblock",
-            "iformerblock",
-            "iformerblock",
-            "shmablock",
-            "iformerblock",
-            "shmablock",
-        ],
-        module_kwargs=[
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 2,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 4,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-        ],
-        downsamplers=[
-            "iformerstem",
-            "convnormdownsampler",
-            "convnormdownsampler",
-            None,
-            None,
-            "convnormdownsampler",
-        ],
-        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
-        downsample_last=False,
-        dims=[32, 64, 176, 176, 176, 320],
-        depths=[2, 2, 9, 3, 1, 2],
-        **kwargs,
-    )
-    return backbone
+    """IFormer-S — 32→320 dims, depths [2,2,9,3,1,2], expand_ratio 4.0."""
+    return _build_iformer("iformer_s", **kwargs)
 
 
 def iformer_m(**kwargs) -> IFormer:
-    backbone = IFormer(
-        modules=[
-            "iformerblock",
-            "iformerblock",
-            "iformerblock",
-            "shmablock",
-            "iformerblock",
-            "shmablock",
-        ],
-        module_kwargs=[
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 2,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 4,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-        ],
-        downsamplers=[
-            "iformerstem",
-            "convnormdownsampler",
-            "convnormdownsampler",
-            None,
-            None,
-            "convnormdownsampler",
-        ],
-        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
-        downsample_last=False,
-        dims=[48, 96, 192, 192, 192, 384],
-        depths=[2, 2, 9, 4, 1, 2],
-        **kwargs,
-    )
-    return backbone
+    """IFormer-M — 48→384 dims, depths [2,2,9,4,1,2], expand_ratio 4.0."""
+    return _build_iformer("iformer_m", **kwargs)
 
 
-# TODO: share windowing to avoid intermediate resizes
 def iformer_m_faster(**kwargs) -> IFormer:
-    backbone = IFormer(
-        modules=[
-            "iformerblock",
-            "iformerblock",
-            "iformerblock",
-            "shmablock",
-            "iformerblock",
-            "shmablock",
-        ],
-        module_kwargs=[
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 2,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-                "window_size": 16,
-            },
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 4,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-        ],
-        downsamplers=[
-            "iformerstem",
-            "convnormdownsampler",
-            "convnormdownsampler",
-            None,
-            None,
-            "convnormdownsampler",
-        ],
-        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
-        downsample_last=False,
-        dims=[48, 96, 192, 192, 192, 384],
-        depths=[2, 2, 9, 4, 1, 2],
-        **kwargs,
-    )
-    return backbone
+    """IFormer-M (faster) — same as iformer_m with window_size=16 in stage 3."""
+    return _build_iformer("iformer_m_faster", **kwargs)
 
 
 def iformer_l(**kwargs) -> IFormer:
-    backbone = IFormer(
-        modules=[
-            "iformerblock",
-            "iformerblock",
-            "iformerblock",
-            "shmablock",
-            "iformerblock",
-            "shmablock",
-        ],
-        module_kwargs=[
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 2,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 4,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-        ],
-        downsamplers=[
-            "iformerstem",
-            "convnormdownsampler",
-            "convnormdownsampler",
-            None,
-            None,
-            "convnormdownsampler",
-        ],
-        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
-        downsample_last=False,
-        dims=[48, 96, 256, 256, 256, 384],
-        depths=[2, 2, 8, 8, 1, 2],
-        **kwargs,
-    )
-    return backbone
+    """IFormer-L — 48→384 dims, depths [2,2,8,8,1,2], expand_ratio 4.0."""
+    return _build_iformer("iformer_l", **kwargs)
 
 
 def iformer_l_faster(**kwargs) -> IFormer:
-    backbone = IFormer(
-        modules=[
-            "iformerblock",
-            "iformerblock",
-            "iformerblock",
-            "shmablock",
-            "iformerblock",
-            "shmablock",
-        ],
-        module_kwargs=[
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 2,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-                "window_size": 16,
-            },
-            {"kernel_size": 7, "expand_ratio": 4.0},
-            {
-                "num_heads": 1,
-                "head_dim_reduce_ratio": 4,
-                "attn_ratio": 1.0,
-                "ffn_ratio": 3.0,
-            },
-        ],
-        downsamplers=[
-            "iformerstem",
-            "convnormdownsampler",
-            "convnormdownsampler",
-            None,
-            None,
-            "convnormdownsampler",
-        ],
-        downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
-        downsample_last=False,
-        dims=[48, 96, 256, 256, 256, 384],
-        depths=[2, 2, 8, 8, 1, 2],
-        **kwargs,
-    )
-    return backbone
+    """IFormer-L (faster) — same as iformer_l with window_size=16 in stage 3."""
+    return _build_iformer("iformer_l_faster", **kwargs)

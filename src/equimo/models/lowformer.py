@@ -1,3 +1,4 @@
+import copy
 from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
@@ -251,85 +252,98 @@ class LowFormer(eqx.Module):
         return x
 
 
+_LOWFORMER_BASE_CFG: dict = {
+    "in_channels": 3,
+    "block_types": ["conv", "conv", "conv", "attention", "attention"],
+    "att_strides": [2, 2, 2, 2, 1],
+    "fuse_mbconv": True,
+}
+
+_LOWFORMER_REGISTRY: dict[str, tuple[dict, dict]] = {
+    "lowformer_backbone_b0": (
+        _LOWFORMER_BASE_CFG,
+        {
+            "widths": [8, 16, 32, 64, 128],
+            "depths": [0, 1, 1, 3, 4],
+            "stem_expand_ratio": 2.0,
+            "blocks_expand_ratio": 4.0,
+            "blocks_attention_expand_ratio": 4.0,
+        },
+    ),
+    "lowformer_backbone_b1": (
+        _LOWFORMER_BASE_CFG,
+        {
+            "widths": [16, 32, 64, 128, 256],
+            "depths": [1, 2, 3, 3, 4],
+            "stem_expand_ratio": 2.0,
+            "blocks_expand_ratio": 4.0,
+            "blocks_attention_expand_ratio": 4.0,
+        },
+    ),
+    "lowformer_backbone_b2": (
+        _LOWFORMER_BASE_CFG,
+        {
+            "widths": [24, 48, 96, 192, 384],
+            "depths": [1, 3, 4, 4, 6],
+            "stem_expand_ratio": 4.0,
+            "blocks_expand_ratio": 4.0,
+            "blocks_attention_expand_ratio": 6.0,
+        },
+    ),
+    "lowformer_backbone_b3": (
+        _LOWFORMER_BASE_CFG,
+        {
+            "widths": [32, 64, 128, 256, 512],
+            "depths": [1, 4, 6, 6, 9],
+            "stem_expand_ratio": 4.0,
+            "blocks_expand_ratio": 6.0,
+            "blocks_attention_expand_ratio": 6.0,
+        },
+    ),
+}
+
+
+def _build_lowformer(
+    variant: str,
+    pretrained: bool = False,
+    inference_mode: bool = True,
+    key: PRNGKeyArray | None = None,
+    **overrides,
+) -> LowFormer:
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    base_cfg, variant_cfg = _LOWFORMER_REGISTRY[variant]
+    cfg = copy.deepcopy(base_cfg | variant_cfg | overrides)
+    model = LowFormer(**cfg, key=key)
+
+    if pretrained:
+        from equimo.io import load_weights
+
+        model = load_weights(
+            model,
+            identifier=variant,
+            inference_mode=inference_mode,
+        )
+
+    return model
+
+
 def lowformer_backbone_b0(**kwargs) -> LowFormer:
-    backbone = LowFormer(
-        widths=[8, 16, 32, 64, 128],
-        depths=[0, 1, 1, 3, 4],
-        block_types=[
-            "conv",
-            "conv",
-            "conv",
-            "attention",
-            "attention",
-        ],
-        att_strides=[2, 2, 2, 2, 1],
-        stem_expand_ratio=2.0,
-        blocks_expand_ratio=4.0,
-        blocks_attention_expand_ratio=4.0,
-        fuse_mbconv=True,
-        **kwargs,
-    )
-    return backbone
+    """LowFormer-B0 — widths [8→128], depths [0,1,1,3,4], expand 4.0."""
+    return _build_lowformer("lowformer_backbone_b0", **kwargs)
 
 
 def lowformer_backbone_b1(**kwargs) -> LowFormer:
-    backbone = LowFormer(
-        widths=[16, 32, 64, 128, 256],
-        depths=[1, 2, 3, 3, 4],
-        block_types=[
-            "conv",
-            "conv",
-            "conv",
-            "attention",
-            "attention",
-        ],
-        att_strides=[2, 2, 2, 2, 1],
-        stem_expand_ratio=2.0,
-        blocks_expand_ratio=4.0,
-        blocks_attention_expand_ratio=4.0,
-        fuse_mbconv=True,
-        **kwargs,
-    )
-    return backbone
+    """LowFormer-B1 — widths [16→256], depths [1,2,3,3,4], expand 4.0."""
+    return _build_lowformer("lowformer_backbone_b1", **kwargs)
 
 
 def lowformer_backbone_b2(**kwargs) -> LowFormer:
-    backbone = LowFormer(
-        widths=[24, 48, 96, 192, 384],
-        depths=[1, 3, 4, 4, 6],
-        block_types=[
-            "conv",
-            "conv",
-            "conv",
-            "attention",
-            "attention",
-        ],
-        att_strides=[2, 2, 2, 2, 1],
-        stem_expand_ratio=4.0,
-        blocks_expand_ratio=4.0,
-        blocks_attention_expand_ratio=6.0,
-        fuse_mbconv=True,
-        **kwargs,
-    )
-    return backbone
+    """LowFormer-B2 — widths [24→384], depths [1,3,4,4,6], expand 4.0/6.0."""
+    return _build_lowformer("lowformer_backbone_b2", **kwargs)
 
 
 def lowformer_backbone_b3(**kwargs) -> LowFormer:
-    backbone = LowFormer(
-        widths=[32, 64, 128, 256, 512],
-        depths=[1, 4, 6, 6, 9],
-        block_types=[
-            "conv",
-            "conv",
-            "conv",
-            "attention",
-            "attention",
-        ],
-        att_strides=[2, 2, 2, 2, 1],
-        stem_expand_ratio=4.0,
-        blocks_expand_ratio=6.0,
-        blocks_attention_expand_ratio=6.0,
-        fuse_mbconv=True,
-        **kwargs,
-    )
-    return backbone
+    """LowFormer-B3 — widths [32→512], depths [1,4,6,6,9], expand 6.0."""
+    return _build_lowformer("lowformer_backbone_b3", **kwargs)

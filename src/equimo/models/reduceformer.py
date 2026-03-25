@@ -1,3 +1,4 @@
+import copy
 from typing import Callable, Literal, Optional, Tuple
 
 import equinox as eqx
@@ -277,52 +278,75 @@ class ReduceFormer(eqx.Module):
         return x
 
 
+_REDUCEFORMER_BASE_CFG: dict = {
+    "in_channels": 3,
+    "block_types": ["conv", "conv", "conv", "attention", "attention"],
+}
+
+_REDUCEFORMER_REGISTRY: dict[str, tuple[dict, dict]] = {
+    "reduceformer_backbone_b1": (
+        _REDUCEFORMER_BASE_CFG,
+        {
+            "widths": [16, 32, 64, 128, 256],
+            "depths": [1, 2, 3, 3, 4],
+            "head_dim": 16,
+        },
+    ),
+    "reduceformer_backbone_b2": (
+        _REDUCEFORMER_BASE_CFG,
+        {
+            "widths": [24, 48, 96, 192, 384],
+            "depths": [1, 3, 4, 4, 6],
+            "head_dim": 32,
+        },
+    ),
+    "reduceformer_backbone_b3": (
+        _REDUCEFORMER_BASE_CFG,
+        {
+            "widths": [32, 64, 128, 256, 512],
+            "depths": [1, 4, 6, 6, 9],
+            "head_dim": 32,
+        },
+    ),
+}
+
+
+def _build_reduceformer(
+    variant: str,
+    pretrained: bool = False,
+    inference_mode: bool = True,
+    key: PRNGKeyArray | None = None,
+    **overrides,
+) -> ReduceFormer:
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    base_cfg, variant_cfg = _REDUCEFORMER_REGISTRY[variant]
+    cfg = copy.deepcopy(base_cfg | variant_cfg | overrides)
+    model = ReduceFormer(**cfg, key=key)
+
+    if pretrained:
+        from equimo.io import load_weights
+
+        model = load_weights(
+            model,
+            identifier=variant,
+            inference_mode=inference_mode,
+        )
+
+    return model
+
+
 def reduceformer_backbone_b1(**kwargs) -> ReduceFormer:
-    backbone = ReduceFormer(
-        widths=[16, 32, 64, 128, 256],
-        depths=[1, 2, 3, 3, 4],
-        block_types=[
-            "conv",
-            "conv",
-            "conv",
-            "attention",
-            "attention",
-        ],
-        head_dim=16,
-        **kwargs,
-    )
-    return backbone
+    """ReduceFormer-B1 — widths [16→256], depths [1,2,3,3,4], head_dim 16."""
+    return _build_reduceformer("reduceformer_backbone_b1", **kwargs)
 
 
 def reduceformer_backbone_b2(**kwargs) -> ReduceFormer:
-    backbone = ReduceFormer(
-        widths=[24, 48, 96, 192, 384],
-        depths=[1, 3, 4, 4, 6],
-        block_types=[
-            "conv",
-            "conv",
-            "conv",
-            "attention",
-            "attention",
-        ],
-        head_dim=32,
-        **kwargs,
-    )
-    return backbone
+    """ReduceFormer-B2 — widths [24→384], depths [1,3,4,4,6], head_dim 32."""
+    return _build_reduceformer("reduceformer_backbone_b2", **kwargs)
 
 
 def reduceformer_backbone_b3(**kwargs) -> ReduceFormer:
-    backbone = ReduceFormer(
-        widths=[32, 64, 128, 256, 512],
-        depths=[1, 4, 6, 6, 9],
-        block_types=[
-            "conv",
-            "conv",
-            "conv",
-            "attention",
-            "attention",
-        ],
-        head_dim=32,
-        **kwargs,
-    )
-    return backbone
+    """ReduceFormer-B3 — widths [32→512], depths [1,4,6,6,9], head_dim 32."""
+    return _build_reduceformer("reduceformer_backbone_b3", **kwargs)

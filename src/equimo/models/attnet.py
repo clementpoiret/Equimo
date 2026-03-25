@@ -113,91 +113,135 @@ class AttNet(eqx.Module):
         return x
 
 
+_ATTNET_BASE_CFG: dict = {
+    "in_channels": 3,
+    "exp_rates": [8, 8, 4, 4],
+    "glu_dwconv": [True, True, True, True],
+    "kernel_sizes": [3, 3, 3, 3],
+}
+
+_ATTNET_REGISTRY: dict[str, tuple[dict, dict]] = {
+    "attnet_xxs": (
+        _ATTNET_BASE_CFG,
+        {
+            "depths": [2, 2, 4, 2],
+            "dims": [32, 64, 128, 240],
+            "glu_norm": [False, False, False, False],
+            "drop_path_rate": 0.02,
+            "use_layer_scale": False,
+        },
+    ),
+    "attnet_xs": (
+        _ATTNET_BASE_CFG,
+        {
+            "depths": [2, 2, 7, 2],
+            "dims": [40, 80, 160, 320],
+            "glu_norm": [False, False, False, False],
+            "drop_path_rate": 0.02,
+            "use_layer_scale": True,
+        },
+    ),
+    "attnet_s": (
+        _ATTNET_BASE_CFG,
+        {
+            "depths": [2, 3, 10, 3],
+            "dims": [40, 80, 160, 320],
+            "glu_norm": [False, False, False, False],
+            "drop_path_rate": 0.1,
+            "use_layer_scale": False,
+        },
+    ),
+    "attnet_t1": (
+        _ATTNET_BASE_CFG,
+        {
+            "depths": [2, 3, 12, 3],
+            "dims": [48, 96, 224, 384],
+            "drop_path_rate": 0.1,
+        },
+    ),
+    "attnet_t2": (
+        _ATTNET_BASE_CFG,
+        {
+            "depths": [3, 3, 16, 3],
+            "dims": [64, 128, 288, 512],
+            "drop_path_rate": 0.2,
+        },
+    ),
+    "attnet_t3": (
+        _ATTNET_BASE_CFG,
+        {
+            "depths": [4, 4, 26, 4],
+            "dims": [72, 144, 320, 576],
+            "drop_path_rate": 0.4,
+        },
+    ),
+    "attnet_t4": (
+        _ATTNET_BASE_CFG,
+        {
+            "depths": [5, 5, 28, 5],
+            "dims": [96, 192, 384, 768],
+            "drop_path_rate": 0.5,
+        },
+    ),
+}
+
+
+def _build_attnet(
+    variant: str,
+    pretrained: bool = False,
+    inference_mode: bool = True,
+    key: PRNGKeyArray | None = None,
+    **overrides,
+) -> AttNet:
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    base_cfg, variant_cfg = _ATTNET_REGISTRY[variant]
+    cfg = base_cfg | variant_cfg | overrides
+    model = AttNet(**cfg, key=key)
+
+    if pretrained:
+        from equimo.io import load_weights
+
+        model = load_weights(
+            model,
+            identifier=variant,
+            inference_mode=inference_mode,
+        )
+
+    return model
+
+
 def attnet_xxs(**kwargs) -> AttNet:
-    return AttNet(
-        depths=[2, 2, 4, 2],
-        dims=[32, 64, 128, 240],
-        exp_rates=[8, 8, 4, 4],
-        glu_dwconv=[True, True, True, True],
-        glu_norm=[False, False, False, False],
-        kernel_sizes=[3, 3, 3, 3],
-        drop_path_rate=0.02,
-        use_layer_scale=False,
-        **kwargs,
-    )
+    """AttNet-XXS — 32→240 dims, depths [2,2,4,2], drop_path 0.02."""
+    return _build_attnet("attnet_xxs", **kwargs)
 
 
 def attnet_xs(**kwargs) -> AttNet:
-    return AttNet(
-        depths=[2, 2, 7, 2],
-        dims=[40, 80, 160, 320],
-        exp_rates=[8, 8, 4, 4],
-        glu_dwconv=[True, True, True, True],
-        glu_norm=[False, False, False, False],
-        kernel_sizes=[3, 3, 3, 3],
-        drop_path_rate=0.02,
-        use_layer_scale=True,
-        **kwargs,
-    )
+    """AttNet-XS — 40→320 dims, depths [2,2,7,2], drop_path 0.02."""
+    return _build_attnet("attnet_xs", **kwargs)
 
 
 def attnet_s(**kwargs) -> AttNet:
-    return AttNet(
-        depths=[2, 3, 10, 3],
-        dims=[40, 80, 160, 320],
-        exp_rates=[8, 8, 4, 4],
-        glu_dwconv=[True, True, True, True],
-        glu_norm=[False, False, False, False],
-        kernel_sizes=[3, 3, 3, 3],
-        drop_path_rate=0.1,
-        use_layer_scale=False,
-        **kwargs,
-    )
+    """AttNet-S — 40→320 dims, depths [2,3,10,3], drop_path 0.1."""
+    return _build_attnet("attnet_s", **kwargs)
 
 
 def attnet_t1(**kwargs) -> AttNet:
-    return AttNet(
-        depths=[2, 3, 12, 3],
-        dims=[48, 96, 224, 384],
-        exp_rates=[8, 8, 4, 4],
-        glu_dwconv=[True, True, True, True],
-        kernel_sizes=[3, 3, 3, 3],
-        drop_path_rate=0.1,
-        **kwargs,
-    )
+    """AttNet-T1 — 48→384 dims, depths [2,3,12,3], drop_path 0.1."""
+    return _build_attnet("attnet_t1", **kwargs)
 
 
 def attnet_t2(**kwargs) -> AttNet:
-    return AttNet(
-        depths=[3, 3, 16, 3],
-        dims=[64, 128, 288, 512],
-        exp_rates=[8, 8, 4, 4],
-        glu_dwconv=[True, True, True, True],
-        kernel_sizes=[3, 3, 3, 3],
-        drop_path_rate=0.2,
-        **kwargs,
-    )
+    """AttNet-T2 — 64→512 dims, depths [3,3,16,3], drop_path 0.2."""
+    return _build_attnet("attnet_t2", **kwargs)
 
 
 def attnet_t3(**kwargs) -> AttNet:
-    return AttNet(
-        depths=[4, 4, 26, 4],
-        dims=[72, 144, 320, 576],
-        exp_rates=[8, 8, 4, 4],
-        glu_dwconv=[True, True, True, True],
-        kernel_sizes=[3, 3, 3, 3],
-        drop_path_rate=0.4,
-        **kwargs,
-    )
+    """AttNet-T3 — 72→576 dims, depths [4,4,26,4], drop_path 0.4."""
+    return _build_attnet("attnet_t3", **kwargs)
 
 
 def attnet_t4(**kwargs) -> AttNet:
-    return AttNet(
-        depths=[5, 5, 28, 5],
-        dims=[96, 192, 384, 768],
-        exp_rates=[8, 8, 4, 4],
-        glu_dwconv=[True, True, True, True],
-        kernel_sizes=[3, 3, 3, 3],
-        drop_path_rate=0.5,
-        **kwargs,
-    )
+    """AttNet-T4 — 96→768 dims, depths [5,5,28,5], drop_path 0.5."""
+    return _build_attnet("attnet_t4", **kwargs)

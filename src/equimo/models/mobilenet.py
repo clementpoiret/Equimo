@@ -95,45 +95,85 @@ class MobileNetv3(eqx.Module):
         return x
 
 
+_MOBILENET_BASE_CFG: dict = {
+    "in_channels": 3,
+}
+
+_MOBILENET_REGISTRY: dict[str, tuple[dict, dict]] = {
+    "mobilenetv3_small": (
+        _MOBILENET_BASE_CFG,
+        {
+            "layers_config": [
+                (16, 16, 3, 2, True, "relu"),
+                (24, 72, 3, 2, False, "relu"),
+                (24, 88, 3, 1, False, "relu"),
+                (40, 96, 5, 2, True, "hard_swish"),
+                (40, 240, 5, 1, True, "hard_swish"),
+                (40, 240, 5, 1, True, "hard_swish"),
+                (48, 120, 5, 1, True, "hard_swish"),
+                (48, 144, 5, 1, True, "hard_swish"),
+                (96, 288, 5, 2, True, "hard_swish"),
+                (96, 576, 5, 1, True, "hard_swish"),
+                (96, 576, 5, 1, True, "hard_swish"),
+            ],
+        },
+    ),
+    "mobilenetv3_large": (
+        _MOBILENET_BASE_CFG,
+        {
+            "layers_config": [
+                (16, 16, 3, 1, False, "relu"),
+                (24, 64, 3, 2, False, "relu"),
+                (24, 72, 3, 1, False, "relu"),
+                (40, 72, 5, 2, True, "relu"),
+                (40, 120, 5, 1, True, "relu"),
+                (40, 120, 5, 1, True, "relu"),
+                (80, 240, 3, 2, False, "hard_swish"),
+                (80, 200, 3, 1, False, "hard_swish"),
+                (80, 184, 3, 1, False, "hard_swish"),
+                (80, 184, 3, 1, False, "hard_swish"),
+                (112, 480, 3, 1, True, "hard_swish"),
+                (112, 672, 3, 1, True, "hard_swish"),
+                (160, 672, 5, 2, True, "hard_swish"),
+                (160, 960, 5, 1, True, "hard_swish"),
+                (160, 960, 5, 1, True, "hard_swish"),
+            ],
+        },
+    ),
+}
+
+
+def _build_mobilenet(
+    variant: str,
+    pretrained: bool = False,
+    inference_mode: bool = True,
+    key: PRNGKeyArray | None = None,
+    **overrides,
+) -> MobileNetv3:
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    base_cfg, variant_cfg = _MOBILENET_REGISTRY[variant]
+    cfg = base_cfg | variant_cfg | overrides
+    model = MobileNetv3(**cfg, key=key)
+
+    if pretrained:
+        from equimo.io import load_weights
+
+        model = load_weights(
+            model,
+            identifier=variant,
+            inference_mode=inference_mode,
+        )
+
+    return model
+
+
 def mobilenetv3_small(**kwargs) -> MobileNetv3:
-    backbone = MobileNetv3(
-        layers_config=[
-            (16, 16, 3, 2, True, "relu"),
-            (24, 72, 3, 2, False, "relu"),
-            (24, 88, 3, 1, False, "relu"),
-            (40, 96, 5, 2, True, "hard_swish"),
-            (40, 240, 5, 1, True, "hard_swish"),
-            (40, 240, 5, 1, True, "hard_swish"),
-            (48, 120, 5, 1, True, "hard_swish"),
-            (48, 144, 5, 1, True, "hard_swish"),
-            (96, 288, 5, 2, True, "hard_swish"),
-            (96, 576, 5, 1, True, "hard_swish"),
-            (96, 576, 5, 1, True, "hard_swish"),
-        ],
-        **kwargs,
-    )
-    return backbone
+    """MobileNetV3-Small — 11 MBConv blocks, last_channels 1280."""
+    return _build_mobilenet("mobilenetv3_small", **kwargs)
 
 
 def mobilenetv3_large(**kwargs) -> MobileNetv3:
-    backbone = MobileNetv3(
-        layers_config=[
-            (16, 16, 3, 1, False, "relu"),
-            (24, 64, 3, 2, False, "relu"),
-            (24, 72, 3, 1, False, "relu"),
-            (40, 72, 5, 2, True, "relu"),
-            (40, 120, 5, 1, True, "relu"),
-            (40, 120, 5, 1, True, "relu"),
-            (80, 240, 3, 2, False, "hard_swish"),
-            (80, 200, 3, 1, False, "hard_swish"),
-            (80, 184, 3, 1, False, "hard_swish"),
-            (80, 184, 3, 1, False, "hard_swish"),
-            (112, 480, 3, 1, True, "hard_swish"),
-            (112, 672, 3, 1, True, "hard_swish"),
-            (160, 672, 5, 2, True, "hard_swish"),
-            (160, 960, 5, 1, True, "hard_swish"),
-            (160, 960, 5, 1, True, "hard_swish"),
-        ],
-        **kwargs,
-    )
-    return backbone
+    """MobileNetV3-Large — 15 MBConv blocks, last_channels 1280."""
+    return _build_mobilenet("mobilenetv3_large", **kwargs)

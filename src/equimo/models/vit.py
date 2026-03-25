@@ -17,7 +17,7 @@ from equimo.layers.ffn import get_ffn
 from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.layers.patch import PatchEmbedding
-from equimo.layers.posemb import DinoRoPE, LearnedPosEmbed
+from equimo.layers.posemb import DinoRoPE, LearnedPosEmbed, VisionRoPE
 from equimo.models.registry import register_model
 from equimo.utils import pool_sd, to_list
 
@@ -392,3 +392,687 @@ class VisionTransformer(eqx.Module):
         x = self.head(x)
 
         return x
+
+
+_VIT_BASE_CFG: dict = {
+    "img_size": 224,
+    "in_channels": 3,
+    "num_classes": 1000,
+    "reg_tokens": 0,
+    "use_mask_token": False,
+    "dynamic_img_size": False,
+    "act_layer": "gelu",
+}
+_DINOV2_BASE_CFG: dict = {
+    "img_size": 518,
+    "in_channels": 3,
+    "patch_size": 14,
+    "num_classes": 0,
+    "use_mask_token": True,
+    "init_values": 1e-5,
+    "eps": 1e-6,
+    "dynamic_img_size": False,
+    "act_layer": "exactgelu",
+}
+_DINOV3_BASE_CFG: dict = {
+    "img_size": 224,
+    "in_channels": 3,
+    "patch_size": 16,
+    "num_classes": 0,
+    "use_mask_token": True,
+    "use_rope_pos_embed": True,
+    "reg_tokens": 4,
+    "init_values": 1e-5,
+    "eps": 1e-5,
+    "dynamic_img_size": True,
+    "act_layer": "exactgelu",
+}
+_SIGLIP2_BASE_CFG: dict = {
+    "img_size": 384,
+    "in_channels": 3,
+    "patch_size": 16,
+    "num_classes": 0,
+    "use_mask_token": False,
+    "reg_tokens": 0,
+    "class_token": False,
+    "no_embed_class": True,
+    "init_values": None,
+    "eps": 1e-6,
+    "dynamic_img_size": False,
+    "act_layer": "gelu",
+}
+_TIPS_BASE_CFG: dict = {
+    "in_channels": 3,
+    "patch_size": 14,
+    "num_classes": 0,
+    "use_mask_token": True,
+    "reg_tokens": 1,
+    "init_values": 1e-5,
+    "eps": 1e-6,
+    "dynamic_img_size": False,
+    "act_layer": "exactgelu",
+}
+_VIT5_BASE_CFG: dict = {
+    "img_size": 224,
+    "in_channels": 3,
+    "patch_size": 16,
+    "num_classes": 1000,
+    "reg_tokens": 4,
+    "use_mask_token": False,
+    "dynamic_img_size": False,
+    "act_layer": "gelu",
+    "use_rope_pos_embed": True,
+    "init_values": 1e-4,
+    "norm_layer": "rmsnorm",
+    "qkv_bias": False,
+    "qk_norm": True,
+}
+
+_VIT_REGISTRY: dict[str, tuple[dict, dict]] = {
+    # Standard ViT (Dosovitskiy et al. + DeiT-III Ti/S)
+    "vit_tiny_patch16_224": (
+        _VIT_BASE_CFG,
+        {"dim": 192, "patch_size": 16, "num_heads": [3], "depths": [12]},
+    ),
+    "vit_tiny_patch32_224": (
+        _VIT_BASE_CFG,
+        {"dim": 192, "patch_size": 32, "num_heads": [3], "depths": [12]},
+    ),
+    "vit_small_patch16_224": (
+        _VIT_BASE_CFG,
+        {"dim": 384, "patch_size": 16, "num_heads": [6], "depths": [12]},
+    ),
+    "vit_small_patch32_224": (
+        _VIT_BASE_CFG,
+        {"dim": 384, "patch_size": 32, "num_heads": [6], "depths": [12]},
+    ),
+    "vit_base_patch16_224": (
+        _VIT_BASE_CFG,
+        {"dim": 768, "patch_size": 16, "num_heads": [12], "depths": [12]},
+    ),
+    "vit_base_patch32_224": (
+        _VIT_BASE_CFG,
+        {"dim": 768, "patch_size": 32, "num_heads": [12], "depths": [12]},
+    ),
+    "vit_large_patch16_224": (
+        _VIT_BASE_CFG,
+        {"dim": 1024, "patch_size": 16, "num_heads": [16], "depths": [24]},
+    ),
+    "vit_large_patch32_224": (
+        _VIT_BASE_CFG,
+        {"dim": 1024, "patch_size": 32, "num_heads": [16], "depths": [24]},
+    ),
+    "vit_huge_patch14_224": (
+        _VIT_BASE_CFG,
+        {"dim": 1280, "patch_size": 14, "num_heads": [16], "depths": [32]},
+    ),
+    "vit_huge_patch16_224": (
+        _VIT_BASE_CFG,
+        {"dim": 1280, "patch_size": 16, "num_heads": [16], "depths": [32]},
+    ),
+    # DINOv2
+    "dinov2_vits14": (
+        _DINOV2_BASE_CFG,
+        {"dim": 384, "num_heads": [6], "depths": [12], "reg_tokens": 0},
+    ),
+    "dinov2_vits14_reg": (
+        _DINOV2_BASE_CFG,
+        {"dim": 384, "num_heads": [6], "depths": [12], "reg_tokens": 4},
+    ),
+    "dinov2_vitb14": (
+        _DINOV2_BASE_CFG,
+        {"dim": 768, "num_heads": [12], "depths": [12], "reg_tokens": 0},
+    ),
+    "dinov2_vitb14_reg": (
+        _DINOV2_BASE_CFG,
+        {"dim": 768, "num_heads": [12], "depths": [12], "reg_tokens": 4},
+    ),
+    "dinov2_vitl14": (
+        _DINOV2_BASE_CFG,
+        {"dim": 1024, "num_heads": [16], "depths": [24], "reg_tokens": 0},
+    ),
+    "dinov2_vitl14_reg": (
+        _DINOV2_BASE_CFG,
+        {"dim": 1024, "num_heads": [16], "depths": [24], "reg_tokens": 4},
+    ),
+    "dinov2_vitg14": (
+        _DINOV2_BASE_CFG,
+        {
+            "dim": 1536,
+            "num_heads": [24],
+            "depths": [40],
+            "reg_tokens": 0,
+            "ffn_layer": "swiglufused",
+        },
+    ),
+    "dinov2_vitg14_reg": (
+        _DINOV2_BASE_CFG,
+        {
+            "dim": 1536,
+            "num_heads": [24],
+            "depths": [40],
+            "reg_tokens": 4,
+            "ffn_layer": "swiglufused",
+        },
+    ),
+    # DINOv3 (LVD-1689M)
+    "dinov3_vits16_pretrain_lvd1689m": (
+        _DINOV3_BASE_CFG,
+        {"dim": 384, "num_heads": 6, "depths": [12]},
+    ),
+    "dinov3_vits16plus_pretrain_lvd1689m": (
+        _DINOV3_BASE_CFG,
+        {
+            "dim": 384,
+            "num_heads": 6,
+            "depths": [12],
+            "mlp_ratio": 6.0,
+            "ffn_layer": "swiglu",
+        },
+    ),
+    "dinov3_vitb16_pretrain_lvd1689m": (
+        _DINOV3_BASE_CFG,
+        {"dim": 768, "num_heads": 12, "depths": [12]},
+    ),
+    "dinov3_vitl16_pretrain_lvd1689m": (
+        _DINOV3_BASE_CFG,
+        {"dim": 1024, "num_heads": 16, "depths": [24]},
+    ),
+    "dinov3_vith16plus_pretrain_lvd1689m": (
+        _DINOV3_BASE_CFG,
+        {
+            "dim": 1280,
+            "num_heads": 20,
+            "depths": [32],
+            "mlp_ratio": 6.0,
+            "ffn_layer": "swiglu",
+        },
+    ),
+    "dinov3_vit7b16_pretrain_lvd1689m": (
+        _DINOV3_BASE_CFG,
+        {
+            "dim": 4096,
+            "num_heads": 32,
+            "depths": [40],
+            "mlp_ratio": 3.0,
+            "untie_global_and_local_cls_norm": True,
+            "ffn_layer": "swiglu",
+            "ffn_kwargs": {"align_to": 64},
+        },
+    ),
+    # DINOv3 (SAT-493M)
+    "dinov3_vitl16_pretrain_sat493m": (
+        _DINOV3_BASE_CFG,
+        {
+            "dim": 1024,
+            "num_heads": 16,
+            "depths": [24],
+            "untie_global_and_local_cls_norm": True,
+        },
+    ),
+    "dinov3_vit7b16_pretrain_sat493m": (
+        _DINOV3_BASE_CFG,
+        {
+            "dim": 4096,
+            "num_heads": 32,
+            "depths": [40],
+            "mlp_ratio": 3.0,
+            "untie_global_and_local_cls_norm": True,
+            "ffn_layer": "swiglu",
+            "ffn_kwargs": {"align_to": 64},
+        },
+    ),
+    # SigLIP2
+    "siglip2_vitb16_224": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 224, "dim": 768, "num_heads": [12], "depths": [12]},
+    ),
+    "siglip2_vitb16_256": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 256, "dim": 768, "num_heads": [12], "depths": [12]},
+    ),
+    "siglip2_vitb16_384": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 384, "dim": 768, "num_heads": [12], "depths": [12]},
+    ),
+    "siglip2_vitb16_512": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 512, "dim": 768, "num_heads": [12], "depths": [12]},
+    ),
+    "siglip2_vitb32_256": (
+        _SIGLIP2_BASE_CFG,
+        {
+            "img_size": 256,
+            "patch_size": 32,
+            "dim": 768,
+            "num_heads": [12],
+            "depths": [12],
+        },
+    ),
+    "siglip2_vitl16_256": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 256, "dim": 1024, "num_heads": [16], "depths": [24]},
+    ),
+    "siglip2_vitl16_384": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 384, "dim": 1024, "num_heads": [16], "depths": [24]},
+    ),
+    "siglip2_vitl16_512": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 512, "dim": 1024, "num_heads": [16], "depths": [24]},
+    ),
+    "siglip2_vitso400m14_224": (
+        _SIGLIP2_BASE_CFG,
+        {
+            "img_size": 224,
+            "patch_size": 14,
+            "dim": 1152,
+            "num_heads": [16],
+            "depths": [27],
+            "mlp_ratio": 4304 / 1152,
+        },
+    ),
+    "siglip2_vitso400m14_378": (
+        _SIGLIP2_BASE_CFG,
+        {
+            "img_size": 378,
+            "patch_size": 14,
+            "dim": 1152,
+            "num_heads": [16],
+            "depths": [27],
+            "mlp_ratio": 4304 / 1152,
+        },
+    ),
+    "siglip2_vitso400m16_256": (
+        _SIGLIP2_BASE_CFG,
+        {
+            "img_size": 256,
+            "dim": 1152,
+            "num_heads": [16],
+            "depths": [27],
+            "mlp_ratio": 4304 / 1152,
+        },
+    ),
+    "siglip2_vitso400m16_384": (
+        _SIGLIP2_BASE_CFG,
+        {
+            "img_size": 384,
+            "dim": 1152,
+            "num_heads": [16],
+            "depths": [27],
+            "mlp_ratio": 4304 / 1152,
+        },
+    ),
+    "siglip2_vitso400m16_512": (
+        _SIGLIP2_BASE_CFG,
+        {
+            "img_size": 512,
+            "dim": 1152,
+            "num_heads": [16],
+            "depths": [27],
+            "mlp_ratio": 4304 / 1152,
+        },
+    ),
+    "siglip2_vitgiantopt16_256": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 256, "dim": 1536, "num_heads": [16], "depths": [40]},
+    ),
+    "siglip2_vitgiantopt16_384": (
+        _SIGLIP2_BASE_CFG,
+        {"img_size": 384, "dim": 1536, "num_heads": [16], "depths": [40]},
+    ),
+    # TIPS
+    "tips_vits14_hr": (
+        _TIPS_BASE_CFG,
+        {"img_size": 448, "dim": 384, "num_heads": [6], "depths": [12]},
+    ),
+    "tips_vitb14_hr": (
+        _TIPS_BASE_CFG,
+        {"img_size": 448, "dim": 768, "num_heads": [12], "depths": [12]},
+    ),
+    "tips_vitl14_hr": (
+        _TIPS_BASE_CFG,
+        {"img_size": 448, "dim": 1024, "num_heads": [16], "depths": [24]},
+    ),
+    "tips_vitso400m14_hr": (
+        _TIPS_BASE_CFG,
+        {
+            "img_size": 448,
+            "dim": 1152,
+            "num_heads": [16],
+            "depths": [27],
+            "mlp_ratio": 4304 / 1152,
+        },
+    ),
+    "tips_vitg14_lr": (
+        _TIPS_BASE_CFG,
+        {
+            "img_size": 224,
+            "dim": 1536,
+            "num_heads": [24],
+            "depths": [40],
+            "ffn_layer": "swiglufused",
+        },
+    ),
+    "tips_vitg14_hr": (
+        _TIPS_BASE_CFG,
+        {
+            "img_size": 448,
+            "dim": 1536,
+            "num_heads": [24],
+            "depths": [40],
+            "ffn_layer": "swiglufused",
+        },
+    ),
+}
+
+
+def _build_vit(
+    variant: str,
+    pretrained: bool = False,
+    inference_mode: bool = True,
+    key: PRNGKeyArray | None = None,
+    **overrides,
+) -> VisionTransformer:
+    """Construct a :class:`VisionTransformer` from the unified registry and
+    optionally load pretrained weights.
+
+    Args:
+        variant: A key in :data:`_VIT_REGISTRY`.
+        pretrained: If ``True``, download and deserialise the pretrained
+            checkpoint from the default repository.
+        inference_mode: Passed to :func:`equimo.io.load_weights` when
+            *pretrained* is ``True``.  Defaults to ``True``.
+        key: PRNG key for parameter initialisation.  Defaults to
+            ``PRNGKey(42)`` when ``None``.
+        **overrides: Extra keyword arguments merged into the model config,
+            overriding stored defaults (e.g. ``num_classes=10``).
+
+    Returns:
+        A :class:`VisionTransformer` instance.
+
+    Raises:
+        KeyError: If *variant* is not found in the registry.
+    """
+    if key is None:
+        key = jax.random.PRNGKey(42)
+
+    base_cfg, variant_cfg = _VIT_REGISTRY[variant]
+    cfg = base_cfg | variant_cfg | overrides
+    model = VisionTransformer(**cfg, key=key)
+
+    if pretrained:
+        from equimo.io import load_weights
+
+        model = load_weights(
+            model,
+            identifier=variant,
+            inference_mode=inference_mode,
+        )
+
+    return model
+
+
+def vit_tiny_patch16_224(**kwargs) -> VisionTransformer:
+    """ViT-Ti/16 — 192-dim, 3 heads, 12 blocks, patch 16, 224*224."""
+    return _build_vit("vit_tiny_patch16_224", **kwargs)
+
+
+def vit_tiny_patch32_224(**kwargs) -> VisionTransformer:
+    """ViT-Ti/32 — 192-dim, 3 heads, 12 blocks, patch 32, 224*224."""
+    return _build_vit("vit_tiny_patch32_224", **kwargs)
+
+
+def vit_small_patch16_224(**kwargs) -> VisionTransformer:
+    """ViT-S/16 — 384-dim, 6 heads, 12 blocks, patch 16, 224*224."""
+    return _build_vit("vit_small_patch16_224", **kwargs)
+
+
+def vit_small_patch32_224(**kwargs) -> VisionTransformer:
+    """ViT-S/32 — 384-dim, 6 heads, 12 blocks, patch 32, 224*224."""
+    return _build_vit("vit_small_patch32_224", **kwargs)
+
+
+def vit_base_patch16_224(**kwargs) -> VisionTransformer:
+    """ViT-B/16 — 768-dim, 12 heads, 12 blocks, patch 16, 224*224."""
+    return _build_vit("vit_base_patch16_224", **kwargs)
+
+
+def vit_base_patch32_224(**kwargs) -> VisionTransformer:
+    """ViT-B/32 — 768-dim, 12 heads, 12 blocks, patch 32, 224*224."""
+    return _build_vit("vit_base_patch32_224", **kwargs)
+
+
+def vit_large_patch16_224(**kwargs) -> VisionTransformer:
+    """ViT-L/16 — 1024-dim, 16 heads, 24 blocks, patch 16, 224*224."""
+    return _build_vit("vit_large_patch16_224", **kwargs)
+
+
+def vit_large_patch32_224(**kwargs) -> VisionTransformer:
+    """ViT-L/32 — 1024-dim, 16 heads, 24 blocks, patch 32, 224*224."""
+    return _build_vit("vit_large_patch32_224", **kwargs)
+
+
+def vit_huge_patch14_224(**kwargs) -> VisionTransformer:
+    """ViT-H/14 — 1280-dim, 16 heads, 32 blocks, patch 14, 224*224."""
+    return _build_vit("vit_huge_patch14_224", **kwargs)
+
+
+def vit_huge_patch16_224(**kwargs) -> VisionTransformer:
+    """ViT-H/16 — 1280-dim, 16 heads, 32 blocks, patch 16, 224*224."""
+    return _build_vit("vit_huge_patch16_224", **kwargs)
+
+
+def dinov2_vits14(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-S/14 (no register tokens)."""
+    return _build_vit("dinov2_vits14", pretrained=pretrained, **kwargs)
+
+
+def dinov2_vits14_reg(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-S/14 with 4 register tokens."""
+    return _build_vit("dinov2_vits14_reg", pretrained=pretrained, **kwargs)
+
+
+def dinov2_vitb14(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-B/14 (no register tokens)."""
+    return _build_vit("dinov2_vitb14", pretrained=pretrained, **kwargs)
+
+
+def dinov2_vitb14_reg(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-B/14 with 4 register tokens."""
+    return _build_vit("dinov2_vitb14_reg", pretrained=pretrained, **kwargs)
+
+
+def dinov2_vitl14(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-L/14 (no register tokens)."""
+    return _build_vit("dinov2_vitl14", pretrained=pretrained, **kwargs)
+
+
+def dinov2_vitl14_reg(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-L/14 with 4 register tokens."""
+    return _build_vit("dinov2_vitl14_reg", pretrained=pretrained, **kwargs)
+
+
+def dinov2_vitg14(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-g/14 (no register tokens)."""
+    return _build_vit("dinov2_vitg14", pretrained=pretrained, **kwargs)
+
+
+def dinov2_vitg14_reg(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """DINOv2 ViT-g/14 with 4 register tokens."""
+    return _build_vit("dinov2_vitg14_reg", pretrained=pretrained, **kwargs)
+
+
+def dinov3_vits16_pretrain_lvd1689m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-S/16 (LVD-1689M)."""
+    return _build_vit(
+        "dinov3_vits16_pretrain_lvd1689m", pretrained=pretrained, **kwargs
+    )
+
+
+def dinov3_vits16plus_pretrain_lvd1689m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-S/16+ with SwiGLU FFN (LVD-1689M)."""
+    return _build_vit(
+        "dinov3_vits16plus_pretrain_lvd1689m", pretrained=pretrained, **kwargs
+    )
+
+
+def dinov3_vitb16_pretrain_lvd1689m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-B/16 (LVD-1689M)."""
+    return _build_vit(
+        "dinov3_vitb16_pretrain_lvd1689m", pretrained=pretrained, **kwargs
+    )
+
+
+def dinov3_vitl16_pretrain_lvd1689m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-L/16 (LVD-1689M)."""
+    return _build_vit(
+        "dinov3_vitl16_pretrain_lvd1689m", pretrained=pretrained, **kwargs
+    )
+
+
+def dinov3_vith16plus_pretrain_lvd1689m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-H/16+ with SwiGLU FFN (LVD-1689M)."""
+    return _build_vit(
+        "dinov3_vith16plus_pretrain_lvd1689m", pretrained=pretrained, **kwargs
+    )
+
+
+def dinov3_vit7b16_pretrain_lvd1689m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-7B/16 with SwiGLU FFN (LVD-1689M)."""
+    return _build_vit(
+        "dinov3_vit7b16_pretrain_lvd1689m", pretrained=pretrained, **kwargs
+    )
+
+
+def dinov3_vitl16_pretrain_sat493m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-L/16 (SAT-493M)."""
+    return _build_vit("dinov3_vitl16_pretrain_sat493m", pretrained=pretrained, **kwargs)
+
+
+def dinov3_vit7b16_pretrain_sat493m(
+    pretrained: bool = False, **kwargs
+) -> VisionTransformer:
+    """DINOv3 ViT-7B/16 with SwiGLU FFN (SAT-493M)."""
+    return _build_vit(
+        "dinov3_vit7b16_pretrain_sat493m", pretrained=pretrained, **kwargs
+    )
+
+
+def siglip2_vitb16_224(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-B/16 at 224*224."""
+    return _build_vit("siglip2_vitb16_224", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitb16_256(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-B/16 at 256*256."""
+    return _build_vit("siglip2_vitb16_256", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitb16_384(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-B/16 at 384*384."""
+    return _build_vit("siglip2_vitb16_384", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitb16_512(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-B/16 at 512*512."""
+    return _build_vit("siglip2_vitb16_512", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitb32_256(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-B/32 at 256*256."""
+    return _build_vit("siglip2_vitb32_256", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitl16_256(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-L/16 at 256*256."""
+    return _build_vit("siglip2_vitl16_256", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitl16_384(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-L/16 at 384*384."""
+    return _build_vit("siglip2_vitl16_384", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitl16_512(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-L/16 at 512*512."""
+    return _build_vit("siglip2_vitl16_512", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitso400m14_224(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-SO400M/14 at 224*224."""
+    return _build_vit("siglip2_vitso400m14_224", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitso400m14_378(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-SO400M/14 at 378*378."""
+    return _build_vit("siglip2_vitso400m14_378", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitso400m16_256(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-SO400M/16 at 256*256."""
+    return _build_vit("siglip2_vitso400m16_256", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitso400m16_384(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-SO400M/16 at 384*384."""
+    return _build_vit("siglip2_vitso400m16_384", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitso400m16_512(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-SO400M/16 at 512*512."""
+    return _build_vit("siglip2_vitso400m16_512", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitgiantopt16_256(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-giantopt/16 at 256*256."""
+    return _build_vit("siglip2_vitgiantopt16_256", pretrained=pretrained, **kwargs)
+
+
+def siglip2_vitgiantopt16_384(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """SigLIP2 ViT-giantopt/16 at 384*384."""
+    return _build_vit("siglip2_vitgiantopt16_384", pretrained=pretrained, **kwargs)
+
+
+def tips_vits14_hr(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """TIPS ViT-S/14 high-res (448*448)."""
+    return _build_vit("tips_vits14_hr", pretrained=pretrained, **kwargs)
+
+
+def tips_vitb14_hr(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """TIPS ViT-B/14 high-res (448*448)."""
+    return _build_vit("tips_vitb14_hr", pretrained=pretrained, **kwargs)
+
+
+def tips_vitl14_hr(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """TIPS ViT-L/14 high-res (448*448)."""
+    return _build_vit("tips_vitl14_hr", pretrained=pretrained, **kwargs)
+
+
+def tips_vitso400m14_hr(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """TIPS ViT-SO400M/14 high-res (448*448)."""
+    return _build_vit("tips_vitso400m14_hr", pretrained=pretrained, **kwargs)
+
+
+def tips_vitg14_lr(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """TIPS ViT-g/14 low-res (224*224)."""
+    return _build_vit("tips_vitg14_lr", pretrained=pretrained, **kwargs)
+
+
+def tips_vitg14_hr(pretrained: bool = False, **kwargs) -> VisionTransformer:
+    """TIPS ViT-g/14 high-res (448*448)."""
+    return _build_vit("tips_vitg14_hr", pretrained=pretrained, **kwargs)
