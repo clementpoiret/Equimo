@@ -676,6 +676,29 @@ def test_siglip2_vitb16_256_matches_hf():
     assert mae < 1e-5, f"SigLIP2 patch tokens MAE vs HuggingFace: {mae:.2e}"
 
 
+def test_eupe_vitt16_matches_torch():
+    """EUPE ViT-T/16 prenorm features must match original PyTorch output.
+
+    Reference features were extracted with PyTorch locally
+    on a fixed random 224x224 image (see torch_models.py).
+
+    Comparison:
+    - PyTorch model.forward_features(x)["x_prenorm"]
+    - equimo model.features(x)
+    Tolerance: mean absolute error < 5e-4.
+    """
+    key = jr.PRNGKey(42)
+    ref = np.load(Path(__file__).parent / "data" / "eupe_vitt16_reference.npz")
+
+    x = jnp.array(ref["img"])  # (3, 224, 224)
+    model = em.eupe_vitt16(pretrained=True)
+
+    eq_features = np.array(model.features(x, key=key, inference=True))  # (201, 192)
+
+    mae = float(np.mean(np.abs(eq_features - ref["features"][0])))
+    assert mae < 5e-4, f"EUPE features MAE vs PyTorch: {mae:.2e}"
+
+
 def test_vit5_small_forward():
     """ViT5-S/16 forward pass: correct output shape and finite values.
 
@@ -690,3 +713,37 @@ def test_vit5_small_forward():
     # 5 prefix tokens (1 cls + 4 reg) + 196 patches
     assert features.shape == (201, 384)
     assert jnp.all(jnp.isfinite(features))
+
+
+# DEQ
+
+
+def test_deq_forward():
+    model = em.deq_default(
+        in_channels=3,
+        num_classes=NUM_CLASSES,
+        modules=["atconvblock"] * 4,
+        downsamplers=["convnormdownsampler"] * 4,
+        block_types=["normal", "normal", "fpi", "normal"],
+        fpi_layer_strategy="standard",
+        key=KEY,
+    )
+    y, auxs = model(IMG_64, key=KEY, inference=True)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+    assert isinstance(auxs, list)
+
+
+def test_deq_features():
+    model = em.deq_default(
+        in_channels=3,
+        num_classes=0,
+        modules=["atconvblock"] * 4,
+        downsamplers=["convnormdownsampler"] * 4,
+        block_types=["normal", "normal", "fpi", "normal"],
+        fpi_layer_strategy="standard",
+        key=KEY,
+    )
+    feats, auxs = model.features(IMG_64, key=KEY, inference=True)
+    assert jnp.all(jnp.isfinite(feats))
+    assert isinstance(auxs, list)
