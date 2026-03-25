@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock
 from equimo.layers.generic import Residual
 from equimo.layers.patch import SEPatchMerging
@@ -94,7 +95,7 @@ class ConvNormDownsampler(eqx.Module):
         in_channels: int,
         *,
         out_channels: int | None = None,
-        act_layer: Callable | None = None,
+        act_layer: str | Callable | None = None,
         use_bias: bool = False,
         use_norm: bool = True,
         mode: Literal["double", "simple"] = "simple",
@@ -112,6 +113,9 @@ class ConvNormDownsampler(eqx.Module):
             mode: Downsampling strategy — ``"simple"`` (2×) or ``"double"`` (4×).
             key: PRNG key for initialization.
         """
+        if act_layer is not None:
+            act_layer = get_act(act_layer)
+
         out_channels = out_channels if out_channels else 2 * in_channels
 
         match mode:

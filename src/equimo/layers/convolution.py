@@ -9,8 +9,9 @@ import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.layers.dropout import DropPathAdd
-from equimo.layers.norm import LayerNorm2d, LayerScale, RMSNorm2d
+from equimo.layers.norm import LayerNorm2d, LayerScale, RMSNorm2d, get_norm
 from equimo.layers.squeeze_excite import SEModule
 from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
@@ -94,9 +95,9 @@ class SingleConvBlock(eqx.Module):
         kernel_size: int = 3,
         stride: int = 1,
         padding: str | int = "SAME",
-        norm_layer: type[eqx.Module] | None = eqx.nn.GroupNorm,
+        norm_layer: str | type[eqx.Module] | None = "groupnorm",
         norm_max_group: int = 32,
-        act_layer: Callable | None = None,
+        act_layer: str | Callable | None = None,
         dropout: float = 0.0,
         transposed: bool = False,
         norm_kwargs: dict = {},
@@ -108,12 +109,17 @@ class SingleConvBlock(eqx.Module):
             in_channels: Number of input channels
             out_channels: Number of output channels
             key: PRNG key for initialization
+            norm_layer: Normalization layer class or registry name (default: "groupnorm")
             norm_max_group: Maximum number of groups for GroupNorm (default: 32)
-            act_layer: Optional activation function (default: None)
+            act_layer: Optional activation function or registry name (default: None)
             norm_kwargs: Args passed to the norm layer. This allows disabling
                 weights of LayerNorm, which do not work well with conv layers
             **kwargs: Additional arguments passed to Conv layer
         """
+        if norm_layer is not None:
+            norm_layer = get_norm(norm_layer)
+        if act_layer is not None:
+            act_layer = get_act(act_layer)
 
         conv = eqx.nn.ConvTranspose2d if transposed else eqx.nn.Conv2d
         self.conv = conv(
@@ -190,7 +196,7 @@ class DoubleConvBlock(eqx.Module):
         stride: int = 1,
         padding: str | int = "SAME",
         use_bias: bool = False,
-        act_layer: Callable | None = jax.nn.gelu,
+        act_layer: str | Callable | None = "gelu",
         norm_max_group: int = 32,
         dropout: float = 0.0,
         drop_path: float = 0.0,
@@ -209,12 +215,14 @@ class DoubleConvBlock(eqx.Module):
             kernel_size: Size of the convolutional kernel (default: 3)
             stride: Stride of the convolution (default: 1)
             padding: Padding size for convolution (default: SAME)
-            act_layer: Activation function (default: gelu)
+            act_layer: Activation function or registry name (default: "gelu")
             norm_max_group: Maximum number of groups for GroupNorm (default: 32)
             drop_path: Drop path rate (default: 0.0)
             init_values: Initial value for layer scaling (default: None)
             **kwargs: Additional arguments passed to Conv layers
         """
+        if act_layer is not None:
+            act_layer = get_act(act_layer)
 
         key_conv1, key_conv2 = jr.split(key, 2)
 
@@ -803,10 +811,11 @@ class MBConv(eqx.Module):
         stride: int = 1,
         use_bias: Tuple[bool, ...] | bool = False,
         expand_ratio: float = 6.0,
-        norm_layer: Tuple[eqx.Module | None, ...]
-        | eqx.Module
-        | None = eqx.nn.GroupNorm,
-        act_layer: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        norm_layer: Tuple[str | type[eqx.Module] | None, ...]
+        | str
+        | type[eqx.Module]
+        | None = "groupnorm",
+        act_layer: Tuple[str | Callable | None, ...] | str | Callable | None = "relu6",
         se: bool = False,
         fuse: bool = False,
         fuse_threshold: int = 256,
@@ -824,6 +833,10 @@ class MBConv(eqx.Module):
             norm_layer = (norm_layer,) * 3
         if not isinstance(act_layer, Tuple):
             act_layer = (act_layer,) * 3
+
+        # Resolve registry names
+        norm_layer = tuple(get_norm(n) if n is not None else None for n in norm_layer)
+        act_layer = tuple(get_act(a) if a is not None else None for a in act_layer)
         if isinstance(use_bias, bool):
             use_bias: Tuple = (use_bias,) * 3
         if len(use_bias) != 3:
@@ -980,10 +993,11 @@ class DSConv(eqx.Module):
         kernel_size: int = 3,
         stride: int = 1,
         use_bias: Tuple[bool, ...] | bool = False,
-        norm_layer: Tuple[eqx.Module | None, ...]
-        | eqx.Module
-        | None = eqx.nn.GroupNorm,
-        act_layer: Tuple[Callable | None, ...] | Callable | None = jax.nn.relu6,
+        norm_layer: Tuple[str | type[eqx.Module] | None, ...]
+        | str
+        | type[eqx.Module]
+        | None = "groupnorm",
+        act_layer: Tuple[str | Callable | None, ...] | str | Callable | None = "relu6",
         residual: bool = False,
         init_values: float | None = None,
         dropout: float = 0.0,
@@ -996,6 +1010,10 @@ class DSConv(eqx.Module):
             norm_layer = (norm_layer,) * 2
         if not isinstance(act_layer, Tuple):
             act_layer = (act_layer,) * 2
+
+        # Resolve registry names
+        norm_layer = tuple(get_norm(n) if n is not None else None for n in norm_layer)
+        act_layer = tuple(get_act(a) if a is not None else None for a in act_layer)
         if isinstance(use_bias, bool):
             use_bias: Tuple = (use_bias,) * 2
         if len(use_bias) != 2:
@@ -1099,8 +1117,8 @@ class UIB(eqx.Module):
         middle_dw_downsample: bool = True,
         stride: int = 1,
         expand_ratio: float = 6.0,
-        norm_layer: eqx.Module = eqx.nn.GroupNorm,
-        act_layer: Callable | None = jax.nn.relu,
+        norm_layer: str | type[eqx.Module] = "groupnorm",
+        act_layer: str | Callable | None = "relu",
         dropout: float = 0.0,
         drop_path: float = 0.0,
         init_values: float | None = None,
@@ -1109,6 +1127,10 @@ class UIB(eqx.Module):
         **kwargs,
     ):
         key_sdwc, key_ec, key_mdwc, key_proj = jr.split(key, 4)
+
+        norm_layer = get_norm(norm_layer)
+        if act_layer is not None:
+            act_layer = get_act(act_layer)
 
         self.start_dw_conv = (
             SingleConvBlock(
@@ -1219,11 +1241,13 @@ class IFormerStem(eqx.Module):
         in_channels: int,
         out_channels: int,
         *,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
         key: PRNGKeyArray,
         **kwargs,
     ):
         key_conv1, key_fusedib = jr.split(key, 2)
+
+        act_layer = get_act(act_layer)
 
         self.conv1 = SingleConvBlock(
             in_channels=in_channels,
@@ -1279,7 +1303,7 @@ class IFormerBlock(eqx.Module):
         *,
         kernel_size: int = 7,
         expand_ratio: float = 3.0,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
         dropout: float = 0.0,
         drop_path: float = 0.0,
         residual: bool = True,
@@ -1289,6 +1313,8 @@ class IFormerBlock(eqx.Module):
     ):
         key_conv1, key_conv2, key_conv3 = jr.split(key, 3)
         self.residual = residual
+
+        act_layer = get_act(act_layer)
 
         mid_channels = int(dim * expand_ratio)
         self.conv1 = SingleConvBlock(
@@ -1403,11 +1429,13 @@ class GenericGhostModule(eqx.Module):
         ratio: int = 2,
         dw_size: int = 3,
         stride: int = 1,
-        act_layer: Callable = jax.nn.relu,
+        act_layer: str | Callable = "relu",
         num_conv_branches: int = 3,
         mode: Literal["original", "shortcut"] = "original",
         key: PRNGKeyArray,
     ):
+        act_layer = get_act(act_layer)
+
         # Key management
         key_primary, key_cheap, key_pscale, key_cscale, key_s1, key_s2, key_s3 = (
             jr.split(key, 7)

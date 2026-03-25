@@ -6,6 +6,9 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.activation import get_act
+from equimo.layers.norm import get_norm
+
 _FFN_REGISTRY: dict[str, type[eqx.Module]] = {}
 
 
@@ -140,7 +143,7 @@ class DINOHead(eqx.Module):
         hidden_features=2048,
         bottleneck_features=256,
         key: PRNGKeyArray,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
         **kwargs,
     ):
         """Initialize the DINOv2 projection head.
@@ -151,12 +154,12 @@ class DINOHead(eqx.Module):
             hidden_features: Number of hidden features (default: 2048)
             bottleneck_features: Number of bottleneck features (default: 256)
             key: PRNG key for initialization
-            act_layer: Activation function (default: gelu)
+            act_layer: Activation function or registry name (default: "gelu")
             **kwargs: Additional arguments
         """
         key_fc1, key_fc2, key_fc3, key_last = jr.split(key, 4)
 
-        self.act_layer = act_layer
+        self.act_layer = get_act(act_layer)
 
         self.fc1 = eqx.nn.Linear(in_features, hidden_features, key=key_fc1)
         self.fc2 = eqx.nn.Linear(hidden_features, hidden_features, key=key_fc2)
@@ -228,8 +231,8 @@ class Mlp(eqx.Module):
         key: PRNGKeyArray,
         out_dim: int | None = None,
         hidden_dim: int | None = None,
-        act_layer: Callable = jax.nn.gelu,
-        norm_layer: Callable | None = None,
+        act_layer: str | Callable = "gelu",
+        norm_layer: str | Callable | None = None,
         dropout_rate: float = 0.0,
         bias: bool = True,
         eps: float = 1e-5,
@@ -242,8 +245,8 @@ class Mlp(eqx.Module):
             key: PRNG key for initialization
             out_dim: Output dimension (default: same as dim)
             hidden_dim: Expanded hidden dimension (default: same as dim)
-            act_layer: Activation function (default: gelu)
-            norm_layer: Optional norm layer applied post-activation after fc1 (default: None)
+            act_layer: Activation function or registry name (default: "gelu")
+            norm_layer: Optional norm layer or registry name applied post-activation after fc1 (default: None)
             dropout_rate: Dropout probability (default: 0.0)
             bias: Whether to include bias in linear layers (default: True)
             eps: Epsilon for norm layer (default: 1e-5)
@@ -251,7 +254,9 @@ class Mlp(eqx.Module):
         """
         key_fc1, key_fc2 = jr.split(key, 2)
 
-        self.act_layer = act_layer
+        self.act_layer = get_act(act_layer)
+        if norm_layer is not None:
+            norm_layer = get_norm(norm_layer)
 
         hidden_dim = hidden_dim or dim
         out_dim = out_dim or dim

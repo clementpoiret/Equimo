@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.utils import nearest_power_of_2_divisor
 
 _WAVELET_REGISTRY: dict[str, type[eqx.Module]] = {}
@@ -135,11 +136,12 @@ class HWDConv(eqx.Module):
         stride: int = 1,
         padding: str | int = "SAME",
         use_bias: bool = False,
-        act_layer: Callable = jax.nn.relu,
+        act_layer: str | Callable = "relu",
         mode: Literal["h_discard", "band_grouped", "accurate"] = "accurate",
         dropout: float = 0.0,
         key: PRNGKeyArray,
     ):
+        act_layer = get_act(act_layer)
         self.mode = mode
 
         channels_in = in_channels if mode == "h_discard" else 4 * in_channels

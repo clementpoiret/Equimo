@@ -7,15 +7,16 @@ import jax.random as jr
 from einops import rearrange, reduce
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.layers.convolution import (
     DoubleConvBlock,
     MBConv,
     SingleConvBlock,
 )
 from equimo.layers.dropout import DropPathAdd
-from equimo.layers.ffn import Mlp
+from equimo.layers.ffn import Mlp, get_ffn
 from equimo.layers.mamba import Mamba2Mixer
-from equimo.layers.norm import LayerScale
+from equimo.layers.norm import LayerScale, get_norm
 from equimo.layers.posemb import PosCNN2D, PosEmbMLPSwinv1D, PosEmbMLPSwinv2D, RoPE
 from equimo.utils import nearest_power_of_2_divisor
 
@@ -214,7 +215,7 @@ class Attention(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -225,6 +226,7 @@ class Attention(eqx.Module):
         assert self.head_dim * num_heads == dim, "dim must be divisible by num_heads"
 
         key_qkv, key_proj = jr.split(key, 2)
+        norm_layer = get_norm(norm_layer)
         self.qkv = eqx.nn.Linear(dim, dim * 3, use_bias=qkv_bias, key=key_qkv)
         self.proj = eqx.nn.Linear(dim, dim, use_bias=proj_bias, key=key_proj)
 
@@ -324,7 +326,7 @@ class WindowedAttention(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -336,6 +338,7 @@ class WindowedAttention(eqx.Module):
         assert self.head_dim * num_heads == dim, "dim must be divisible by num_heads"
 
         key_qkv, key_proj, key_posemb = jr.split(key, 3)
+        norm_layer = get_norm(norm_layer)
         self.qkv = eqx.nn.Linear(dim, dim * 3, use_bias=qkv_bias, key=key_qkv)
         self.proj = eqx.nn.Linear(dim, dim, use_bias=proj_bias, key=key_proj)
 
@@ -429,19 +432,23 @@ class AttentionBlock(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        act_layer: Callable = jax.nn.gelu,
-        attn_layer: eqx.Module | str = Attention,
-        ffn_layer: eqx.Module = Mlp,
+        act_layer: str | Callable = "gelu",
+        attn_layer: str | type[eqx.Module] = "attention",
+        ffn_layer: str | type[eqx.Module] = "mlp",
         ffn_bias: bool = True,
         ffn_norm: bool = False,
         ffn_kwargs: dict = {},
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         post_attention_norm: bool = False,
         init_values: float | None = None,
         eps: float = 1e-5,
         **kwargs,
     ):
         key_attn, key_mlp = jr.split(key, 2)
+
+        act_layer = get_act(act_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
 
         if isinstance(drop_path, list):
             if (_l := len(drop_path)) == 1:
@@ -608,11 +615,11 @@ class HATBlock(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        act_layer: Callable = jax.nn.gelu,
-        attn_layer: eqx.Module | str = WindowedAttention,
-        ffn_layer: eqx.Module = Mlp,
+        act_layer: str | Callable = "gelu",
+        attn_layer: str | type[eqx.Module] = "windowedattention",
+        ffn_layer: str | type[eqx.Module] = "mlp",
         ffn_bias: bool = True,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         init_values: float | None = None,
         sr_ratio: float = 1.0,
         ct_size: int = 1,
@@ -624,6 +631,9 @@ class HATBlock(eqx.Module):
         key_posemb, key_hatposemb, key_attn, key_hatattn, key_mlp, key_hatmlp = (
             jr.split(key, 6)
         )
+        act_layer = get_act(act_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
         self.do_propagation = do_propagation
         self.sr_ratio = sr_ratio
         self.window_size = window_size
@@ -1005,12 +1015,13 @@ class SHMA(eqx.Module):
         kv_stride: int = 1,
         head_dim_reduce_ratio: int = 4,
         window_size: int = 0,
-        norm_layer: Callable = eqx.nn.GroupNorm,
+        norm_layer: str | type[eqx.Module] = "groupnorm",
         *,
         key: jax.Array,
         **kwargs,
     ):
         keys = jr.split(key, 4)
+        norm_layer = get_norm(norm_layer)
 
         mid_dim = int(dim * ratio)
         self.dim_attn = dim // head_dim_reduce_ratio
@@ -1161,14 +1172,16 @@ class SHMABlock(eqx.Module):
         kv_stride: int = 1,
         head_dim_reduce_ratio: int = 4,
         window_size: int = 0,
-        act_layer: Callable = jax.nn.gelu,
-        norm_layer: type[eqx.Module] = eqx.nn.GroupNorm,
+        act_layer: str | Callable = "gelu",
+        norm_layer: str | type[eqx.Module] = "groupnorm",
         drop_path: float | List[float] = 0.0,
         init_values: float | None = None,
         key: PRNGKeyArray,
         **kwargs,
     ):
         key_pe, key_attn, key_ffn = jr.split(key, 3)
+        act_layer = get_act(act_layer)
+        norm_layer = get_norm(norm_layer)
 
         if isinstance(drop_path, list):
             if (_l := len(drop_path)) == 1:
@@ -1391,19 +1404,22 @@ class MllaBlock(eqx.Module):
         dim: int,
         *,
         key: PRNGKeyArray,
-        act_layer: Callable = jax.nn.silu,  # gelu in VSSD
-        norm_layer: type[eqx.Module] = eqx.nn.LayerNorm,
+        act_layer: str | Callable = "silu",  # gelu in VSSD
+        norm_layer: str | type[eqx.Module] = "layernorm",
         use_dwc: bool = True,  # For Mlla but not VMamba-2
-        attention_layer: type[eqx.Module] | str = LinearAttention,
+        attn_layer: str | type[eqx.Module] = "linearattention",
         drop_path: List[float] | float = 0.0,
         mlp_ratio: float = 4.0,
-        ffn_layer: type[eqx.Module] = Mlp,
+        ffn_layer: str | type[eqx.Module] = "mlp",
         ffn_bias: bool = True,
         proj_drop: float = 0.0,
         init_values: float | None = None,
         eps: float = 1e-5,
         **kwargs,
     ):
+        act_layer = get_act(act_layer)
+        ffn_layer = get_ffn(ffn_layer)
+        norm_layer = get_norm(norm_layer)
         (
             key_conv1,
             key_conv2,
@@ -1448,8 +1464,8 @@ class MllaBlock(eqx.Module):
 
         config = {"dim": dim}
 
-        attention_layer = get_attn(attention_layer)
-        self.attn = attention_layer(
+        attn_layer = get_attn(attn_layer)
+        self.attn = attn_layer(
             **(kwargs | config),
             key=key_attn,
         )
@@ -1587,7 +1603,7 @@ class MMSA(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -1596,6 +1612,8 @@ class MMSA(eqx.Module):
         self.dim = dim
 
         assert self.head_dim * num_heads == dim, "dim must be divisible by num_heads"
+
+        norm_layer = get_norm(norm_layer)
 
         key_qkv, key_proj, key_attnproj1, key_attnproj2 = jr.split(key, 4)
         self.qkv = eqx.nn.Linear(dim, dim * 3, use_bias=qkv_bias, key=key_qkv)
@@ -1697,7 +1715,7 @@ class SQA(eqx.Module):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -1706,6 +1724,8 @@ class SQA(eqx.Module):
         self.dim = dim
 
         assert self.head_dim * num_heads == dim, "dim must be divisible by num_heads"
+
+        norm_layer = get_norm(norm_layer)
 
         key_kv, key_proj1, key_proj2 = jr.split(key, 3)
         self.kv = eqx.nn.Linear(dim, dim * 2, use_bias=kv_bias, key=key_kv)
@@ -1809,11 +1829,11 @@ class PartialFormerBlock(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         proj_ratio: float = 4.0,
-        act_layer: Callable = jax.nn.silu,  # gelu in VSSD
-        norm_layer: eqx.Module = eqx.nn.LayerNorm,
+        act_layer: str | Callable = "silu",  # gelu in VSSD
+        norm_layer: str | type[eqx.Module] = "layernorm",
         drop_path: List[float] | float = 0.0,
         mlp_ratio: float = 4.0,
-        ffn_layer: eqx.Module = Mlp,
+        ffn_layer: str | type[eqx.Module] = "mlp",
         ffn_bias: bool = True,
         init_values: float | None = None,
         eps: float = 1e-5,
@@ -1825,6 +1845,9 @@ class PartialFormerBlock(eqx.Module):
             key_sqa,
             key_mlp,
         ) = jr.split(key, 4)
+        act_layer = get_act(act_layer)
+        norm_layer = get_norm(norm_layer)
+        ffn_layer = get_ffn(ffn_layer)
         self.act = act_layer
         self.foreground_ratio = foreground_ratio
         self.patch_size = patch_size
@@ -2133,8 +2156,7 @@ class RFAttention(eqx.Module):
         use_bias: bool = False,
         kernel_func: Callable = jax.nn.relu,
         proj_drop: float = 0.0,
-        # TODO: Benchmark against LN, RMSN, NsLN
-        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        norm_layer: str | type[eqx.Module] = "groupnorm",
         norm_kwargs: dict = {},
         eps: float = 1e-15,
         **kwargs,
@@ -2235,11 +2257,11 @@ class RFAttentionBlock(eqx.Module):
         head_dim: int = 32,
         heads_ratio: float = 1.0,
         scales: Sequence[int] = (5,),
-        rfattn_norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        rfattn_norm_layer: str | type[eqx.Module] = "groupnorm",
         norm_kwargs: dict = {},
         expand_ratio: float = 4.0,
-        mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
-        mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
+        mbconv_norm_layers: tuple = (None, None, "groupnorm"),
+        mbconv_act_layers: tuple = ("hard_swish", "hard_swish", None),
         fuse_mbconv: bool = False,
         context_drop: float = 0.0,
         local_drop: float = 0.0,
@@ -2345,7 +2367,7 @@ class ConvAttention(eqx.Module):
         att_stride: int = 4,
         fuse: bool = True,
         attention_type: Literal["softmax", "sigmoid"] = "softmax",
-        norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
+        norm_layer: str | type[eqx.Module] | None = "groupnorm",
         norm_kwargs: dict = {},
         **kwargs,
     ):
@@ -2466,8 +2488,8 @@ class ConvAttentionBlock(eqx.Module):
         attention_type: Literal["softmax", "sigmoid"] = "softmax",
         fuse: bool = True,  # TODO: verify
         drop_path: float | List[float] = 0.0,
-        act_layer: Callable = jax.nn.gelu,  # TODO: try hardswish
-        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        act_layer: str | Callable = "gelu",  # TODO: try hardswish
+        norm_layer: str | type[eqx.Module] = "groupnorm",
         norm_max_group: int = 32,
         post_attention_norm: bool = False,
         init_values: float | None = None,
@@ -2475,6 +2497,8 @@ class ConvAttentionBlock(eqx.Module):
         **kwargs,
     ):
         key_attn, key_mlp = jr.split(key, 2)
+        act_layer = get_act(act_layer)
+        norm_layer = get_norm(norm_layer)
 
         if isinstance(drop_path, list):
             if (_l := len(drop_path)) == 1:
@@ -2589,8 +2613,8 @@ class LowFormerBlock(eqx.Module):
         attention_type: Literal["softmax", "sigmoid"] = "softmax",
         fuse_conv: bool = True,
         drop_path: float | List[float] = 0.0,
-        act_layer: Callable = jax.nn.hard_swish,
-        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        act_layer: str | Callable = "hard_swish",
+        norm_layer: str | type[eqx.Module] = "groupnorm",
         expand_ratio: float = 4.0,
         mbconv_norm_layers: tuple = (None, None, eqx.nn.GroupNorm),
         mbconv_act_layers: tuple = (jax.nn.hard_swish, jax.nn.hard_swish, None),
@@ -2599,6 +2623,8 @@ class LowFormerBlock(eqx.Module):
         **kwargs,
     ):
         key_context, key_local = jr.split(key, 2)
+        act_layer = get_act(act_layer)
+        norm_layer = get_norm(norm_layer)
 
         if isinstance(drop_path, list):
             if (_l := len(drop_path)) == 1:

@@ -8,7 +8,7 @@ import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from equimo.layers.norm import RMSNormGated
+from equimo.layers.norm import RMSNormGated, get_norm
 from equimo.ops.scan import non_causal_linear_attn
 
 _MIXER_REGISTRY: dict[str, type[eqx.Module]] = {}
@@ -148,10 +148,11 @@ class Mamba2Mixer(eqx.Module):
         A_init_range: Tuple[int, int] = (1, 16),
         use_bias: bool = False,
         conv_bias: bool = True,
-        norm_layer: type[eqx.Module] = eqx.nn.LayerNorm,
+        norm_layer: str | type[eqx.Module] = "layernorm",
         **kwargs,
     ):
         key_inproj, key_outproj, key_conv, key_randvals, key_a = jr.split(key, 5)
+        norm_layer = get_norm(norm_layer)
         self.d_inner = int(dim * expand)
         if self.d_inner % head_dim != 0:
             raise ValueError("`d_inner` must be a multiple of `head_dim`.")

@@ -8,7 +8,9 @@ import jax.random as jr
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.layers.convolution import SingleConvBlock
+from equimo.layers.norm import get_norm
 from equimo.layers.squeeze_excite import SEModule
 from equimo.utils import make_2tuple, nearest_power_of_2_divisor
 
@@ -116,7 +118,7 @@ class PatchEmbedding(eqx.Module):
         flatten: bool = True,
         dynamic_img_size: bool = False,
         dynamic_img_pad: bool = False,
-        norm_layer: Optional[Callable] = None,
+        norm_layer: Optional[str | Callable] = None,
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -133,10 +135,12 @@ class PatchEmbedding(eqx.Module):
                      If False, output shape is (dim, grid_h, grid_w).
             dynamic_img_size: Allow images of different sizes than img_size.
             dynamic_img_pad: Pad images whose sides are not divisible by patch_size.
-            norm_layer: Optional norm class called as norm_layer(dim, eps=eps).
-                        Defaults to no normalization.
+            norm_layer: Optional norm class or registry name called as
+                        norm_layer(dim, eps=eps). Defaults to no normalization.
             eps: Epsilon passed to norm_layer.
         """
+        if norm_layer is not None:
+            norm_layer = get_norm(norm_layer)
         patch_size = make_2tuple(patch_size)
         self.patch_size = patch_size
         self.flatten = flatten
@@ -246,8 +250,8 @@ class ConvPatchEmbed(eqx.Module):
         out_channels: int,
         *,
         key: PRNGKeyArray,
-        act_layer: Callable = jax.nn.relu,
-        norm_layer: Callable = eqx.nn.LayerNorm,
+        act_layer: str | Callable = "relu",
+        norm_layer: str | Callable = "layernorm",
         eps: float = 1e-5,
         **kwargs,
     ):
@@ -258,13 +262,14 @@ class ConvPatchEmbed(eqx.Module):
             hidden_channels: Number of intermediate channels after conv1.
             out_channels: Number of output channels after conv2.
             key: PRNG key for initialization.
-            act_layer: Activation function applied after each norm.
-            norm_layer: Norm class called as norm_layer(channels, eps=eps).
+            act_layer: Activation function or registry name applied after each norm.
+            norm_layer: Norm class or registry name called as norm_layer(channels, eps=eps).
             eps: Epsilon passed to norm_layer.
         """
         key_conv1, key_conv2 = jr.split(key, 2)
 
-        self.act = act_layer
+        self.act = get_act(act_layer)
+        norm_layer = get_norm(norm_layer)
 
         self.conv1 = eqx.nn.Conv(
             num_spatial_dims=2,
@@ -383,7 +388,7 @@ class PatchMerging(eqx.Module):
             stride=1,
             padding=0,
             norm_layer=None,
-            act_layer=jax.nn.relu,
+            act_layer="relu",
             key=key_conv1,
         )
         self.conv2 = SingleConvBlock(
@@ -394,7 +399,7 @@ class PatchMerging(eqx.Module):
             padding=1,
             groups=hidden_dim,
             norm_layer=None,
-            act_layer=jax.nn.relu,
+            act_layer="relu",
             key=key_conv2,
         )
         self.conv3 = SingleConvBlock(
@@ -404,7 +409,7 @@ class PatchMerging(eqx.Module):
             stride=1,
             padding=0,
             norm_layer=None,
-            act_layer=jax.nn.relu,
+            act_layer="relu",
             key=key_conv3,
         )
 
@@ -470,7 +475,7 @@ class SEPatchMerging(eqx.Module):
         *,
         key: PRNGKeyArray,
         expansion_ratio: float = 4.0,
-        act_layer: Callable = jax.nn.relu,
+        act_layer: str | Callable = "relu",
         norm_max_group: int = 32,
         **kwargs,
     ):
@@ -482,14 +487,14 @@ class SEPatchMerging(eqx.Module):
             key: PRNG key for initialization.
             expansion_ratio: Channel expansion factor for the hidden dimension.
                              hidden_channels = in_channels * expansion_ratio.
-            act_layer: Activation function applied after each norm.
+            act_layer: Activation function or registry name applied after each norm.
             norm_max_group: Maximum number of groups for GroupNorm; actual
                             group count is the largest power-of-2 divisor of
                             the channel count up to this value.
         """
         key_conv1, key_conv2, key_conv3, key_se = jr.split(key, 4)
 
-        self.act = act_layer
+        self.act = get_act(act_layer)
 
         hidden_channels = int(in_channels * expansion_ratio)
         num_groups_hidden = nearest_power_of_2_divisor(hidden_channels, norm_max_group)

@@ -793,7 +793,7 @@ class PosCNN2D(eqx.Module):
         *,
         out_channels: int | None = None,
         stride: int = 1,
-        norm_layer: type[eqx.Module] | None = eqx.nn.GroupNorm,
+        norm_layer: str | type[eqx.Module] | None = "groupnorm",
         residual: bool = True,
         key: PRNGKeyArray,
         **kwargs,

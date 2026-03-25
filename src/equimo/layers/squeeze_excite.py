@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.layers.activation import get_act
 from equimo.utils import make_divisible, nearest_power_of_2_divisor
 
 _SE_REGISTRY: dict[str, type[eqx.Module]] = {}
@@ -99,7 +100,7 @@ class SEModule(eqx.Module):
         rd_divisor: int = 8,
         use_norm: bool = False,
         norm_max_group: int = 32,
-        act_layer: Callable = jax.nn.sigmoid,
+        act_layer: str | Callable = "sigmoid",
         **kwargs,
     ):
         """Initialize SEModule.
@@ -111,10 +112,11 @@ class SEModule(eqx.Module):
             rd_divisor: Hidden channel count is rounded to a multiple of this.
             use_norm: If True, insert GroupNorm after the first FC layer.
             norm_max_group: Maximum group count for GroupNorm.
-            act_layer: Gate activation function applied to the excitation output
-                (default: sigmoid).
+            act_layer: Gate activation function or registry name applied to the
+                excitation output (default: "sigmoid").
             **kwargs: Ignored; present for drop-in use via the registry.
         """
+        act_layer = get_act(act_layer)
         key_fc1, key_fc2 = jr.split(key, 2)
         rd_channels = make_divisible(
             in_channels * rd_ratio, rd_divisor, round_down_protect=False
@@ -194,7 +196,7 @@ class EffectiveSEModule(eqx.Module):
         in_channels: int,
         *,
         key: PRNGKeyArray,
-        act_layer: Callable = jax.nn.hard_sigmoid,
+        act_layer: str | Callable = "hard_sigmoid",
         **kwargs,
     ):
         """Initialize EffectiveSEModule.
@@ -202,9 +204,10 @@ class EffectiveSEModule(eqx.Module):
         Args:
             in_channels: Number of input (and output) spatial channels.
             key: PRNG key for initialization.
-            act_layer: Gate activation function (default: hard_sigmoid).
+            act_layer: Gate activation function or registry name (default: "hard_sigmoid").
             **kwargs: Ignored; present for drop-in use via the registry.
         """
+        act_layer = get_act(act_layer)
         self.fc = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=in_channels,
