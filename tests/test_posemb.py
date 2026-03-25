@@ -14,6 +14,7 @@ from equimo.layers.posemb import (
     PosEmbMLPSwinv1D,
     PosEmbMLPSwinv2D,
     RoPE,
+    VisionRoPE,
     get_posemb,
     register_posemb,
 )
@@ -379,6 +380,348 @@ class TestDinoRoPE:
         rope = self._make()
         d_quarter = (DIM // NUM_HEADS) // 4
         assert rope.periods.shape == (d_quarter,)
+
+
+# VisionRoPE
+
+
+class TestVisionRoPE:
+    """Tests for the unified VisionRoPE module."""
+
+    # -- construction helpers ------------------------------------------------
+
+    def _make_period(self, **kwargs):
+        defaults = dict(strategy="period", dim=DIM, num_heads=NUM_HEADS)
+        defaults.update(kwargs)
+        return VisionRoPE(**defaults)
+
+    def _make_mode(self, **kwargs):
+        defaults = dict(strategy="mode", dim=DIM // 2)
+        defaults.update(kwargs)
+        return VisionRoPE(**defaults)
+
+    # -- strategy="period": shapes and values --------------------------------
+
+    def test_period_sincos_shape(self):
+        rope = self._make_period()
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        d_head = DIM // NUM_HEADS
+        assert sin.shape == (H * W, d_head)
+        assert cos.shape == (H * W, d_head)
+
+    def test_period_sincos_finite(self):
+        rope = self._make_period()
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(sin))
+        assert jnp.all(jnp.isfinite(cos))
+
+    def test_period_sincos_bounded(self):
+        rope = self._make_period()
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.abs(sin) <= 1.0 + 1e-5)
+        assert jnp.all(jnp.abs(cos) <= 1.0 + 1e-5)
+
+    def test_period_call_shape(self):
+        rope = self._make_period()
+        d_head = DIM // NUM_HEADS
+        x = jr.normal(KEY, (H * W, NUM_HEADS, d_head))
+        out = rope(x, key=KEY, inference=True)
+        assert out.shape == x.shape
+
+    def test_period_call_finite(self):
+        rope = self._make_period()
+        d_head = DIM // NUM_HEADS
+        x = jr.normal(KEY, (H * W, NUM_HEADS, d_head))
+        out = rope(x, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(out))
+
+    def test_period_call_changes_input(self):
+        rope = self._make_period()
+        d_head = DIM // NUM_HEADS
+        x = jr.normal(KEY, (H * W, NUM_HEADS, d_head))
+        out = rope(x, key=KEY, inference=True)
+        assert not jnp.allclose(out, x)
+
+    # -- strategy="period": determinism and augmentations --------------------
+
+    def test_period_deterministic_in_inference(self):
+        rope = self._make_period(
+            shift_coords=0.1, jitter_coords=1.5, rescale_coords=1.5
+        )
+        sin1, cos1 = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(1), inference=True)
+        sin2, cos2 = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(2), inference=True)
+        assert jnp.allclose(sin1, sin2)
+        assert jnp.allclose(cos1, cos2)
+
+    def test_period_shift_stochastic_in_training(self):
+        rope = self._make_period(shift_coords=0.5)
+        sin1, _ = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(1), inference=False)
+        sin2, _ = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(2), inference=False)
+        assert not jnp.allclose(sin1, sin2)
+
+    def test_period_jitter_stochastic_in_training(self):
+        rope = self._make_period(jitter_coords=2.0)
+        sin1, _ = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(10), inference=False)
+        sin2, _ = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(20), inference=False)
+        assert not jnp.allclose(sin1, sin2)
+
+    def test_period_rescale_stochastic_in_training(self):
+        rope = self._make_period(rescale_coords=2.0)
+        sin1, _ = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(10), inference=False)
+        sin2, _ = rope.get_sincos(H=H, W=W, key=jr.PRNGKey(20), inference=False)
+        assert not jnp.allclose(sin1, sin2)
+
+    def test_period_training_requires_key(self):
+        rope = self._make_period()
+        with pytest.raises(ValueError, match="PRNG key is required"):
+            rope.get_sincos(H=H, W=W, key=None, inference=False)
+
+    # -- strategy="period": normalize_coords modes ---------------------------
+
+    @pytest.mark.parametrize("normalize_coords", ["min", "max", "separate"])
+    def test_period_normalize_coords_modes(self, normalize_coords):
+        rope = self._make_period(normalize_coords=normalize_coords)
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(sin))
+        assert jnp.all(jnp.isfinite(cos))
+
+    # -- strategy="period": frequency variants --------------------------------
+
+    def test_period_min_max_period_mode(self):
+        rope = VisionRoPE(
+            strategy="period",
+            dim=DIM,
+            num_heads=NUM_HEADS,
+            base=None,
+            min_period=1.0,
+            max_period=100.0,
+        )
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(sin))
+
+    def test_period_freqs_shape(self):
+        rope = self._make_period()
+        d_quarter = (DIM // NUM_HEADS) // 4
+        assert rope.freqs.shape == (d_quarter,)
+
+    # -- strategy="mode": shapes and values ----------------------------------
+
+    def test_mode_sincos_shape(self):
+        dim = 32
+        rope = self._make_mode(dim=dim)
+        sin, cos = rope.get_sincos(H=H, W=W)
+        expected_d = 2 * dim  # height + width concatenated
+        assert sin.shape == (H * W, expected_d)
+        assert cos.shape == (H * W, expected_d)
+
+    def test_mode_sincos_finite(self):
+        rope = self._make_mode()
+        sin, cos = rope.get_sincos(H=H, W=W)
+        assert jnp.all(jnp.isfinite(sin))
+        assert jnp.all(jnp.isfinite(cos))
+
+    def test_mode_sincos_bounded(self):
+        rope = self._make_mode()
+        sin, cos = rope.get_sincos(H=H, W=W)
+        assert jnp.all(jnp.abs(sin) <= 1.0 + 1e-5)
+        assert jnp.all(jnp.abs(cos) <= 1.0 + 1e-5)
+
+    def test_mode_call_shape(self):
+        dim = 32
+        rope = self._make_mode(dim=dim)
+        d_out = 2 * dim
+        x = jr.normal(KEY, (H * W, NUM_HEADS, d_out))
+        out = rope(x)
+        assert out.shape == x.shape
+
+    def test_mode_call_finite(self):
+        dim = 32
+        rope = self._make_mode(dim=dim)
+        d_out = 2 * dim
+        x = jr.normal(KEY, (H * W, NUM_HEADS, d_out))
+        out = rope(x)
+        assert jnp.all(jnp.isfinite(out))
+
+    def test_mode_call_changes_input(self):
+        dim = 32
+        rope = self._make_mode(dim=dim)
+        d_out = 2 * dim
+        x = jr.normal(KEY, (H * W, NUM_HEADS, d_out))
+        assert not jnp.allclose(rope(x), x)
+
+    def test_mode_deterministic_no_key(self):
+        rope = self._make_mode()
+        sin1, cos1 = rope.get_sincos(H=H, W=W)
+        sin2, cos2 = rope.get_sincos(H=H, W=W)
+        assert jnp.allclose(sin1, sin2)
+        assert jnp.allclose(cos1, cos2)
+
+    # -- strategy="mode": frequency modes ------------------------------------
+
+    @pytest.mark.parametrize("freqs_for", ["lang", "pixel", "constant"])
+    def test_mode_freqs_for_variants(self, freqs_for):
+        kwargs = dict(strategy="mode", freqs_for=freqs_for)
+        if freqs_for == "constant":
+            kwargs["num_freqs"] = 4
+        else:
+            kwargs["dim"] = DIM // 2
+        rope = VisionRoPE(**kwargs)
+        sin, cos = rope.get_sincos(H=H, W=W)
+        assert jnp.all(jnp.isfinite(sin))
+
+    def test_mode_custom_freqs(self):
+        custom = jnp.array([1.0, 2.0, 3.0, 4.0])
+        rope = VisionRoPE(strategy="mode", custom_freqs=custom)
+        sin, cos = rope.get_sincos(H=H, W=W)
+        assert sin.shape == (H * W, 2 * len(custom) * 2)  # repeat(2) per axis, concat
+        assert jnp.all(jnp.isfinite(sin))
+
+    def test_mode_pt_seq_len_scaling(self):
+        """Different pt_seq_len should produce different embeddings."""
+        rope_a = self._make_mode(pt_seq_len=14)
+        rope_b = self._make_mode(pt_seq_len=28)
+        sin_a, _ = rope_a.get_sincos(H=H, W=W)
+        sin_b, _ = rope_b.get_sincos(H=H, W=W)
+        assert not jnp.allclose(sin_a, sin_b)
+
+    def test_mode_freqs_shape_lang(self):
+        dim = 32
+        rope = self._make_mode(dim=dim, freqs_for="lang")
+        assert rope.freqs.shape == (dim // 2,)
+
+    def test_mode_freqs_shape_pixel(self):
+        dim = 32
+        rope = self._make_mode(dim=dim, freqs_for="pixel")
+        assert rope.freqs.shape == (dim // 2,)
+
+    def test_mode_freqs_shape_constant(self):
+        rope = VisionRoPE(strategy="mode", freqs_for="constant", num_freqs=7)
+        assert rope.freqs.shape == (7,)
+
+    # -- validation errors ---------------------------------------------------
+
+    def test_unknown_strategy_raises(self):
+        with pytest.raises(ValueError, match="Unknown strategy"):
+            VisionRoPE(strategy="unknown", dim=DIM)
+
+    def test_period_missing_dim_raises(self):
+        with pytest.raises(ValueError, match="requires `dim` and `num_heads`"):
+            VisionRoPE(strategy="period", num_heads=NUM_HEADS)
+
+    def test_period_missing_num_heads_raises(self):
+        with pytest.raises(ValueError, match="requires `dim` and `num_heads`"):
+            VisionRoPE(strategy="period", dim=DIM)
+
+    def test_period_dim_not_divisible_raises(self):
+        with pytest.raises(ValueError, match="4 \\* num_heads"):
+            VisionRoPE(strategy="period", dim=65, num_heads=4)
+
+    def test_period_base_and_periods_raises(self):
+        with pytest.raises(ValueError, match="Exactly one of"):
+            VisionRoPE(
+                strategy="period",
+                dim=DIM,
+                num_heads=NUM_HEADS,
+                base=100.0,
+                min_period=1.0,
+                max_period=10.0,
+            )
+
+    def test_period_neither_base_nor_periods_raises(self):
+        with pytest.raises(ValueError, match="Exactly one of"):
+            VisionRoPE(strategy="period", dim=DIM, num_heads=NUM_HEADS, base=None)
+
+    def test_mode_missing_dim_lang_raises(self):
+        with pytest.raises(ValueError, match="requires `dim`"):
+            VisionRoPE(strategy="mode", freqs_for="lang")
+
+    def test_mode_missing_dim_pixel_raises(self):
+        with pytest.raises(ValueError, match="requires `dim`"):
+            VisionRoPE(strategy="mode", freqs_for="pixel")
+
+    def test_mode_unknown_modality_raises(self):
+        with pytest.raises(ValueError, match="Unknown modality"):
+            VisionRoPE(strategy="mode", dim=DIM, freqs_for="invalid")
+
+    # -- parity with DinoRoPE -----------------------------------------------
+
+    def test_period_parity_with_dinorope_inference(self):
+        """VisionRoPE(strategy='period') must match DinoRoPE for the same config."""
+        dino = DinoRoPE(DIM, num_heads=NUM_HEADS, base=100.0)
+        vision = self._make_period(base=100.0)
+
+        sin_d, cos_d = dino.get_sincos(H=H, W=W, key=KEY, inference=True)
+        sin_v, cos_v = vision.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.allclose(sin_d, sin_v, atol=1e-6)
+        assert jnp.allclose(cos_d, cos_v, atol=1e-6)
+
+    def test_period_parity_with_dinorope_training(self):
+        """Augmented outputs must also match for the same key."""
+        cfg = dict(shift_coords=0.5, jitter_coords=2.0, rescale_coords=1.5)
+        dino = DinoRoPE(DIM, num_heads=NUM_HEADS, **cfg)
+        vision = self._make_period(**cfg)
+
+        k = jr.PRNGKey(42)
+        sin_d, cos_d = dino.get_sincos(H=H, W=W, key=k, inference=False)
+        sin_v, cos_v = vision.get_sincos(H=H, W=W, key=k, inference=False)
+        assert jnp.allclose(sin_d, sin_v, atol=1e-6)
+        assert jnp.allclose(cos_d, cos_v, atol=1e-6)
+
+    def test_period_parity_min_max_periods(self):
+        cfg = dict(base=None, min_period=1.0, max_period=100.0)
+        dino = DinoRoPE(DIM, num_heads=NUM_HEADS, **cfg)
+        vision = VisionRoPE(strategy="period", dim=DIM, num_heads=NUM_HEADS, **cfg)
+
+        sin_d, cos_d = dino.get_sincos(H=H, W=W, key=KEY, inference=True)
+        sin_v, cos_v = vision.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.allclose(sin_d, sin_v, atol=1e-6)
+        assert jnp.allclose(cos_d, cos_v, atol=1e-6)
+
+    # -- registry integration ------------------------------------------------
+
+    def test_registry_lookup(self):
+        assert get_posemb("visionrope") is VisionRoPE
+
+    def test_registry_roundtrip_period(self):
+        cls = get_posemb("visionrope")
+        rope = cls(strategy="period", dim=DIM, num_heads=NUM_HEADS)
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert jnp.all(jnp.isfinite(sin))
+
+    def test_registry_roundtrip_mode(self):
+        cls = get_posemb("visionrope")
+        rope = cls(strategy="mode", dim=DIM // 2)
+        sin, cos = rope.get_sincos(H=H, W=W)
+        assert jnp.all(jnp.isfinite(sin))
+
+    # -- dtype handling ------------------------------------------------------
+
+    def test_period_dtype_propagated(self):
+        rope = self._make_period(dtype=jnp.bfloat16)
+        sin, cos = rope.get_sincos(H=H, W=W, key=KEY, inference=True)
+        assert sin.dtype == jnp.bfloat16
+        assert cos.dtype == jnp.bfloat16
+
+    def test_mode_dtype_propagated(self):
+        rope = self._make_mode(dtype=jnp.bfloat16)
+        sin, cos = rope.get_sincos(H=H, W=W)
+        assert sin.dtype == jnp.bfloat16
+        assert cos.dtype == jnp.bfloat16
+
+    # -- non-square grids (mode strategy) ------------------------------------
+
+    def test_mode_nonsquare_get_sincos(self):
+        rope = self._make_mode()
+        sin, cos = rope.get_sincos(H=4, W=16)
+        assert sin.shape[0] == 4 * 16
+        assert jnp.all(jnp.isfinite(sin))
+
+    @pytest.mark.parametrize("normalize_coords", ["min", "max", "separate"])
+    def test_period_nonsquare_get_sincos(self, normalize_coords):
+        rope = self._make_period(normalize_coords=normalize_coords)
+        sin, cos = rope.get_sincos(H=4, W=16, key=KEY, inference=True)
+        assert sin.shape[0] == 4 * 16
+        assert jnp.all(jnp.isfinite(sin))
 
 
 # PosCNN

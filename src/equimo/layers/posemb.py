@@ -66,6 +66,12 @@ def get_posemb(module: str | type[eqx.Module]) -> type[eqx.Module]:
     return _POSEMB_REGISTRY[module_lower]
 
 
+def _rotate_half(x: jax.Array) -> jax.Array:
+    x_paired = x.reshape(*x.shape[:-1], -1, 2)
+    x1, x2 = x_paired[..., 0], x_paired[..., 1]
+    return jnp.stack([-x2, x1], axis=-1).reshape(x.shape)
+
+
 @register_posemb()
 class LearnedPosEmbed(eqx.Module):
     weight: jax.Array
@@ -702,6 +708,261 @@ class DinoRoPE(eqx.Module):
         sin = jnp.sin(angles).astype(dtype)  # [HW, D_head]
 
         return sin, cos
+
+
+@register_posemb()
+class VisionRoPE(eqx.Module):
+    """Unified 2-D Vision Rotary Position Embedding.
+
+    Supports two frequency strategies:
+
+    * **period-based** (DinoRoPE style):
+        Supply ``base`` *or* ``(min_period, max_period)`` with
+        ``num_heads``.  Coordinates are normalised to [-1, 1] via
+        ``normalize_coords``, with optional training-time augmentations.
+
+    * **mode-based** (VisionRotaryEmbedding style):
+        Supply ``freqs_for`` (one of 'lang', 'pixel', 'constant') with
+        ``pt_seq_len``.  Positions are divided by the axis length and
+        rescaled to the pretrained grid size.
+
+    In both cases ``get_sincos(H=..., W=...)`` returns ``(sin, cos)`` with
+    shape ``(H*W, D_out)`` so downstream code doesn't need to know which
+    strategy was used.
+    """
+
+    # common
+    freqs: Float[Array, "F"]
+    dtype: jnp.dtype = eqx.field(static=True)
+
+    # strategy selector
+    strategy: Literal["period", "mode"] = eqx.field(static=True)
+
+    # period-based fields (DinoRoPE)
+    D_head: Optional[int] = eqx.field(static=True, default=None)
+    normalize_coords: Optional[Literal["min", "max", "separate"]] = eqx.field(
+        static=True, default=None
+    )
+    shift_coords: Optional[float] = eqx.field(static=True, default=None)
+    jitter_coords: Optional[float] = eqx.field(static=True, default=None)
+    rescale_coords: Optional[float] = eqx.field(static=True, default=None)
+
+    # mode-based fields (VisionRotaryEmbedding)
+    pt_seq_len: Optional[int] = eqx.field(static=True, default=None)
+
+    def __init__(
+        self,
+        strategy: Literal["period", "mode"],
+        *,
+        # period-based params
+        dim: Optional[int] = None,
+        num_heads: Optional[int] = None,
+        base: Optional[float] = 100.0,
+        min_period: Optional[float] = None,
+        max_period: Optional[float] = None,
+        normalize_coords: Literal["min", "max", "separate"] = "separate",
+        shift_coords: Optional[float] = None,
+        jitter_coords: Optional[float] = None,
+        rescale_coords: Optional[float] = None,
+        periods_dtype: jnp.dtype = jnp.bfloat16,
+        # mode-based params
+        pt_seq_len: int = 14,
+        freqs_for: str = "lang",
+        theta: float = 10000,
+        max_freq: float = 10,
+        num_freqs: int = 1,
+        custom_freqs: Optional[jax.Array] = None,
+        # common
+        dtype: jnp.dtype = jnp.float32,
+    ):
+        self.strategy = strategy
+        self.dtype = dtype
+
+        if strategy == "period":
+            if dim is None or num_heads is None:
+                raise ValueError("strategy='period' requires `dim` and `num_heads`.")
+            if dim % (4 * num_heads) != 0:
+                raise ValueError("dim must be divisible by 4 * num_heads.")
+            both = (min_period is not None) and (max_period is not None)
+            if (base is None and not both) or (base is not None and both):
+                raise ValueError(
+                    "Exactly one of `base` or `min_period`+`max_period` required."
+                )
+
+            D_head = dim // num_heads
+            D_quarter = D_head // 4
+
+            if base is not None:
+                denom = D_head // 2
+                k = jnp.arange(D_quarter, dtype=periods_dtype)
+                freqs = base ** (2.0 * k / float(denom))
+            else:
+                assert min_period is not None and max_period is not None
+                ratio = max_period / min_period
+                exp = jnp.linspace(0.0, 1.0, D_quarter, dtype=periods_dtype)
+                freqs = ratio**exp / ratio * max_period
+                freqs = freqs.astype(periods_dtype)
+
+            self.freqs = freqs.astype(dtype)
+            self.D_head = D_head
+            self.normalize_coords = normalize_coords
+            self.shift_coords = shift_coords
+            self.jitter_coords = jitter_coords
+            self.rescale_coords = rescale_coords
+            self.pt_seq_len = None
+
+        elif strategy == "mode":
+            if custom_freqs is not None:
+                freqs = jnp.asarray(custom_freqs)
+            elif freqs_for == "lang":
+                if dim is None:
+                    raise ValueError("strategy='mode' requires `dim`.")
+                freqs = 1.0 / (
+                    theta
+                    ** (jnp.arange(0, dim, 2)[: dim // 2].astype(jnp.float32) / dim)
+                )
+            elif freqs_for == "pixel":
+                if dim is None:
+                    raise ValueError("strategy='mode' requires `dim`.")
+                freqs = jnp.linspace(1.0, max_freq / 2.0, dim // 2) * jnp.pi
+            elif freqs_for == "constant":
+                freqs = jnp.ones(num_freqs, dtype=jnp.float32)
+            else:
+                raise ValueError(f"Unknown modality '{freqs_for}'")
+
+            self.freqs = freqs.astype(dtype)
+            self.pt_seq_len = pt_seq_len
+            self.D_head = None
+            self.normalize_coords = None
+            self.shift_coords = None
+            self.jitter_coords = None
+            self.rescale_coords = None
+
+        else:
+            raise ValueError(f"Unknown strategy '{strategy}'. Use 'period' or 'mode'.")
+
+    def _coords_period(
+        self, H: int, W: int, *, key: PRNGKeyArray, inference: bool
+    ) -> jax.Array:
+        """Normalised coords in [-1, 1] with optional augmentations, shape (H*W, 2)."""
+        dtype = self.dtype
+
+        if self.normalize_coords == "max":
+            d = float(max(H, W))
+            ch = jnp.arange(0.5, H, step=1.0) / d
+            cw = jnp.arange(0.5, W, step=1.0) / d
+        elif self.normalize_coords == "min":
+            d = float(min(H, W))
+            ch = jnp.arange(0.5, H, step=1.0) / d
+            cw = jnp.arange(0.5, W, step=1.0) / d
+        else:
+            ch = jnp.arange(0.5, H, step=1.0) / float(H)
+            cw = jnp.arange(0.5, W, step=1.0) / float(W)
+
+        hh, ww = jnp.meshgrid(ch, cw, indexing="ij")
+        coords = jnp.stack([hh, ww], axis=-1).reshape(H * W, 2)
+        coords = (2.0 * coords - 1.0).astype(dtype)
+
+        if inference:
+            return coords
+
+        k_shift, k_jitter, k_rescale = jax.random.split(key, 3)
+
+        if self.shift_coords is not None:
+            shift = jax.random.uniform(
+                k_shift, (2,), minval=-self.shift_coords, maxval=self.shift_coords
+            ).astype(dtype)
+            coords = coords + shift[None, :]
+
+        if self.jitter_coords is not None:
+            if self.jitter_coords <= 0:
+                raise ValueError("jitter_coords must be > 0.")
+            jm = jnp.log(jnp.asarray(self.jitter_coords, dtype=dtype))
+            jitter = jnp.exp(
+                jax.random.uniform(k_jitter, (2,), minval=-jm, maxval=jm)
+            ).astype(dtype)
+            coords = coords * jitter[None, :]
+
+        if self.rescale_coords is not None:
+            if self.rescale_coords <= 0:
+                raise ValueError("rescale_coords must be > 0.")
+            rm = jnp.log(jnp.asarray(self.rescale_coords, dtype=dtype))
+            rescale = jnp.exp(
+                jax.random.uniform(k_rescale, (1,), minval=-rm, maxval=rm)
+            ).astype(dtype)
+            coords = coords * rescale
+
+        return coords
+
+    def _coords_mode(self, H: int, W: int) -> Tuple[jax.Array, jax.Array]:
+        """Position vectors rescaled by pt_seq_len, shapes (H,) and (W,)."""
+        assert self.pt_seq_len is not None
+        t_h = jnp.arange(H, dtype=jnp.float32) / H * self.pt_seq_len
+        t_w = jnp.arange(W, dtype=jnp.float32) / W * self.pt_seq_len
+        return t_h, t_w
+
+    def get_sincos(
+        self,
+        *,
+        H: int,
+        W: int,
+        key: Optional[PRNGKeyArray] = None,
+        inference: bool = True,
+    ) -> Tuple[jax.Array, jax.Array]:
+        """Compute ``(sin, cos)`` each with shape ``(H*W, D_out)``.
+
+        For period-based: ``D_out = D_head``.
+        For mode-based:   ``D_out = 2 * dim`` (height + width concatenated).
+
+        ``key`` and ``inference`` are only used by the period strategy
+        (for augmentations) and can be omitted for mode-based usage.
+        """
+        dtype = self.dtype
+        freqs = jax.lax.stop_gradient(self.freqs).astype(dtype)
+
+        if self.strategy == "period":
+            if key is None and not inference:
+                raise ValueError(
+                    "A PRNG key is required for period-based RoPE during training."
+                )
+            if key is None:
+                key = jax.random.PRNGKey(0)
+            D_quarter = self.D_head // 4
+
+            coords = self._coords_period(H, W, key=key, inference=inference)
+            angles = (2.0 * jnp.pi * coords[:, :, None]) / freqs[None, None, :]
+            angles = angles.reshape(H * W, 2 * D_quarter)
+            angles = jnp.tile(angles, (1, 2))
+
+        else:  # "mode"
+            t_h, t_w = self._coords_mode(H, W)
+
+            freqs_h = jnp.outer(t_h, freqs)
+            freqs_w = jnp.outer(t_w, freqs)
+            freqs_h = jnp.repeat(freqs_h, 2, axis=-1)
+            freqs_w = jnp.repeat(freqs_w, 2, axis=-1)
+
+            D = freqs_h.shape[-1]
+            fh = jnp.broadcast_to(freqs_h[:, None, :], (H, W, D))
+            fw = jnp.broadcast_to(freqs_w[None, :, :], (H, W, D))
+            angles = jnp.concatenate([fh, fw], axis=-1).reshape(H * W, -1)
+
+        return jnp.sin(angles).astype(dtype), jnp.cos(angles).astype(dtype)
+
+    def __call__(
+        self,
+        x: Float[Array, "..."],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+        inference: bool = True,
+    ) -> Float[Array, "..."]:
+        """Apply rotary embedding. Expects ``x.shape[-3]`` to be ``H * W``."""
+        seq_len = x.shape[-3]
+        ft = int(seq_len**0.5)
+        sin, cos = self.get_sincos(H=ft, W=ft, key=key, inference=inference)
+        cos = cos[:, None, :]
+        sin = sin[:, None, :]
+        return x * cos + _rotate_half(x) * sin
 
 
 @register_posemb()
