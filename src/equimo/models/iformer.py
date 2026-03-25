@@ -11,6 +11,7 @@ from equimo.layers.attention import SHMABlock
 from equimo.layers.convolution import (
     IFormerBlock,
     IFormerStem,
+    SingleConvBlock,
 )
 from equimo.layers.downsample import ConvNormDownsampler
 from equimo.layers.norm import get_norm
@@ -18,6 +19,8 @@ from equimo.layers.norm import get_norm
 
 def get_module(name, not_none: bool = True):
     match name:
+        case "conv":
+            return SingleConvBlock
         case "cndown":
             return ConvNormDownsampler
         case "ifb":
