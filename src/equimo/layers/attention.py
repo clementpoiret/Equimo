@@ -19,6 +19,101 @@ from equimo.layers.norm import LayerScale
 from equimo.layers.posemb import PosCNN2D, PosEmbMLPSwinv1D, PosEmbMLPSwinv2D, RoPE
 from equimo.utils import nearest_power_of_2_divisor
 
+_ATTN_REGISTRY: dict[str, type[eqx.Module]] = {}
+_ATTN_BLOCK_REGISTRY: dict[str, type[eqx.Module]] = {}
+
+
+def register_attn(
+    name: Optional[str] = None,
+    force: bool = False,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new attention modules.
+
+    Args:
+        name: Registry key. Defaults to the lowercase class name.
+        force: If True, allow overwriting an existing entry. Default False.
+    """
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _ATTN_REGISTRY and not force:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_ATTN_REGISTRY[registry_name]}."
+            )
+
+        _ATTN_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
+
+
+def get_attn(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get an `eqx.Module` class from its common name."""
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _ATTN_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_ATTN_REGISTRY.keys())}"
+        )
+
+    return _ATTN_REGISTRY[module_lower]
+
+
+def register_attn_block(
+    name: Optional[str] = None,
+    force: bool = False,
+) -> Callable[[type[eqx.Module]], type[eqx.Module]]:
+    """Decorator to dynamically register new attention blocks.
+
+    Args:
+        name: Registry key. Defaults to the lowercase class name.
+        force: If True, allow overwriting an existing entry. Default False.
+    """
+
+    def decorator(cls: type[eqx.Module]) -> type[eqx.Module]:
+        if not issubclass(cls, eqx.Module):
+            raise TypeError(
+                f"Registered class must be a subclass of eqx.Module, got {type(cls)}"
+            )
+
+        registry_name = name.lower() if name else cls.__name__.lower()
+
+        if registry_name in _ATTN_BLOCK_REGISTRY and not force:
+            raise ValueError(
+                f"Cannot register '{registry_name}'. It is already registered "
+                f"to {_ATTN_BLOCK_REGISTRY[registry_name]}."
+            )
+
+        _ATTN_BLOCK_REGISTRY[registry_name] = cls
+        return cls
+
+    return decorator
+
+
+def get_attn_block(module: str | type[eqx.Module]) -> type[eqx.Module]:
+    """Get an `eqx.Module` class from its common name."""
+    if not isinstance(module, str):
+        return module
+
+    module_lower = module.lower()
+    if module_lower not in _ATTN_BLOCK_REGISTRY:
+        raise ValueError(
+            f"Got an unknown module string: '{module}'. "
+            f"Available modules: {list(_ATTN_BLOCK_REGISTRY.keys())}"
+        )
+
+    return _ATTN_BLOCK_REGISTRY[module_lower]
+
 
 def rope_rotate_half(x: jax.Array) -> jax.Array:
     """Rotate last-dim pairs by 90 degrees: [x0..x_{D/2-1}, x_{D/2}..x_{D-1}]
@@ -84,6 +179,7 @@ def rope_apply_qk_last_hw(
     return q_out, k_out
 
 
+@register_attn()
 class Attention(eqx.Module):
     """Multi-head self attention module.
 
@@ -172,9 +268,12 @@ class Attention(eqx.Module):
         attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
 
         if mask is not None:
-            attn = jnp.where(mask == 0, jnp.finfo(attn.dtype).min, attn)
+            # Use float32 for softmax stability
+            attn = jnp.where(mask == 0, jnp.finfo(jnp.float32).min, attn.astype(jnp.float32))
+        else:
+            attn = attn.astype(jnp.float32)
 
-        attn = jax.nn.softmax(attn, axis=-1)
+        attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hkd->hqd", attn, v)
@@ -185,6 +284,7 @@ class Attention(eqx.Module):
         return x
 
 
+@register_attn()
 class WindowedAttention(eqx.Module):
     """Windowed multi-head self attention module.
 
@@ -273,9 +373,9 @@ class WindowedAttention(eqx.Module):
         q = jax.vmap(jax.vmap(self.q_norm))(q)
         k = jax.vmap(jax.vmap(self.k_norm))(k)
 
-        attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
+        attn = jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim)
         attn = self.pos_emb_funct(attn, self.resolution**2)
-        attn = jax.nn.softmax(attn, axis=-1)
+        attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hkd->hqd", attn, v)
@@ -286,6 +386,7 @@ class WindowedAttention(eqx.Module):
         return x
 
 
+@register_attn_block()
 class AttentionBlock(eqx.Module):
     """Standard transformer block with attention and MLP.
 
@@ -329,7 +430,7 @@ class AttentionBlock(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         act_layer: Callable = jax.nn.gelu,
-        attn_layer: eqx.Module = Attention,
+        attn_layer: eqx.Module | str = Attention,
         ffn_layer: eqx.Module = Mlp,
         ffn_bias: bool = True,
         ffn_norm: bool = False,
@@ -368,6 +469,7 @@ class AttentionBlock(eqx.Module):
         else:
             self.ls1 = self.ls2 = eqx.nn.Identity()
 
+        attn_layer = get_attn(attn_layer)
         self.attn = attn_layer(
             dim=dim,
             num_heads=num_heads,
@@ -447,6 +549,7 @@ class AttentionBlock(eqx.Module):
         return x
 
 
+@register_attn_block()
 class HATBlock(eqx.Module):
     """Hierarchical Attention Transformer block.
 
@@ -506,7 +609,7 @@ class HATBlock(eqx.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         act_layer: Callable = jax.nn.gelu,
-        attn_layer: eqx.Module = Attention,
+        attn_layer: eqx.Module | str = WindowedAttention,
         ffn_layer: eqx.Module = Mlp,
         ffn_bias: bool = True,
         norm_layer: eqx.Module = eqx.nn.LayerNorm,
@@ -557,7 +660,8 @@ class HATBlock(eqx.Module):
         cr_tokens_per_window = self.ct_size**2 if self.sr_ratio > 1 else 0
         cr_tokens_total = cr_tokens_per_window * self.sr_ratio * self.sr_ratio
 
-        self.attn = WindowedAttention(
+        attn_layer = get_attn(attn_layer)
+        self.attn = attn_layer(
             resolution=self.window_size,
             seq_len=self.window_size**2 + cr_tokens_per_window,
             dim=dim,
@@ -590,7 +694,7 @@ class HATBlock(eqx.Module):
             self.hat_norm1 = norm_layer(dim, eps=eps)
             self.hat_norm2 = norm_layer(dim, eps=eps)
 
-            self.hat_attn = WindowedAttention(
+            self.hat_attn = attn_layer(
                 resolution=int(cr_tokens_total**0.5),
                 seq_len=cr_tokens_total,
                 dim=dim,
@@ -774,6 +878,7 @@ class HATBlock(eqx.Module):
         return x, ct
 
 
+@register_attn()
 class SHSA(eqx.Module):
     """Signe-Head Self Attention module from the SHViT paper.
 
@@ -788,9 +893,9 @@ class SHSA(eqx.Module):
         pdim: Dimension of primary features
     """
 
-    scale: eqx.field(static=True)
-    qk_dim: eqx.field(static=True)
-    pdim: eqx.field(static=True)
+    scale: float = eqx.field(static=True)
+    qk_dim: int = eqx.field(static=True)
+    pdim: int = eqx.field(static=True)
 
     pre_norm: eqx.Module
     qkv: eqx.Module
@@ -855,11 +960,10 @@ class SHSA(eqx.Module):
         q, k, v = jnp.split(qkv, [self.qk_dim, self.qk_dim * 2], axis=0)
         q, k, v = self.flatten(q), self.flatten(k), self.flatten(v)
 
-        attn = jnp.einsum("dq,dk->qk", q, k) * self.scale
-        attn = jax.nn.softmax(attn, axis=-1)
+        attn = jnp.einsum("dq,dk->qk", q, k).astype(jnp.float32) * self.scale
+        attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
 
-        # TODO: verify einsum, qk,kd->qd
-        x1 = jnp.einsum("qk,dv->qd", attn, v)
+        x1 = jnp.einsum("qk,dk->qd", attn, v)
         x1 = rearrange(x1, "(h w) d -> d h w", h=H, w=W, d=self.pdim)
 
         x = jnp.concat([x1, x2], axis=0)
@@ -868,6 +972,7 @@ class SHSA(eqx.Module):
         return x
 
 
+@register_attn()
 class SHMA(eqx.Module):
     """Single-Head Multi-Scale Attention (SHMA) module.
 
@@ -962,7 +1067,7 @@ class SHMA(eqx.Module):
         C, H, W = x.shape
 
         q = self.q(x, inference=inference, key=key_q)
-        kvg = self.kv_fused(x, inference=inference, key=key_q)
+        kvg = self.kv_fused(x, inference=inference, key=key_kvg)
 
         k, vg = jnp.split(kvg, [self.dim_attn], axis=0)
         vg = jax.nn.sigmoid(vg)
@@ -974,8 +1079,8 @@ class SHMA(eqx.Module):
         v = rearrange(v, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
         gate = rearrange(gate, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
 
-        attn = jnp.einsum("h d i, h d j -> h i j", q, k) * self.scale
-        attn = jax.nn.softmax(attn, axis=-1)
+        attn = jnp.einsum("h d i, h d j -> h i j", q, k).astype(jnp.float32) * self.scale
+        attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
 
         attn = self.attn_drop(attn, key=key_drop, inference=inference)
 
@@ -1032,6 +1137,7 @@ class SHMA(eqx.Module):
             return self._calculate_attention(x, inference=inference, key=key)
 
 
+@register_attn_block()
 class SHMABlock(eqx.Module):
     posemb: PosCNN2D
     attn: SHMA
@@ -1157,6 +1263,7 @@ class SHMABlock(eqx.Module):
         return x
 
 
+@register_attn()
 class LinearAttention(eqx.Module):
     """Linear attention with rotary position encoding.
 
@@ -1228,9 +1335,9 @@ class LinearAttention(eqx.Module):
         k_rope = rearrange(self.rope(k_2d), "x y (h d) -> h (x y) d", h=self.num_heads)
 
         # Compute attention
-        z = 1 / (jnp.einsum("hnd,hd->hn", q, reduce(k, "h n d -> h d", "mean")) + 1e-6)
+        z = 1 / (jnp.einsum("hnd,hd->hn", q, reduce(k, "h n d -> h d", "mean")).astype(jnp.float32) + 1e-6)
         kv = jnp.einsum("hnd,hne->hde", k_rope * (n**-0.5), v * (n**-0.5))
-        x = jnp.einsum("hnd,hde->hne", q_rope, kv) * z[..., None]
+        x = jnp.einsum("hnd,hde->hne", q_rope, kv) * z[..., None].astype(x.dtype)
 
         # Reshape output
         x = rearrange(x, "h n d -> n (h d)")
@@ -1247,6 +1354,7 @@ class LinearAttention(eqx.Module):
         return x
 
 
+@register_attn_block()
 class MllaBlock(eqx.Module):
     """Mamba-like Linear Attention block.
 
@@ -1286,7 +1394,7 @@ class MllaBlock(eqx.Module):
         act_layer: Callable = jax.nn.silu,  # gelu in VSSD
         norm_layer: type[eqx.Module] = eqx.nn.LayerNorm,
         use_dwc: bool = True,  # For Mlla but not VMamba-2
-        attention_layer: type[eqx.Module] = LinearAttention,
+        attention_layer: type[eqx.Module] | str = LinearAttention,
         drop_path: List[float] | float = 0.0,
         mlp_ratio: float = 4.0,
         ffn_layer: type[eqx.Module] = Mlp,
@@ -1296,12 +1404,6 @@ class MllaBlock(eqx.Module):
         eps: float = 1e-5,
         **kwargs,
     ):
-        if attention_layer not in [Attention, LinearAttention, Mamba2Mixer]:
-            raise ValueError(
-                "Unsupported `attention_layer`, got:",
-                attention_layer,
-            )
-
         (
             key_conv1,
             key_conv2,
@@ -1346,6 +1448,7 @@ class MllaBlock(eqx.Module):
 
         config = {"dim": dim}
 
+        attention_layer = get_attn(attention_layer)
         self.attn = attention_layer(
             **(kwargs | config),
             key=key_attn,
@@ -1443,6 +1546,7 @@ class MllaBlock(eqx.Module):
         )
 
 
+@register_attn()
 class MMSA(eqx.Module):
     """Mixed Multi-head Self Attention.
 
@@ -1533,7 +1637,7 @@ class MMSA(eqx.Module):
         q = jax.vmap(jax.vmap(self.q_norm))(q)
         k = jax.vmap(jax.vmap(self.k_norm))(k)
 
-        attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
+        attn = (jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim))
         attn = jax.vmap(jax.vmap(self.attn_proj1))(
             rearrange(attn, "h q k -> q k h"),
         )
@@ -1541,7 +1645,7 @@ class MMSA(eqx.Module):
         attn = rearrange(
             jax.vmap(jax.vmap(self.attn_proj2))(attn),
             "q k h -> h q k",
-        )
+        ).astype(x.dtype)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hkd->hqd", attn, v)
@@ -1552,6 +1656,7 @@ class MMSA(eqx.Module):
         return x
 
 
+@register_attn()
 class SQA(eqx.Module):
     """Single Query Attention module.
 
@@ -1602,13 +1707,13 @@ class SQA(eqx.Module):
 
         assert self.head_dim * num_heads == dim, "dim must be divisible by num_heads"
 
-        key_kv, key_proj = jr.split(key, 2)
+        key_kv, key_proj1, key_proj2 = jr.split(key, 3)
         self.kv = eqx.nn.Linear(dim, dim * 2, use_bias=kv_bias, key=key_kv)
         self.proj1 = eqx.nn.Linear(
-            dim, int(dim // proj_ratio), use_bias=proj_bias, key=key_proj
+            dim, int(dim // proj_ratio), use_bias=proj_bias, key=key_proj1
         )
         self.proj2 = eqx.nn.Linear(
-            int(dim // proj_ratio), dim, use_bias=proj_bias, key=key_proj
+            int(dim // proj_ratio), dim, use_bias=proj_bias, key=key_proj2
         )
         self.proj_norm = norm_layer(int(dim // proj_ratio), eps=eps)
 
@@ -1645,8 +1750,8 @@ class SQA(eqx.Module):
         q = jax.vmap(jax.vmap(self.q_norm))(q)
         k = jax.vmap(jax.vmap(self.k_norm))(k)
 
-        attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
-        attn = jax.nn.softmax(attn, axis=-1)
+        attn = (jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim))
+        attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x1 = jnp.einsum("hqk,hkd->hqd", attn, v)
@@ -1659,6 +1764,7 @@ class SQA(eqx.Module):
         return x
 
 
+@register_attn_block()
 class PartialFormerBlock(eqx.Module):
     """Partial Transformer block with foreground/background separation.
 
@@ -1820,11 +1926,28 @@ class PartialFormerBlock(eqx.Module):
         b = rearrange(b, "n s c -> (n s) c")
 
         qf = self.mmsa(jnp.concat([qa, f], axis=0), inference=inference, key=key_mmsa)
-        qa, f = jnp.split(qf, [1])
+        qa, f = jnp.split(qf, [1], axis=0)
         b = self.sqa(b, qa, inference=inference, key=key_sqa)
 
-        x1 = self.ls1(jnp.concat([f, b], axis=0))
-        x = self.drop_path1(x, x1, inference=inference, key=key_dr1)
+        # Invert the sort permutation to restore 2D spatial layout before residual add.
+        # Concatenating sorted [foreground, background] directly onto x would map the
+        # highest-attention background token to the top-left spatial coordinate.
+        x1_out = jnp.concat([f, b], axis=0)
+        x1_out = rearrange(x1_out, "(n s) c -> n s c", n=n)
+
+        inv_idx = jnp.argsort(idx)
+        x1_out = x1_out[inv_idx]
+
+        x1_out = rearrange(
+            x1_out,
+            "(gh gw) (h1 w1) c -> (gh h1 gw w1) c",
+            gh=h // self.patch_size,
+            gw=w // self.patch_size,
+            h1=self.patch_size,
+            w1=self.patch_size,
+        )
+        x1_out = self.ls1(x1_out)
+        x = self.drop_path1(x, x1_out, inference=inference, key=key_dr1)
 
         qa, x1 = jnp.split(
             self.mlp(
@@ -1845,6 +1968,7 @@ class PartialFormerBlock(eqx.Module):
         return x, qa
 
 
+@register_attn()
 class LinearAngularAttention(eqx.Module):
     """Linear Angular Attention with optional sparsity.
 
@@ -1941,23 +2065,26 @@ class LinearAngularAttention(eqx.Module):
         q, k, v = qkv
 
         if self.sparse_reg:
-            attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
-            attn = jax.nn.softmax(attn, axis=-1)
+            attn = (jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim))
+            attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
             attn = self.attn_drop(attn, inference=inference, key=key1)
             sparse = jnp.where(attn > self.sparsity_threshold, attn, 0)
 
-        q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
-        k = k / jnp.linalg.norm(k, axis=-1, keepdims=True)
+        q = q / (jnp.linalg.norm(q, axis=-1, keepdims=True).astype(jnp.float32) + 1e-6)
+        k = k / (jnp.linalg.norm(k, axis=-1, keepdims=True).astype(jnp.float32) + 1e-6)
+        q, k = q.astype(x.dtype), k.astype(x.dtype)
         dconv_v = self.dconv(v)
 
-        attn = jnp.einsum("hqk,hqv->hkv", k, v)
+        # Upcast to float32 to prevent overflow when accumulating over long sequences.
+        attn_kv = jnp.einsum("hqk,hqv->hkv", k.astype(jnp.float32), v.astype(jnp.float32))
 
         if self.sparse_reg:
-            x = (sparse @ v) + 0.5 * v + 1.0 / jnp.pi * (q @ attn)
+            x_out = (sparse @ v) + 0.5 * v + (1.0 / jnp.pi) * (q.astype(jnp.float32) @ attn_kv)
         else:
-            x = 0.5 * v + 1.0 / jnp.pi * (q @ attn)
+            x_out = 0.5 * v + (1.0 / jnp.pi) * (q.astype(jnp.float32) @ attn_kv)
 
-        x = x / jnp.linalg.norm(x, axis=-1, keepdims=True)
+        x = x_out / (jnp.linalg.norm(x_out, axis=-1, keepdims=True) + 1e-6)
+        x = x.astype(v.dtype)
         x += dconv_v
 
         x = rearrange(x, "h s d -> s (h d)")
@@ -1967,6 +2094,7 @@ class LinearAngularAttention(eqx.Module):
         return x
 
 
+@register_attn()
 class RFAttention(eqx.Module):
     """Attention with Tensor Reduction by Summation[1].
 
@@ -2072,17 +2200,23 @@ class RFAttention(eqx.Module):
         q = self.kernel_func(q)
         k = self.kernel_func(k)
 
-        sum_k = jnp.sum(k, axis=(-1, -2), keepdims=True)
-        sum_v = jnp.sum(v * sum_k, axis=(-1, -2), keepdims=True)
-        sum_kv = jnp.sum(k * sum_v, axis=(-1, -2), keepdims=True)
-        sum_q = jnp.sum(q, axis=0, keepdims=True)
+        # Use float32 for summation stability
+        k_f32 = k.astype(jnp.float32)
+        v_f32 = v.astype(jnp.float32)
+        q_f32 = q.astype(jnp.float32)
 
-        out = (q * sum_kv) / (sum_q * sum_k + self.eps)
+        sum_k = jnp.sum(k_f32, axis=(-1, -2), keepdims=True)
+        sum_v = jnp.sum(v_f32 * sum_k, axis=(-1, -2), keepdims=True)
+        sum_kv = jnp.sum(k_f32 * sum_v, axis=(-1, -2), keepdims=True)
+        sum_q = jnp.sum(q_f32, axis=0, keepdims=True)
+
+        out = ((q_f32 * sum_kv) / jnp.maximum(sum_q * sum_k, self.eps)).astype(x.dtype)
         out = self.proj(out, inference=inference, key=key)
 
         return out
 
 
+@register_attn_block()
 class RFAttentionBlock(eqx.Module):
     residual: bool = eqx.field(static=True)
 
@@ -2190,6 +2324,7 @@ class RFAttentionBlock(eqx.Module):
         return x2
 
 
+@register_attn()
 class ConvAttention(eqx.Module):
     """Lightweight ConvAttention from LowFormer."""
 
@@ -2293,13 +2428,13 @@ class ConvAttention(eqx.Module):
         _, s, _ = q.shape
         h = w = int(s**0.5)
 
-        attn_logits = q @ rearrange(k, "h s d -> h d s")
+        attn_logits = (q @ rearrange(k, "h s d -> h d s")).astype(jnp.float32)
         attn_logits /= self.head_dim**0.5
 
         if self.attention_type == "softmax":
-            attn = jax.nn.softmax(attn_logits, axis=-1)
+            attn = jax.nn.softmax(attn_logits, axis=-1).astype(x.dtype)
         elif self.attention_type == "sigmoid":
-            attn = jax.nn.sigmoid(attn_logits)
+            attn = jax.nn.sigmoid(attn_logits).astype(x.dtype)
 
         v = attn @ v
 
@@ -2309,6 +2444,7 @@ class ConvAttention(eqx.Module):
         return out
 
 
+@register_attn_block()
 class ConvAttentionBlock(eqx.Module):
     prenorm: eqx.Module
     postnorm: eqx.Module
@@ -2373,7 +2509,7 @@ class ConvAttentionBlock(eqx.Module):
         )
 
         self.mlp = DoubleConvBlock(
-            dim=dim,
+            in_channels=dim,
             hidden_channels=int(dim * mlp_ratio),
             kernel_size=1,
             stride=1,
@@ -2398,10 +2534,10 @@ class ConvAttentionBlock(eqx.Module):
 
     def __call__(
         self,
-        x: Float[Array, "seqlen dim"],
+        x: Float[Array, "dim height width"],
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
-    ) -> Float[Array, "seqlen dim"]:
+    ) -> Float[Array, "dim height width"]:
         key_attn, key_mlp, key_dr1, key_dr2 = jr.split(key, 4)
 
         x = self.drop_path1(
@@ -2422,7 +2558,7 @@ class ConvAttentionBlock(eqx.Module):
             x,
             self.ls2(
                 self.mlp(
-                    self.norm(x),
+                    jax.vmap(self.norm)(x) if x.ndim == 2 else self.norm(x),
                     inference=inference,
                     key=key_mlp,
                 )
@@ -2434,6 +2570,7 @@ class ConvAttentionBlock(eqx.Module):
         return x
 
 
+@register_attn_block()
 class LowFormerBlock(eqx.Module):
     context_module: ConvAttentionBlock
     local_module: MBConv
@@ -2536,55 +2673,4 @@ class LowFormerBlock(eqx.Module):
         return x
 
 
-def get_attention(module: str | type[eqx.Module]) -> type[eqx.Module]:
-    """Get an `eqx.Module` from its common name.
-
-    This is necessary because configs have to be stringified and stored as
-    json files to allow (de)serialization.
-    """
-    if not isinstance(module, str):
-        return module
-
-    match module:
-        case "attention":
-            return Attention
-        case "windowedattention":
-            return WindowedAttention
-        case "shsa":
-            return SHSA
-        case "shma":
-            return SHMA
-        case "linearattention":
-            return LinearAttention
-        case "mmsa":
-            return MMSA
-        case "sqa":
-            return SQA
-        case "linearangularattention":
-            return LinearAngularAttention
-        case _:
-            raise ValueError(f"Got an unknown module string: {module}")
-
-
-def get_attention_block(module: str | type[eqx.Module]) -> type[eqx.Module]:
-    """Get an `eqx.Module` from its common name.
-
-    This is necessary because configs have to be stringified and stored as
-    json files to allow (de)serialization.
-    """
-    if not isinstance(module, str):
-        return module
-
-    match module:
-        case "attentionblock":
-            return AttentionBlock
-        case "shmablock":
-            return SHMABlock
-        case "hatblock":
-            return HATBlock
-        case "mllablock":
-            return MllaBlock
-        case "partialformerblock":
-            return PartialFormerBlock
-        case _:
-            raise ValueError(f"Got an unknown module string: {module}")
+_ATTN_REGISTRY["mamba2mixer"] = Mamba2Mixer
