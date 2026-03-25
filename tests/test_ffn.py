@@ -144,12 +144,12 @@ class TestMlp:
         assert mlp(x, KEY).shape == (SEQLEN, DIM)
 
     def test_output_shape_custom_out(self):
-        mlp = Mlp(DIM, out_features=32, key=KEY)
+        mlp = Mlp(DIM, out_dim=32, key=KEY)
         x = jr.normal(KEY, (SEQLEN, DIM))
         assert mlp(x, KEY).shape == (SEQLEN, 32)
 
     def test_output_shape_custom_hidden(self):
-        mlp = Mlp(DIM, hidden_features=256, key=KEY)
+        mlp = Mlp(DIM, hidden_dim=256, key=KEY)
         x = jr.normal(KEY, (SEQLEN, DIM))
         assert mlp(x, KEY).shape == (SEQLEN, DIM)
 
@@ -227,7 +227,7 @@ class TestSwiGlu:
         assert sg(x, KEY).shape == (SEQLEN, DIM)
 
     def test_output_shape_custom_out(self):
-        sg = SwiGlu(DIM, out_features=32, key=KEY)
+        sg = SwiGlu(DIM, out_dim=32, key=KEY)
         x = jr.normal(KEY, (SEQLEN, DIM))
         assert sg(x, KEY).shape == (SEQLEN, 32)
 
@@ -239,16 +239,16 @@ class TestSwiGlu:
     def test_hidden_dim_aligned(self):
         """Internal hidden dimension must be a multiple of align_to."""
         align_to = 8
-        sg = SwiGlu(DIM, hidden_features=100, align_to=align_to, key=KEY)
+        sg = SwiGlu(DIM, hidden_dim=100, align_to=align_to, key=KEY)
         hidden = sg.w1.out_features
         assert hidden % align_to == 0
 
     def test_custom_align_to(self):
-        sg = SwiGlu(DIM, hidden_features=100, align_to=16, key=KEY)
+        sg = SwiGlu(DIM, hidden_dim=100, align_to=16, key=KEY)
         assert sg.w1.out_features % 16 == 0
 
     def test_w1_w2_same_hidden_dim(self):
-        sg = SwiGlu(DIM, hidden_features=100, key=KEY)
+        sg = SwiGlu(DIM, hidden_dim=100, key=KEY)
         assert sg.w1.out_features == sg.w2.out_features
 
     def test_deterministic_in_inference_mode(self):
@@ -283,7 +283,7 @@ class TestSwiGluFused:
         assert sgf(x, KEY).shape == (SEQLEN, DIM)
 
     def test_output_shape_custom_out(self):
-        sgf = SwiGluFused(DIM, out_features=32, key=KEY)
+        sgf = SwiGluFused(DIM, out_dim=32, key=KEY)
         x = jr.normal(KEY, (SEQLEN, DIM))
         assert sgf(x, KEY).shape == (SEQLEN, 32)
 
@@ -295,26 +295,26 @@ class TestSwiGluFused:
     def test_hidden_dim_aligned(self):
         """Internal hidden dimension must be a multiple of align_to."""
         align_to = 8
-        sgf = SwiGluFused(DIM, hidden_features=100, align_to=align_to, key=KEY)
+        sgf = SwiGluFused(DIM, hidden_dim=100, align_to=align_to, key=KEY)
         # w12 projects to 2 * hidden, so hidden = w12.out_features // 2
         hidden = sgf.w12.out_features // 2
         assert hidden % align_to == 0
 
     def test_custom_align_to(self):
-        sgf = SwiGluFused(DIM, hidden_features=100, align_to=16, key=KEY)
+        sgf = SwiGluFused(DIM, hidden_dim=100, align_to=16, key=KEY)
         hidden = sgf.w12.out_features // 2
         assert hidden % 16 == 0
 
     def test_fused_hidden_matches_unfused(self):
         """SwiGluFused and SwiGlu must produce the same hidden dim for equal args."""
-        hidden_features = 100
-        sg = SwiGlu(DIM, hidden_features=hidden_features, key=KEY)
-        sgf = SwiGluFused(DIM, hidden_features=hidden_features, key=KEY)
+        hidden_dim = 100
+        sg = SwiGlu(DIM, hidden_dim=hidden_dim, key=KEY)
+        sgf = SwiGluFused(DIM, hidden_dim=hidden_dim, key=KEY)
         assert sg.w1.out_features == sgf.w12.out_features // 2
 
     def test_w12_is_double_hidden(self):
         """w12 output dim must be exactly 2 * hidden."""
-        sgf = SwiGluFused(DIM, hidden_features=128, key=KEY)
+        sgf = SwiGluFused(DIM, hidden_dim=128, key=KEY)
         hidden = sgf.w3.in_features
         assert sgf.w12.out_features == 2 * hidden
 
@@ -367,3 +367,60 @@ class TestGetFfn:
         model = cls(DIM, key=KEY)
         x = jr.normal(KEY, (SEQLEN, DIM))
         assert model(x, KEY).shape == (SEQLEN, DIM)
+
+    def test_returned_class_instantiable_with_dim_kwargs(self):
+        cls = get_ffn("mlp")
+        model = cls(DIM, hidden_dim=128, out_dim=32, key=KEY)
+        x = jr.normal(KEY, (SEQLEN, DIM))
+        assert model(x, KEY).shape == (SEQLEN, 32)
+
+
+# ---------------------------------------------------------------------------
+# register_ffn
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterFfn:
+    def test_register_default_name(self):
+        import equinox as eqx
+        from equimo.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
+
+        @register_ffn()
+        class CustomFFN(eqx.Module):
+            pass
+
+        assert "customffn" in _FFN_REGISTRY
+        assert get_ffn("customffn") is CustomFFN
+
+    def test_register_custom_name(self):
+        import equinox as eqx
+        from equimo.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
+
+        @register_ffn(name="MySuperFFN")
+        class CustomFFN2(eqx.Module):
+            pass
+
+        assert "mysuperffn" in _FFN_REGISTRY
+        assert get_ffn("mysuperffn") is CustomFFN2
+
+    def test_register_non_eqx_module(self):
+        from equimo.layers.ffn import register_ffn
+
+        with pytest.raises(TypeError, match="must be a subclass of eqx.Module"):
+            @register_ffn()
+            class NotAModule:
+                pass
+
+    def test_register_duplicate_name(self):
+        import equinox as eqx
+        from equimo.layers.ffn import register_ffn
+
+        @register_ffn()
+        class DuplicateFFN(eqx.Module):
+            pass
+
+        with pytest.raises(ValueError, match="already registered"):
+            @register_ffn(name="DuplicateFFN")
+            class AnotherFFN(eqx.Module):
+                pass
+

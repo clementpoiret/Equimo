@@ -382,8 +382,8 @@ class AttentionBlock(eqx.Module):
         )
 
         self.mlp = ffn_layer(
-            in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
+            dim=dim,
+            hidden_dim=int(dim * mlp_ratio),
             act_layer=act_layer,
             norm_layer=norm_layer if ffn_norm else None,
             dropout_rate=proj_drop,
@@ -573,8 +573,8 @@ class HATBlock(eqx.Module):
         )
 
         self.mlp = ffn_layer(
-            in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
+            dim=dim,
+            hidden_dim=int(dim * mlp_ratio),
             act_layer=act_layer,
             dropout_rate=proj_drop,
             bias=ffn_bias,
@@ -606,8 +606,8 @@ class HATBlock(eqx.Module):
             )
 
             self.hat_mlp = ffn_layer(
-                in_features=dim,
-                hidden_features=int(dim * mlp_ratio),
+                dim=dim,
+                hidden_dim=int(dim * mlp_ratio),
                 act_layer=act_layer,
                 dropout_rate=proj_drop,
                 bias=ffn_bias,
@@ -1378,8 +1378,8 @@ class MllaBlock(eqx.Module):
 
         self.norm2 = norm_layer(dim, eps=eps)
         self.mlp = ffn_layer(
-            in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
+            dim=dim,
+            hidden_dim=int(dim * mlp_ratio),
             act_layer=act_layer,
             dropout_rate=proj_drop,
             bias=ffn_bias,
@@ -1776,8 +1776,8 @@ class PartialFormerBlock(eqx.Module):
         )
 
         self.mlp = ffn_layer(
-            in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
+            dim=dim,
+            hidden_dim=int(dim * mlp_ratio),
             act_layer=act_layer,
             dropout_rate=proj_drop,
             bias=ffn_bias,

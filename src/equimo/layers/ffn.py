@@ -72,16 +72,12 @@ class WeightNormLinear(eqx.Module):
 
     weight_v: Float[Array, "out_features in_features"]
     weight_g: Float[Array, "out_features 1"]
-    eps: float = eqx.field(static=True)
 
-    def __init__(
-        self, in_features: int, out_features: int, key: PRNGKeyArray, eps: float = 1e-6
-    ):
+    def __init__(self, in_features: int, out_features: int, key: PRNGKeyArray):
         self.weight_v = eqx.nn.Linear(
             in_features, out_features, use_bias=False, key=key
         ).weight
         self.weight_g = jnp.ones((out_features, 1))
-        self.eps = eps
 
     def __call__(
         self,
@@ -95,7 +91,7 @@ class WeightNormLinear(eqx.Module):
         Returns:
             Transformed tensor of shape (seqlen, out_features)
         """
-        v_norm = jnp.sqrt(jnp.sum(self.weight_v**2, axis=1, keepdims=True) + self.eps)
+        v_norm = jnp.linalg.norm(self.weight_v, ord=2, axis=1, keepdims=True)
         normalized_v = self.weight_v / v_norm
         weight = self.weight_g * normalized_v
 
@@ -185,7 +181,7 @@ class DINOHead(eqx.Module):
         x = self.act_layer(jax.vmap(self.fc2)(x))
         x = self.act_layer(jax.vmap(self.fc3)(x))
 
-        x = x / jnp.sqrt(jnp.sum(x**2, axis=-1, keepdims=True) + eps)
+        x = x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + eps)
 
         x = self.last(x)
 
@@ -222,11 +218,11 @@ class Mlp(eqx.Module):
 
     def __init__(
         self,
-        in_features: int,
+        dim: int,
         *,
         key: PRNGKeyArray,
-        out_features: int | None = None,
-        hidden_features: int | None = None,
+        out_dim: int | None = None,
+        hidden_dim: int | None = None,
         act_layer: Callable = jax.nn.gelu,
         norm_layer: Callable | None = None,
         dropout_rate: float = 0.0,
@@ -237,10 +233,10 @@ class Mlp(eqx.Module):
         """Initialize the MLP.
 
         Args:
-            in_features: Number of input features
+            dim: Token embedding dimension (input and default output)
             key: PRNG key for initialization
-            out_features: Number of output features (default: same as in_features)
-            hidden_features: Number of hidden features (default: same as in_features)
+            out_dim: Output dimension (default: same as dim)
+            hidden_dim: Expanded hidden dimension (default: same as dim)
             act_layer: Activation function (default: gelu)
             norm_layer: Optional norm layer applied post-activation after fc1 (default: None)
             dropout_rate: Dropout probability (default: 0.0)
@@ -252,18 +248,12 @@ class Mlp(eqx.Module):
 
         self.act_layer = act_layer
 
-        hidden_features = hidden_features or in_features
-        out_features = out_features or in_features
+        hidden_dim = hidden_dim or dim
+        out_dim = out_dim or dim
 
-        self.fc1 = eqx.nn.Linear(
-            in_features, hidden_features, use_bias=bias, key=key_fc1
-        )
-        self.norm = (
-            norm_layer(hidden_features, eps=eps) if norm_layer else eqx.nn.Identity()
-        )
-        self.fc2 = eqx.nn.Linear(
-            hidden_features, out_features, use_bias=bias, key=key_fc2
-        )
+        self.fc1 = eqx.nn.Linear(dim, hidden_dim, use_bias=bias, key=key_fc1)
+        self.norm = norm_layer(hidden_dim, eps=eps) if norm_layer else eqx.nn.Identity()
+        self.fc2 = eqx.nn.Linear(hidden_dim, out_dim, use_bias=bias, key=key_fc2)
 
         self.drop1 = eqx.nn.Dropout(dropout_rate)
         self.drop2 = eqx.nn.Dropout(dropout_rate)
@@ -325,11 +315,11 @@ class SwiGlu(eqx.Module):
 
     def __init__(
         self,
-        in_features: int,
+        dim: int,
         *,
         key: PRNGKeyArray,
-        out_features: int | None = None,
-        hidden_features: int | None = None,
+        out_dim: int | None = None,
+        hidden_dim: int | None = None,
         dropout_rate: float = 0.0,
         align_to: int = 8,
         bias: bool = True,
@@ -338,31 +328,25 @@ class SwiGlu(eqx.Module):
         """Initialize the SwiGLU module.
 
         Args:
-            in_features: Number of input features
+            dim: Token embedding dimension (input and default output)
             key: PRNG key for initialization
-            out_features: Number of output features (default: same as in_features)
-            hidden_features: Size of hidden dimension before alignment (default: same as in_features)
+            out_dim: Output dimension (default: same as dim)
+            hidden_dim: Size of hidden dimension before alignment (default: same as dim)
             dropout_rate: Dropout probability (default: 0.0)
-            align_to: Constrains hidden features to be a multiple of this value (default: 8)
+            align_to: Constrains hidden_dim to be a multiple of this value (default: 8)
             bias: Whether to include bias in linear layers (default: True)
             **kwargs: Additional arguments (norm_layer is not supported and will be ignored)
         """
         key_fc1, key_fc2, key_fc3 = jr.split(key, 3)
 
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        d = int(hidden_features * 2 / 3)
-        hidden_features = d + (-d % align_to)
+        out_dim = out_dim or dim
+        hidden_dim = hidden_dim or dim
+        d = int(hidden_dim * 2 / 3)
+        hidden_dim = d + (-d % align_to)
 
-        self.w1 = eqx.nn.Linear(
-            in_features, hidden_features, use_bias=bias, key=key_fc1
-        )
-        self.w2 = eqx.nn.Linear(
-            in_features, hidden_features, use_bias=bias, key=key_fc2
-        )
-        self.w3 = eqx.nn.Linear(
-            hidden_features, out_features, use_bias=bias, key=key_fc3
-        )
+        self.w1 = eqx.nn.Linear(dim, hidden_dim, use_bias=bias, key=key_fc1)
+        self.w2 = eqx.nn.Linear(dim, hidden_dim, use_bias=bias, key=key_fc2)
+        self.w3 = eqx.nn.Linear(hidden_dim, out_dim, use_bias=bias, key=key_fc3)
 
         self.drop1 = eqx.nn.Dropout(dropout_rate)
         self.drop2 = eqx.nn.Dropout(dropout_rate)
@@ -428,11 +412,11 @@ class SwiGluFused(eqx.Module):
 
     def __init__(
         self,
-        in_features: int,
+        dim: int,
         *,
         key: PRNGKeyArray,
-        out_features: int | None = None,
-        hidden_features: int | None = None,
+        out_dim: int | None = None,
+        hidden_dim: int | None = None,
         dropout_rate: float = 0.0,
         align_to: int = 8,
         bias: bool = True,
@@ -441,28 +425,24 @@ class SwiGluFused(eqx.Module):
         """Initialize the fused SwiGLU module.
 
         Args:
-            in_features: Number of input features
+            dim: Token embedding dimension (input and default output)
             key: PRNG key for initialization
-            out_features: Number of output features (default: same as in_features)
-            hidden_features: Size of hidden dimension before alignment (default: same as in_features)
+            out_dim: Output dimension (default: same as dim)
+            hidden_dim: Size of hidden dimension before alignment (default: same as dim)
             dropout_rate: Dropout probability (default: 0.0)
-            align_to: Constrains hidden features to be a multiple of this value (default: 8)
+            align_to: Constrains hidden_dim to be a multiple of this value (default: 8)
             bias: Whether to include bias in linear layers (default: True)
             **kwargs: Additional arguments (norm_layer is not supported and will be ignored)
         """
         key_fc1, key_fc2 = jr.split(key, 2)
 
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        d = int(hidden_features * 2 / 3)
-        hidden_features = d + (-d % align_to)
+        out_dim = out_dim or dim
+        hidden_dim = hidden_dim or dim
+        d = int(hidden_dim * 2 / 3)
+        hidden_dim = d + (-d % align_to)
 
-        self.w12 = eqx.nn.Linear(
-            in_features, 2 * hidden_features, use_bias=bias, key=key_fc1
-        )
-        self.w3 = eqx.nn.Linear(
-            hidden_features, out_features, use_bias=bias, key=key_fc2
-        )
+        self.w12 = eqx.nn.Linear(dim, 2 * hidden_dim, use_bias=bias, key=key_fc1)
+        self.w3 = eqx.nn.Linear(hidden_dim, out_dim, use_bias=bias, key=key_fc2)
 
         self.drop1 = eqx.nn.Dropout(dropout_rate)
         self.drop2 = eqx.nn.Dropout(dropout_rate)
