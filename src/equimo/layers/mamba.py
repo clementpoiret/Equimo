@@ -219,9 +219,7 @@ class Mamba2Mixer(eqx.Module):
             axis=-1,
         )
 
-        dt = jax.nn.softplus(
-            dt.astype(jnp.float32) + self.dt_bias.astype(jnp.float32)
-        )
+        dt = jax.nn.softplus(dt.astype(jnp.float32) + self.dt_bias.astype(jnp.float32))
 
         # apply 1d depthwise convolution and silu activation
         xbc_conv = rearrange(self.conv(rearrange(xbc, "s d -> d s")), "d s -> s d")

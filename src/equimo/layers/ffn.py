@@ -99,8 +99,9 @@ class WeightNormLinear(eqx.Module):
         Returns:
             Transformed tensor of shape (seqlen, out_features)
         """
-        v_norm = jnp.linalg.norm(self.weight_v, ord=2, axis=1, keepdims=True)
-        normalized_v = self.weight_v / v_norm
+        v_f32 = self.weight_v.astype(jnp.float32)
+        v_norm = jnp.linalg.norm(v_f32, ord=2, axis=1, keepdims=True)
+        normalized_v = (v_f32 / v_norm).astype(self.weight_v.dtype)
         weight = self.weight_g * normalized_v
 
         out = x @ weight.T
@@ -169,27 +170,27 @@ class DINOHead(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        inference: Optional[bool] = None,
         key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen out_features"]:
         """Process input through the DINOv2 projection head.
 
         Args:
             x: Input feature tensor of shape (seqlen, dim)
-            inference: Unused; present for API consistency with other FFN modules
             key: Unused; present for API consistency with other FFN modules
+            inference: Unused; present for API consistency with other FFN modules
 
         Returns:
             Projected and normalized features of shape (seqlen, out_features)
         """
-        # Use larger eps for reduced-precision dtypes to avoid division by zero
-        eps = 1e-6 if x.dtype in (jnp.float16, jnp.bfloat16) else 1e-12
-
         x = self.act_layer(jax.vmap(self.fc1)(x))
         x = self.act_layer(jax.vmap(self.fc2)(x))
         x = self.act_layer(jax.vmap(self.fc3)(x))
 
-        x = x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + eps)
+        x_f32 = x.astype(jnp.float32)
+        x = (
+            x_f32 / (jnp.linalg.norm(x_f32, ord=2, axis=-1, keepdims=True) + 1e-12)
+        ).astype(x.dtype)
 
         x = self.last(x)
 

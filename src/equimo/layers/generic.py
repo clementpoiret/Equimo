@@ -66,12 +66,9 @@ def _resolve_layer(name_or_cls: "str | type[eqx.Module]") -> "type[eqx.Module]":
         if name_lower in registry:
             return registry[name_lower]
 
-    available = sorted(
-        set().union(*[r.keys() for _, r in registries])
-    )
+    available = sorted(set().union(*[r.keys() for _, r in registries]))
     raise ValueError(
-        f"Layer '{name_or_cls}' not found in any registry. "
-        f"Available: {available}"
+        f"Layer '{name_or_cls}' not found in any registry. Available: {available}"
     )
 
 
@@ -382,7 +379,7 @@ class BlockChunk(eqx.Module):
         x: Float[Array, "..."],
         *,
         key: PRNGKeyArray,
-        inference: bool = False,
+        inference: Optional[bool] = None,
         **kwargs,
     ) -> Float[Array, "..."]:
         n_blocks = len(self.blocks) if self.blocks is not None else 0

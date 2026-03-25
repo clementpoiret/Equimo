@@ -71,8 +71,17 @@ class TestGetAct:
         assert jnp.all(jnp.isfinite(out))
 
     def test_all_builtins_callable(self):
-        builtins = ["relu", "gelu", "exactgelu", "silu", "elu", "sigmoid",
-                    "hard_sigmoid", "hard_swish", "softmax"]
+        builtins = [
+            "relu",
+            "gelu",
+            "exactgelu",
+            "silu",
+            "elu",
+            "sigmoid",
+            "hard_sigmoid",
+            "hard_swish",
+            "softmax",
+        ]
         for name in builtins:
             fn = get_act(name)
             out = fn(X)
@@ -117,6 +126,7 @@ class TestRegisterAct:
             return x
 
         with pytest.raises(ValueError, match="already registered"):
+
             @register_act(name="dup_act_1")
             def act_b(x):
                 return x

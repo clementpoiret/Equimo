@@ -18,9 +18,7 @@ from equimo.layers.posemb import (
     register_posemb,
 )
 
-# ---------------------------------------------------------------------------
 # Shared fixtures
-# ---------------------------------------------------------------------------
 
 KEY = jr.PRNGKey(0)
 DIM = 64
@@ -29,9 +27,7 @@ H, W = 8, 8
 SEQLEN = H * W  # 64
 
 
-# ---------------------------------------------------------------------------
 # LearnedPosEmbed
-# ---------------------------------------------------------------------------
 
 
 class TestLearnedPosEmbed:
@@ -119,9 +115,7 @@ class TestLearnedPosEmbed:
         assert resampled.shape == (64, DIM)
 
 
-# ---------------------------------------------------------------------------
 # PosEmbMLPSwinv1D
-# ---------------------------------------------------------------------------
 
 
 class TestPosEmbMLPSwinv1D:
@@ -169,9 +163,7 @@ class TestPosEmbMLPSwinv1D:
         assert layer.relative_coords_table.shape == (2, side, side)
 
 
-# ---------------------------------------------------------------------------
 # PosEmbMLPSwinv2D
-# ---------------------------------------------------------------------------
 
 
 class TestPosEmbMLPSwinv2D:
@@ -237,9 +229,7 @@ class TestPosEmbMLPSwinv2D:
         assert layer.relative_position_index.shape == (ws * ws, ws * ws)
 
 
-# ---------------------------------------------------------------------------
 # RoPE
-# ---------------------------------------------------------------------------
 
 
 class TestRoPE:
@@ -300,9 +290,7 @@ class TestRoPE:
             RoPE(shape=(4, 5))
 
 
-# ---------------------------------------------------------------------------
 # DinoRoPE
-# ---------------------------------------------------------------------------
 
 
 class TestDinoRoPE:
@@ -350,7 +338,9 @@ class TestDinoRoPE:
 
     def test_base_and_periods_mutually_exclusive(self):
         with pytest.raises(ValueError, match="mutually exclusive"):
-            DinoRoPE(DIM, num_heads=NUM_HEADS, base=100.0, min_period=1.0, max_period=10.0)
+            DinoRoPE(
+                DIM, num_heads=NUM_HEADS, base=100.0, min_period=1.0, max_period=10.0
+            )
 
     def test_neither_base_nor_periods_raises(self):
         with pytest.raises(ValueError, match="mutually exclusive"):
@@ -391,9 +381,7 @@ class TestDinoRoPE:
         assert rope.periods.shape == (d_quarter,)
 
 
-# ---------------------------------------------------------------------------
 # PosCNN
-# ---------------------------------------------------------------------------
 
 
 class TestPosCNN:
@@ -441,9 +429,7 @@ class TestPosCNN:
         assert jnp.all(jnp.isfinite(layer(x)))
 
 
-# ---------------------------------------------------------------------------
 # PosCNN2D
-# ---------------------------------------------------------------------------
 
 
 class TestPosCNN2D:
@@ -487,9 +473,7 @@ class TestPosCNN2D:
         assert not jnp.allclose(out, x)
 
 
-# ---------------------------------------------------------------------------
 # get_posemb
-# ---------------------------------------------------------------------------
 
 
 class TestGetPosemb:
@@ -516,9 +500,7 @@ class TestGetPosemb:
             get_posemb("nonexistent_posemb")
 
 
-# ---------------------------------------------------------------------------
 # register_posemb
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterPosemb:

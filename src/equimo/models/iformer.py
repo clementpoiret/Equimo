@@ -127,7 +127,14 @@ class IFormer(eqx.Module):
 
 def iformer_t(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
+        modules=[
+            "iformerblock",
+            "iformerblock",
+            "iformerblock",
+            "shmablock",
+            "iformerblock",
+            "shmablock",
+        ],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 3.0},
             {"kernel_size": 7, "expand_ratio": 3.0},
@@ -146,7 +153,14 @@ def iformer_t(**kwargs) -> IFormer:
                 "ffn_ratio": 2.0,
             },
         ],
-        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
+        downsamplers=[
+            "iformerstem",
+            "convnormdownsampler",
+            "convnormdownsampler",
+            None,
+            None,
+            "convnormdownsampler",
+        ],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[32, 64, 128, 128, 128, 256],
@@ -158,7 +172,14 @@ def iformer_t(**kwargs) -> IFormer:
 
 def iformer_s(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
+        modules=[
+            "iformerblock",
+            "iformerblock",
+            "iformerblock",
+            "shmablock",
+            "iformerblock",
+            "shmablock",
+        ],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -177,7 +198,14 @@ def iformer_s(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
+        downsamplers=[
+            "iformerstem",
+            "convnormdownsampler",
+            "convnormdownsampler",
+            None,
+            None,
+            "convnormdownsampler",
+        ],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[32, 64, 176, 176, 176, 320],
@@ -189,7 +217,14 @@ def iformer_s(**kwargs) -> IFormer:
 
 def iformer_m(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
+        modules=[
+            "iformerblock",
+            "iformerblock",
+            "iformerblock",
+            "shmablock",
+            "iformerblock",
+            "shmablock",
+        ],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -208,7 +243,14 @@ def iformer_m(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
+        downsamplers=[
+            "iformerstem",
+            "convnormdownsampler",
+            "convnormdownsampler",
+            None,
+            None,
+            "convnormdownsampler",
+        ],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 192, 192, 192, 384],
@@ -221,7 +263,14 @@ def iformer_m(**kwargs) -> IFormer:
 # TODO: share windowing to avoid intermediate resizes
 def iformer_m_faster(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
+        modules=[
+            "iformerblock",
+            "iformerblock",
+            "iformerblock",
+            "shmablock",
+            "iformerblock",
+            "shmablock",
+        ],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -241,7 +290,14 @@ def iformer_m_faster(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
+        downsamplers=[
+            "iformerstem",
+            "convnormdownsampler",
+            "convnormdownsampler",
+            None,
+            None,
+            "convnormdownsampler",
+        ],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 192, 192, 192, 384],
@@ -253,7 +309,14 @@ def iformer_m_faster(**kwargs) -> IFormer:
 
 def iformer_l(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
+        modules=[
+            "iformerblock",
+            "iformerblock",
+            "iformerblock",
+            "shmablock",
+            "iformerblock",
+            "shmablock",
+        ],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -272,7 +335,14 @@ def iformer_l(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
+        downsamplers=[
+            "iformerstem",
+            "convnormdownsampler",
+            "convnormdownsampler",
+            None,
+            None,
+            "convnormdownsampler",
+        ],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 256, 256, 256, 384],
@@ -284,7 +354,14 @@ def iformer_l(**kwargs) -> IFormer:
 
 def iformer_l_faster(**kwargs) -> IFormer:
     backbone = IFormer(
-        modules=["iformerblock", "iformerblock", "iformerblock", "shmablock", "iformerblock", "shmablock"],
+        modules=[
+            "iformerblock",
+            "iformerblock",
+            "iformerblock",
+            "shmablock",
+            "iformerblock",
+            "shmablock",
+        ],
         module_kwargs=[
             {"kernel_size": 7, "expand_ratio": 4.0},
             {"kernel_size": 7, "expand_ratio": 4.0},
@@ -304,7 +381,14 @@ def iformer_l_faster(**kwargs) -> IFormer:
                 "ffn_ratio": 3.0,
             },
         ],
-        downsamplers=["iformerstem", "convnormdownsampler", "convnormdownsampler", None, None, "convnormdownsampler"],
+        downsamplers=[
+            "iformerstem",
+            "convnormdownsampler",
+            "convnormdownsampler",
+            None,
+            None,
+            "convnormdownsampler",
+        ],
         downsampler_kwargs=[{}, {}, {}, {}, {}, {}],
         downsample_last=False,
         dims=[48, 96, 256, 256, 256, 384],

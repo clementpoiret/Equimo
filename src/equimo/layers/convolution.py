@@ -241,7 +241,7 @@ class DoubleConvBlock(eqx.Module):
             stride=stride,
             padding=padding,
             use_bias=use_bias,
-            norm_layer=eqx.nn.GroupNorm,
+            norm_layer="groupnorm",
             act_layer=act_layer,
             dropout=dropout,
             key=key_conv1,
@@ -253,7 +253,7 @@ class DoubleConvBlock(eqx.Module):
             stride=stride,
             padding=padding,
             use_bias=use_bias,
-            norm_layer=eqx.nn.GroupNorm,
+            norm_layer="groupnorm",
             act_layer=None,
             dropout=dropout,
             key=key_conv2,
@@ -365,7 +365,7 @@ class Stem(eqx.Module):
             stride=2,
             padding=1,
             use_bias=False,
-            act_layer=jax.nn.relu,
+            act_layer="relu",
             key=key_conv1,
         )
 
@@ -378,7 +378,7 @@ class Stem(eqx.Module):
                     stride=1,
                     padding=1,
                     use_bias=False,
-                    act_layer=jax.nn.relu,
+                    act_layer="relu",
                     key=key_conv2,
                 ),
                 SingleConvBlock(
@@ -403,7 +403,7 @@ class Stem(eqx.Module):
                     stride=2,
                     padding=1,
                     use_bias=False,
-                    act_layer=jax.nn.relu,
+                    act_layer="relu",
                     key=key_conv4,
                 ),
                 SingleConvBlock(
@@ -460,7 +460,7 @@ class ConvBottleneck(eqx.Module):
         self.conv1 = SingleConvBlock(
             in_channels=in_channels,
             out_channels=hidden_channels,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=kernel_sizes[0],
             stride=1,
             padding="SAME",
@@ -469,7 +469,7 @@ class ConvBottleneck(eqx.Module):
         self.conv2 = SingleConvBlock(
             in_channels=hidden_channels,
             out_channels=out_channels,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=kernel_sizes[1],
             stride=1,
             padding="SAME",
@@ -526,7 +526,7 @@ class C2f(eqx.Module):
         self.conv1 = SingleConvBlock(
             in_channels=in_channels,
             out_channels=self.hidden_channels * 2,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -535,7 +535,7 @@ class C2f(eqx.Module):
         self.conv2 = SingleConvBlock(
             in_channels=(2 + n) * self.hidden_channels,
             out_channels=out_channels,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -600,7 +600,7 @@ class C3k(eqx.Module):
         self.conv1 = SingleConvBlock(
             in_channels=in_channels,
             out_channels=hidden_channels,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -609,7 +609,7 @@ class C3k(eqx.Module):
         self.conv2 = SingleConvBlock(
             in_channels=in_channels,
             out_channels=hidden_channels,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -618,7 +618,7 @@ class C3k(eqx.Module):
         self.conv3 = SingleConvBlock(
             in_channels=2 * hidden_channels,
             out_channels=out_channels,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -721,7 +721,7 @@ class C3k2(eqx.Module):
         self.conv1 = SingleConvBlock(
             in_channels=in_channels,
             out_channels=self.hidden_channels * 2,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -730,7 +730,7 @@ class C3k2(eqx.Module):
         self.conv2 = SingleConvBlock(
             in_channels=(2 + n) * self.hidden_channels,
             out_channels=out_channels,
-            act_layer=jax.nn.silu,
+            act_layer="silu",
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -934,7 +934,7 @@ class MBConv(eqx.Module):
                 rd_ratio=1.0,
                 rd_divisor=4,
                 use_norm=False,
-                act_layer=jax.nn.hard_sigmoid,
+                act_layer="hard_sigmoid",
                 key=key_se,
             )
             if se
@@ -1618,7 +1618,9 @@ class GenericGhostModule(eqx.Module):
         cheap_terms.extend(conv(x1) for conv in self.cheap_rpr_conv)
 
         if not cheap_terms:
-            x2 = jnp.zeros((self.cheap_operation.out_channels, x1.shape[1], x1.shape[2]))
+            x2 = jnp.zeros(
+                (self.cheap_operation.out_channels, x1.shape[1], x1.shape[2])
+            )
         else:
             x2_sum = jax.tree_util.tree_reduce(operator.add, cheap_terms)
             x2 = self.cheap_activation(self.cheap_shared_norm(x2_sum))
@@ -1699,7 +1701,7 @@ class GhostBottleneck(eqx.Module):
         *,
         dw_kernel_size: int = 3,
         stride: int = 1,
-        act_layer: Callable = jax.nn.relu,
+        act_layer: str | Callable = "relu",
         se_ratio: float = 0.0,
         use_shortcut_mode_in_ghost1: bool = True,
         allow_identity_residual: bool = True,
@@ -1859,7 +1861,9 @@ class GhostBottleneck(eqx.Module):
                     terms = [conv(x) for conv in self.dw_rpr_conv]
                     if not isinstance(self.dw_rpr_scale, eqx.nn.Identity):
                         terms.append(self.dw_rpr_scale(x))
-                    x = self.dw_shared_norm(jax.tree_util.tree_reduce(operator.add, terms))
+                    x = self.dw_shared_norm(
+                        jax.tree_util.tree_reduce(operator.add, terms)
+                    )
             else:
                 x = jax.lax.cond(
                     use_inference,
@@ -1872,7 +1876,7 @@ class GhostBottleneck(eqx.Module):
                                 if isinstance(self.dw_rpr_scale, eqx.nn.Identity)
                                 else [self.dw_rpr_scale(y)]
                             )
-                            + [conv(y) for conv in self.dw_rpr_conv]
+                            + [conv(y) for conv in self.dw_rpr_conv],
                         ),
                     ),
                     operand=x,
@@ -2262,9 +2266,9 @@ class FasterNetBlock(eqx.Module):
         mlp_ratio: int = 3,
         kernel_size: int = 3,
         padding: str | int = "SAME",
-        norm_layer: eqx.Module | None = eqx.nn.GroupNorm,
+        norm_layer: str | type[eqx.Module] | None = "groupnorm",
         norm_max_group: int = 32,
-        act_layer: Callable | None = jax.nn.relu,
+        act_layer: str | Callable | None = "relu",
         dropout: float = 0.0,
         drop_path: float = 0.0,
         norm_kwargs: dict = {},
@@ -2319,9 +2323,7 @@ class FasterNetBlock(eqx.Module):
         key_sm, key_pw1, key_pw2 = jr.split(key, 3)
         self.residual = residual
 
-        self.spatial_mixing = PartialConv2d(
-            in_channels=dim, n_dim=n_dim, key=key_sm
-        )
+        self.spatial_mixing = PartialConv2d(in_channels=dim, n_dim=n_dim, key=key_sm)
 
         hidden_channels = mlp_ratio * dim
         self.pw_conv1 = eqx.nn.Conv2d(
@@ -2344,6 +2346,7 @@ class FasterNetBlock(eqx.Module):
         )
 
         if norm_layer is not None:
+            norm_layer = get_norm(norm_layer)
             if norm_layer == eqx.nn.GroupNorm:
                 num_groups = nearest_power_of_2_divisor(hidden_channels, norm_max_group)
                 self.norm = eqx.nn.GroupNorm(num_groups, hidden_channels, **norm_kwargs)
@@ -2359,6 +2362,7 @@ class FasterNetBlock(eqx.Module):
             if init_values is not None and self.residual
             else eqx.nn.Identity()
         )
+        act_layer = get_act(act_layer) if act_layer is not None else None
         self.act = eqx.nn.Lambda(act_layer) if act_layer else eqx.nn.Identity()
 
     def __call__(
@@ -2400,10 +2404,11 @@ class GLUConv(eqx.Module):
         *,
         glu_norm: bool = True,
         glu_dwconv: bool = False,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
         dropout: float = 0.0,
         key: PRNGKeyArray,
     ):
+        act_layer = get_act(act_layer)
         key_conv1, key_conv2, key_dwconv = jr.split(key, 3)
 
         self.conv1 = eqx.nn.Conv2d(
@@ -2499,10 +2504,11 @@ class ATConv(eqx.Module):
         in_channels: int,
         *,
         kernel_size: int = 3,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
         use_bias: bool = True,
         key: PRNGKeyArray,
     ):
+        act_layer = get_act(act_layer)
         key_xproj, key_proj, key_kp, key_kg = jr.split(key, 4)
 
         self.kernel_size = kernel_size
@@ -2609,7 +2615,7 @@ class ATConvBlock(eqx.Module):
         in_channels: int | None = None,
         kernel_size: int = 3,
         exp_rate: float = 4.0,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
         glu_norm: bool = True,
         glu_dwconv: bool = False,
         use_bias: bool = True,
@@ -2805,13 +2811,14 @@ class ShiftNeck(eqx.Module):
         *,
         key: PRNGKeyArray,
         reduction_ratio: int = 8,
-        act_layer: Callable = jax.nn.relu,
+        act_layer: str | Callable = "relu",
     ):
         """
         Args:
             in_channels: Input channel dimension (usually 2c in ShiftFFN).
             reduction_ratio: Reduction factor for the bottleneck (default 8).
         """
+        act_layer = get_act(act_layer)
         key_r, key_e = jr.split(key, 2)
 
         hidden_channels = max(1, in_channels // reduction_ratio)
@@ -2876,8 +2883,9 @@ class ShiftFFN(eqx.Module):
         key: PRNGKeyArray,
         expansion_ratio_first: int = 2,
         neck_reduction_ratio: int = 8,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
     ):
+        act_layer = get_act(act_layer)
         key_c1, key_sn, key_c2 = jr.split(key, 3)
 
         mid_channels = in_channels * expansion_ratio_first
@@ -2961,16 +2969,19 @@ class FreeNetBlock(eqx.Module):
         mixer_kernel_sizes: Sequence[int] = [5, 7],
         mixer_dilations: Sequence[int] = [2, 2],
         ffn_expansion: int = 2,
-        norm_layer: eqx.Module = eqx.nn.GroupNorm,
+        norm_layer: str | type[eqx.Module] | None = "groupnorm",
         norm_kwargs: dict = {},
         drop_path: float = 0.0,
-        act_layer: Callable = jax.nn.gelu,
+        act_layer: str | Callable = "gelu",
         init_values: float | None = None,
         residual: bool = True,
         **kwargs,
     ):
         assert dim is not None or in_channels is not None
         dim = dim if dim is not None else in_channels
+        act_layer = get_act(act_layer)
+        if norm_layer is not None:
+            norm_layer = get_norm(norm_layer)
         key_mix, key_ffn = jr.split(key, 2)
         self.residual = residual
 

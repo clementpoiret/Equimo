@@ -10,153 +10,97 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from equimo.layers.activation import get_act
 from equimo.layers.attention import RFAttentionBlock
 from equimo.layers.convolution import DSConv, MBConv, SingleConvBlock
+from equimo.layers.generic import BlockChunk
 from equimo.layers.norm import get_norm
 from equimo.models.registry import register_model
 
 
-class BlockChunk(eqx.Module):
-    blocks: Tuple[DSConv | MBConv | RFAttentionBlock, ...]
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        depth: int,
-        *,
-        key: PRNGKeyArray,
-        block_type: Literal["conv", "attention"] = "conv",
-        stride: int = 1,
-        expand_ratio: float = 1.0,
-        scales: Tuple[int, ...] = (5,),
-        head_dim: int = 32,
-        heads_ratio: float = 1.0,
-        norm_layer: str | type[eqx.Module] = "groupnorm",
-        act_layer: str | Callable = "hard_swish",
-        fewer_norm: bool = False,
-        fuse_mbconv: bool = False,
-        dropout: float = 0.0,
-        drop_path: list[float] | float = 0.0,
-        residual: bool = False,
-        **kwargs,
-    ):
-        norm_layer = get_norm(norm_layer)
-        act_layer = get_act(act_layer)
-
-        key, *block_subkeys = jr.split(key, depth + 1)
-
-        keys_to_spread = [
-            k for k, v in kwargs.items() if isinstance(v, list) and len(v) == depth
-        ]
-
-        if isinstance(drop_path, list):
-            if len(drop_path) != depth:
-                raise ValueError(f"Got {len(drop_path)} values for a depth of {depth}.")
-        else:
-            drop_path = [drop_path] * depth
-
-        blocks = []
-
-        # TODO: simplify logic
-        match block_type:
-            case "conv":
-                block = DSConv if expand_ratio == 1.0 else MBConv
-                if fewer_norm:
-                    use_bias: Tuple[bool, ...] | bool = (
-                        (True, False) if block == DSConv else (True, True, False)
-                    )
-                    norm_layer = (
-                        (None, norm_layer)
-                        if block == DSConv
-                        else (None, None, norm_layer)
-                    )
-                else:
-                    use_bias = False
-
-                for i in range(depth):
-                    config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
-
-                    if block == MBConv:
-                        config["expand_ratio"] = expand_ratio
-                        config["fuse"] = fuse_mbconv
-
-                    blocks.append(
-                        block(
-                            in_channels=in_channels if i == 0 else out_channels,
-                            out_channels=out_channels,
-                            stride=stride if i == 0 else 1,
-                            use_bias=use_bias,
-                            norm_layer=norm_layer,
-                            dropout=dropout,
-                            drop_path=drop_path[i],
-                            residual=residual,
-                            act_layer=(act_layer, None)
-                            if block == DSConv
-                            else (act_layer, act_layer, None),
-                            **config,
-                            key=block_subkeys[i],
-                        )
-                    )
-
-            case "attention":
-                blocks.append(
-                    MBConv(
-                        in_channels,
-                        out_channels,
-                        stride=2,  # TODO: make downsampling optional
-                        expand_ratio=expand_ratio,
-                        norm_layer=(None, None, norm_layer),
-                        act_layer=(act_layer, act_layer, None),
-                        use_bias=(True, True, False),
-                        dropout=dropout,
-                        fuse=fuse_mbconv,
-                        residual=False,
-                        key=key,
-                    )
-                )
-                for i in range(depth):
-                    blocks.append(
-                        RFAttentionBlock(
-                            in_channels=out_channels,
-                            head_dim=head_dim,
-                            heads_ratio=heads_ratio,
-                            scales=scales,
-                            rfattn_norm_layer=norm_layer,
-                            expand_ratio=expand_ratio,
-                            mbconv_norm_layer=(None, None, norm_layer),
-                            mbconv_act_layers=(act_layer, act_layer, None),
-                            fuse_mbconv=fuse_mbconv,
-                            context_drop=dropout,
-                            local_drop=dropout,
-                            drop_path=drop_path[i],
-                            residual_mbconv=False,
-                            key=block_subkeys[i],
-                        )
-                    )
-
-        self.blocks = tuple(blocks)
-
-    def __call__(
-        self,
-        x: Float[Array, "..."],
-        *,
-        key: PRNGKeyArray,
-        inference: Optional[bool] = None,
-        **kwargs,
-    ) -> Float[Array, "..."]:
-        keys = jr.split(key, len(self.blocks))
-
-        # TODO: Dropout and Stochastic Path Add
-        for blk, key_block in zip(self.blocks, keys):
-            x = blk(x, inference=inference, key=key_block, **kwargs)
-
-        return x
+def _make_reduceformer_chunk(
+    block_type: Literal["conv", "attention"],
+    in_channels: int,
+    out_channels: int,
+    depth: int,
+    *,
+    key: PRNGKeyArray,
+    stride: int = 1,
+    expand_ratio: float = 1.0,
+    fuse_mbconv: bool = False,
+    norm_layer,
+    act_layer,
+    dropout: float = 0.0,
+    drop_path: float | list[float] = 0.0,
+    residual: bool = False,
+    # attention-only params
+    head_dim: int = 32,
+    heads_ratio: float = 1.0,
+    scales: Tuple[int, ...] = (5,),
+) -> BlockChunk:
+    is_ds = expand_ratio == 1.0
+    if block_type == "conv":
+        block_cls = DSConv if is_ds else MBConv
+        mkw: dict = {
+            "in_channels": [in_channels] + [out_channels] * max(depth - 1, 0),
+            "out_channels": out_channels,
+            "stride": [stride] + [1] * max(depth - 1, 0),
+            "use_bias": False,
+            "norm_layer": norm_layer,
+            "act_layer": (act_layer, None) if is_ds else (act_layer, act_layer, None),
+            "dropout": dropout,
+            "residual": residual,
+        }
+        if not is_ds:
+            mkw["expand_ratio"] = expand_ratio
+            mkw["fuse"] = fuse_mbconv
+        return BlockChunk(
+            depth=depth,
+            module=block_cls,
+            module_kwargs=mkw,
+            drop_path=drop_path,
+            key=key,
+        )
+    else:  # attention
+        return BlockChunk(
+            depth=depth,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            module=RFAttentionBlock,
+            module_kwargs={
+                "in_channels": out_channels,
+                "head_dim": head_dim,
+                "heads_ratio": heads_ratio,
+                "scales": scales,
+                "rfattn_norm_layer": norm_layer,
+                "expand_ratio": expand_ratio,
+                "mbconv_norm_layers": (None, None, norm_layer),
+                "mbconv_act_layers": (act_layer, act_layer, None),
+                "fuse_mbconv": fuse_mbconv,
+                "context_drop": dropout,
+                "local_drop": dropout,
+                "residual_mbconv": False,
+            },
+            downsampler=MBConv,
+            downsampler_kwargs={
+                "stride": 2,
+                "expand_ratio": expand_ratio,
+                "norm_layer": (None, None, norm_layer),
+                "act_layer": (act_layer, act_layer, None),
+                "use_bias": (True, True, False),
+                "dropout": dropout,
+                "fuse": fuse_mbconv,
+                "residual": False,
+            },
+            downsampler_needs_key=True,
+            downsample_last=False,
+            drop_path=drop_path,
+            key=key,
+        )
 
 
 @register_model("reduceformer")
 class ReduceFormer(eqx.Module):
     conv_stem: SingleConvBlock
-    block_stem: BlockChunk
-    blocks: Tuple[BlockChunk, ...]
+    block_stem: eqx.Module
+    blocks: Tuple[eqx.Module, ...]
     head: eqx.nn.Linear | eqx.nn.Identity
 
     def __init__(
@@ -213,11 +157,11 @@ class ReduceFormer(eqx.Module):
             act_layer=act_layer,
             key=key_stem,
         )
-        self.block_stem = BlockChunk(
-            in_channels=width_stem,
-            out_channels=width_stem,
-            depth=depth_stem,
-            block_type=block_type_stem,
+        self.block_stem = _make_reduceformer_chunk(
+            block_type_stem,
+            width_stem,
+            width_stem,
+            depth_stem,
             stride=1,
             expand_ratio=1.0,
             norm_layer=norm_layer,
@@ -229,20 +173,20 @@ class ReduceFormer(eqx.Module):
         )
 
         self.blocks = tuple(
-            BlockChunk(
+            _make_reduceformer_chunk(
+                block_type,
                 in_channels=widths[i - 1] if i > 0 else width_stem,
                 out_channels=widths[i],
                 depth=depth,
-                block_type=block_type,
                 stride=2,
-                head_dim=head_dim,
                 expand_ratio=expand_ratio,
+                fuse_mbconv=fuse_mbconv,
                 norm_layer=norm_layer,
                 act_layer=act_layer,
-                fuse_mbconv=fuse_mbconv,
                 dropout=dropout,
                 drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
                 residual=residual,
+                head_dim=head_dim,
                 key=key_block,
             )
             for i, (depth, block_type, key_block) in enumerate(
@@ -254,14 +198,14 @@ class ReduceFormer(eqx.Module):
             eqx.nn.Linear(
                 in_features=widths[-1], out_features=num_classes, key=key_head
             )
-            if num_classes and num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 
     def intermediates(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
         **kwargs,
     ):
@@ -283,7 +227,7 @@ class ReduceFormer(eqx.Module):
     def features(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
         **kwargs,
     ) -> Float[Array, "seqlen dim"]:

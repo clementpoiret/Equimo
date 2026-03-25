@@ -1,7 +1,6 @@
 """Tests for equimo.layers.generic: Residual, WindowedSequence, BlockChunk."""
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -15,9 +14,7 @@ DIM = 16
 SHAPE = (DIM, 8, 8)  # (C, H, W) — spatial feature map
 
 
-# ---------------------------------------------------------------------------
 # A minimal block for testing composition layers
-# ---------------------------------------------------------------------------
 
 
 class _IdentityBlock(eqx.Module):
@@ -48,8 +45,14 @@ class _WindowBlock(eqx.Module):
 
     window_size: int = eqx.field(static=True)
 
-    def __init__(self, in_channels: int, drop_path: float = 0.0,
-                 window_size: int = 0, key: PRNGKeyArray = None, **_kw):
+    def __init__(
+        self,
+        in_channels: int,
+        drop_path: float = 0.0,
+        window_size: int = 0,
+        key: PRNGKeyArray = None,
+        **_kw,
+    ):
         self.window_size = window_size
 
     def __call__(
@@ -58,9 +61,7 @@ class _WindowBlock(eqx.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
 # Residual
-# ---------------------------------------------------------------------------
 
 
 class TestResidual:
@@ -124,9 +125,7 @@ class TestResidual:
         assert jnp.all(jnp.isfinite(layer(x, KEY)))
 
 
-# ---------------------------------------------------------------------------
 # WindowedSequence
-# ---------------------------------------------------------------------------
 
 
 class TestWindowedSequence:
@@ -211,9 +210,7 @@ class TestWindowedSequence:
         assert layer(x, KEY, inference=True).shape == (DIM, 8, 8)
 
 
-# ---------------------------------------------------------------------------
 # BlockChunk
-# ---------------------------------------------------------------------------
 
 
 class _SimpleBlock(eqx.Module):

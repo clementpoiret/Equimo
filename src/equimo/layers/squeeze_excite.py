@@ -2,7 +2,6 @@ from typing import Callable, Optional
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -132,9 +131,7 @@ class SEModule(eqx.Module):
         )
         num_groups = nearest_power_of_2_divisor(rd_channels, norm_max_group)
         self.norm = (
-            eqx.nn.GroupNorm(num_groups, rd_channels)
-            if use_norm
-            else eqx.nn.Identity()
+            eqx.nn.GroupNorm(num_groups, rd_channels) if use_norm else eqx.nn.Identity()
         )
         self.fc2 = eqx.nn.Conv(
             num_spatial_dims=2,

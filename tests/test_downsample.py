@@ -40,7 +40,9 @@ class TestConvNormDownsampler:
 
     def test_double_output_shape(self):
         """Double mode applies stride-2 twice → spatial dims quartered."""
-        ds = ConvNormDownsampler(IN_CHANNELS, out_channels=OUT_CHANNELS, mode="double", key=KEY)
+        ds = ConvNormDownsampler(
+            IN_CHANNELS, out_channels=OUT_CHANNELS, mode="double", key=KEY
+        )
         x = jnp.ones((IN_CHANNELS, H, W))
         out = ds(x)
         assert out.shape == (OUT_CHANNELS, H // 4, W // 4)
@@ -51,7 +53,9 @@ class TestConvNormDownsampler:
         assert jnp.all(jnp.isfinite(ds(x)))
 
     def test_double_output_finite(self):
-        ds = ConvNormDownsampler(IN_CHANNELS, out_channels=OUT_CHANNELS, mode="double", key=KEY)
+        ds = ConvNormDownsampler(
+            IN_CHANNELS, out_channels=OUT_CHANNELS, mode="double", key=KEY
+        )
         x = jr.normal(KEY, (IN_CHANNELS, H, W))
         assert jnp.all(jnp.isfinite(ds(x)))
 

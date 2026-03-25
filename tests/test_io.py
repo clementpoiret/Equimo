@@ -1,7 +1,6 @@
 """Tests for equimo.io."""
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -24,9 +23,7 @@ from equimo.io import (
 KEY = jr.PRNGKey(0)
 
 
-# ---------------------------------------------------------------------------
 # _validate_identifier
-# ---------------------------------------------------------------------------
 
 
 class TestValidateIdentifier:
@@ -68,9 +65,7 @@ class TestValidateIdentifier:
             _validate_identifier("model?foo=bar&baz=qux")
 
 
-# ---------------------------------------------------------------------------
 # _center_crop_square
-# ---------------------------------------------------------------------------
 
 
 class TestCenterCropSquare:
@@ -117,9 +112,7 @@ class TestCenterCropSquare:
         assert result.shape == (64, 64)
 
 
-# ---------------------------------------------------------------------------
 # register_model / get_model_cls
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterModel:
@@ -149,6 +142,7 @@ class TestRegisterModel:
 
     def test_register_non_eqx_module_raises(self):
         with pytest.raises(TypeError, match="must be a subclass of eqx.Module"):
+
             @register_model()
             class NotAModule:
                 pass
@@ -159,6 +153,7 @@ class TestRegisterModel:
             pass
 
         with pytest.raises(ValueError, match="already registered"):
+
             @register_model(name="UniqueModel")
             class AnotherModel(eqx.Module):
                 pass
@@ -188,24 +183,34 @@ class TestGetModelCls:
             get_model_cls("nonexistent_model_xyz")
 
     def test_all_builtin_models_registered(self):
-        builtins = ["vit", "mlla", "vssd", "shvit", "fastervit", "partialformer",
-                    "iformer", "mobilenetv3", "reduceformer"]
+        builtins = [
+            "vit",
+            "mlla",
+            "vssd",
+            "shvit",
+            "fastervit",
+            "partialformer",
+            "iformer",
+            "mobilenetv3",
+            "reduceformer",
+        ]
         for name in builtins:
             cls = get_model_cls(name)
             assert issubclass(cls, eqx.Module), f"{name} not an eqx.Module subclass"
 
 
-# ---------------------------------------------------------------------------
 # save_model / load_model round-trip
-# ---------------------------------------------------------------------------
 
 
 class _TinyModel(eqx.Module):
     """Minimal model for save/load round-trip tests."""
+
     linear: eqx.nn.Linear
     label: str = eqx.field(static=True)
 
-    def __init__(self, in_features: int, out_features: int, *, key, label: str = "default"):
+    def __init__(
+        self, in_features: int, out_features: int, *, key, label: str = "default"
+    ):
         self.linear = eqx.nn.Linear(in_features, out_features, key=key)
         self.label = label
 
@@ -320,7 +325,12 @@ class TestSaveLoadRoundTrip:
         """model_kwargs must override non-structural stored model_config values."""
         model = self._make_model()
         path = tmp_path / "model_dir"
-        save_model(path, model, {"in_features": 8, "out_features": 4, "label": "saved"}, compression=False)
+        save_model(
+            path,
+            model,
+            {"in_features": 8, "out_features": 4, "label": "saved"},
+            compression=False,
+        )
         # Override label (non-structural) at load time
         loaded = load_model(_TinyModel, path=path, label="overridden")
         assert loaded.label == "overridden"
@@ -346,9 +356,7 @@ class TestSaveLoadRoundTrip:
         load_model(_TinyModel, path=archive)
 
 
-# ---------------------------------------------------------------------------
 # download (identifier validation; no network calls)
-# ---------------------------------------------------------------------------
 
 
 class TestDownload:
@@ -402,7 +410,9 @@ class TestDownload:
         mock_response.raise_for_status = MagicMock()
 
         try:
-            with patch("equimo.io.requests.get", return_value=mock_response) as mock_get:
+            with patch(
+                "equimo.io.requests.get", return_value=mock_response
+            ) as mock_get:
                 result = download(identifier, repository="http://example.com")
                 mock_get.assert_called_once()
                 call_kwargs = mock_get.call_args
@@ -413,9 +423,7 @@ class TestDownload:
             cache_path.unlink(missing_ok=True)
 
 
-# ---------------------------------------------------------------------------
 # load_image
-# ---------------------------------------------------------------------------
 
 
 class TestLoadImage:

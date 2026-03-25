@@ -14,7 +14,7 @@ from equimo.layers.convolution import (
     SingleConvBlock,
 )
 from equimo.layers.dropout import DropPathAdd
-from equimo.layers.ffn import Mlp, get_ffn
+from equimo.layers.ffn import get_ffn
 from equimo.layers.mamba import Mamba2Mixer
 from equimo.layers.norm import LayerScale, get_norm
 from equimo.layers.posemb import PosCNN2D, PosEmbMLPSwinv1D, PosEmbMLPSwinv2D, RoPE
@@ -271,7 +271,9 @@ class Attention(eqx.Module):
 
         if mask is not None:
             # Use float32 for softmax stability
-            attn = jnp.where(mask == 0, jnp.finfo(jnp.float32).min, attn.astype(jnp.float32))
+            attn = jnp.where(
+                mask == 0, jnp.finfo(jnp.float32).min, attn.astype(jnp.float32)
+            )
         else:
             attn = attn.astype(jnp.float32)
 
@@ -376,9 +378,9 @@ class WindowedAttention(eqx.Module):
         q = jax.vmap(jax.vmap(self.q_norm))(q)
         k = jax.vmap(jax.vmap(self.k_norm))(k)
 
-        attn = jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim)
+        attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
         attn = self.pos_emb_funct(attn, self.resolution**2)
-        attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
+        attn = jax.nn.softmax(attn.astype(jnp.float32), axis=-1).astype(x.dtype)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hkd->hqd", attn, v)
@@ -960,8 +962,8 @@ class SHSA(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        inference: Optional[bool] = None,
         key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         C, H, W = x.shape
         x1, x2 = jnp.split(x, [self.pdim], axis=0)
@@ -1090,7 +1092,9 @@ class SHMA(eqx.Module):
         v = rearrange(v, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
         gate = rearrange(gate, "(h d) ht wt -> h d (ht wt)", h=self.num_heads)
 
-        attn = jnp.einsum("h d i, h d j -> h i j", q, k).astype(jnp.float32) * self.scale
+        attn = (
+            jnp.einsum("h d i, h d j -> h i j", q, k).astype(jnp.float32) * self.scale
+        )
         attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
 
         attn = self.attn_drop(attn, key=key_drop, inference=inference)
@@ -1101,7 +1105,9 @@ class SHMA(eqx.Module):
 
         return self.proj(x_attn, inference=inference, key=key_proj)
 
-    def __call__(self, x: jax.Array, key: PRNGKeyArray, inference: bool = False):
+    def __call__(
+        self, x: jax.Array, key: PRNGKeyArray, inference: Optional[bool] = None
+    ):
         """
         Args:
             x: Input of shape (C, H, W)
@@ -1242,7 +1248,7 @@ class SHMABlock(eqx.Module):
         self,
         x: Float[Array, "channels height width"],
         key: PRNGKeyArray,
-        inference: bool = False,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
         key_pe, key_attn, key_ffn, key_dr1, key_dr2 = jr.split(key, 5)
 
@@ -1324,8 +1330,8 @@ class LinearAttention(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "seqlen dim"],
-        inference: Optional[bool] = None,
         key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
     ) -> Float[Array, "seqlen dim"]:
         n, c = x.shape
         h = w = int(n**0.5)
@@ -1348,7 +1354,12 @@ class LinearAttention(eqx.Module):
         k_rope = rearrange(self.rope(k_2d), "x y (h d) -> h (x y) d", h=self.num_heads)
 
         # Compute attention
-        z = 1 / (jnp.einsum("hnd,hd->hn", q, reduce(k, "h n d -> h d", "mean")).astype(jnp.float32) + 1e-6)
+        z = 1 / (
+            jnp.einsum("hnd,hd->hn", q, reduce(k, "h n d -> h d", "mean")).astype(
+                jnp.float32
+            )
+            + 1e-6
+        )
         kv = jnp.einsum("hnd,hne->hde", k_rope * (n**-0.5), v * (n**-0.5))
         x = jnp.einsum("hnd,hde->hne", q_rope, kv) * z[..., None].astype(x.dtype)
 
@@ -1655,15 +1666,15 @@ class MMSA(eqx.Module):
         q = jax.vmap(jax.vmap(self.q_norm))(q)
         k = jax.vmap(jax.vmap(self.k_norm))(k)
 
-        attn = (jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim))
+        attn = jnp.einsum("hqd,hkd->hqk", q, k) / jnp.sqrt(self.head_dim)
         attn = jax.vmap(jax.vmap(self.attn_proj1))(
             rearrange(attn, "h q k -> q k h"),
         )
-        attn = jax.nn.softmax(attn, axis=1)
+        attn = jax.nn.softmax(attn.astype(jnp.float32), axis=1).astype(x.dtype)
         attn = rearrange(
             jax.vmap(jax.vmap(self.attn_proj2))(attn),
             "q k h -> h q k",
-        ).astype(x.dtype)
+        )
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
         x = jnp.einsum("hqk,hkd->hqd", attn, v)
@@ -1770,7 +1781,9 @@ class SQA(eqx.Module):
         q = jax.vmap(jax.vmap(self.q_norm))(q)
         k = jax.vmap(jax.vmap(self.k_norm))(k)
 
-        attn = (jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim))
+        attn = jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(
+            self.head_dim
+        )
         attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
         attn = self.attn_drop(attn, inference=inference, key=key1)
 
@@ -2088,7 +2101,9 @@ class LinearAngularAttention(eqx.Module):
         q, k, v = qkv
 
         if self.sparse_reg:
-            attn = (jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(self.head_dim))
+            attn = jnp.einsum("hqd,hkd->hqk", q, k).astype(jnp.float32) / jnp.sqrt(
+                self.head_dim
+            )
             attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
             attn = self.attn_drop(attn, inference=inference, key=key1)
             sparse = jnp.where(attn > self.sparsity_threshold, attn, 0)
@@ -2099,10 +2114,16 @@ class LinearAngularAttention(eqx.Module):
         dconv_v = self.dconv(v)
 
         # Upcast to float32 to prevent overflow when accumulating over long sequences.
-        attn_kv = jnp.einsum("hqk,hqv->hkv", k.astype(jnp.float32), v.astype(jnp.float32))
+        attn_kv = jnp.einsum(
+            "hqk,hqv->hkv", k.astype(jnp.float32), v.astype(jnp.float32)
+        )
 
         if self.sparse_reg:
-            x_out = (sparse @ v) + 0.5 * v + (1.0 / jnp.pi) * (q.astype(jnp.float32) @ attn_kv)
+            x_out = (
+                (sparse @ v)
+                + 0.5 * v
+                + (1.0 / jnp.pi) * (q.astype(jnp.float32) @ attn_kv)
+            )
         else:
             x_out = 0.5 * v + (1.0 / jnp.pi) * (q.astype(jnp.float32) @ attn_kv)
 

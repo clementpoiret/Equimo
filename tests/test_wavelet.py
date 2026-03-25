@@ -7,11 +7,11 @@ import jax.random as jr
 import pytest
 
 from equimo.layers.wavelet import (
+    _WAVELET_REGISTRY,
     HWDConv,
     _depthwise_conv2d_stride2,
     _haar_1d,
     _haar_2d_kernels,
-    _WAVELET_REGISTRY,
     get_wavelet,
     haar_dwt_split,
     register_wavelet,
@@ -20,9 +20,7 @@ from equimo.layers.wavelet import (
 KEY = jr.PRNGKey(0)
 
 
-# ---------------------------------------------------------------------------
 # Haar wavelet helpers
-# ---------------------------------------------------------------------------
 
 
 class TestHaarHelpers:
@@ -70,9 +68,7 @@ class TestHaarHelpers:
         assert LL.shape[0] == 4
 
 
-# ---------------------------------------------------------------------------
 # HWDConv
-# ---------------------------------------------------------------------------
 
 
 class TestHWDConv:
@@ -154,9 +150,7 @@ class TestHWDConv:
         assert out.shape == (8, 8, 8)
 
 
-# ---------------------------------------------------------------------------
 # get_wavelet / register_wavelet
-# ---------------------------------------------------------------------------
 
 
 class TestGetWavelet:
@@ -196,6 +190,7 @@ class TestRegisterWavelet:
 
     def test_register_non_eqx_module_raises(self):
         with pytest.raises(TypeError, match="must be a subclass of eqx.Module"):
+
             @register_wavelet()
             class NotAModule:
                 pass
@@ -206,6 +201,7 @@ class TestRegisterWavelet:
             pass
 
         with pytest.raises(ValueError, match="already registered"):
+
             @register_wavelet(name="dup_wavelet")
             class W2(eqx.Module):
                 pass

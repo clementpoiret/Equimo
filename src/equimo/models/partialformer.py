@@ -300,7 +300,7 @@ class PartialFormer(eqx.Module):
     def features(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
         return_qa: bool = False,
     ) -> Float[Array, "seqlen dim"]:
@@ -334,7 +334,7 @@ class PartialFormer(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "channels height width"],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
     ) -> Float[Array, "num_classes"]:
         """Process input image through the full network.

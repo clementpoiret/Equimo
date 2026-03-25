@@ -94,7 +94,6 @@ class RMSNormGated(eqx.Module):
         self,
         x: Float[Array, "dim"],
         z: Optional[Float[Array, "dim"]] = None,
-        *args,
         **kwargs,
     ) -> Float[Array, "dim"]:
         """Apply RMS normalization with optional gating.
@@ -207,13 +206,14 @@ class DyT(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "dim"],
-        *args,
+        z: Optional[Float[Array, "dim"]] = None,
         **kwargs,
     ) -> Float[Array, "dim"]:
         """Apply dynamic tanh to input tensor.
 
         Args:
             x: Input tensor of shape (dim,)
+            z: Unused; present for API compatibility with gated norms.
 
         Returns:
             Scaled tensor of same shape and dtype as input.

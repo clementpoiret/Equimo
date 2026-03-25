@@ -54,7 +54,7 @@ def get_act(activation: str | Callable) -> Callable:
     return _ACT_REGISTRY[activation_lower]
 
 
-# Register built-in JAX activations — these cannot be decorated, so we insert directly.
+# Register built-in JAX activations; these cannot be decorated, so we insert directly.
 # Collision checking is skipped here; these are canonical names owned by this module.
 _ACT_REGISTRY["relu"] = jax.nn.relu
 _ACT_REGISTRY["gelu"] = jax.nn.gelu

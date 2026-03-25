@@ -14,18 +14,14 @@ from equimo.layers.ffn import (
     get_ffn,
 )
 
-# ---------------------------------------------------------------------------
 # Shared fixtures
-# ---------------------------------------------------------------------------
 
 KEY = jr.PRNGKey(0)
 SEQLEN = 16
 DIM = 64
 
 
-# ---------------------------------------------------------------------------
 # WeightNormLinear
-# ---------------------------------------------------------------------------
 
 
 class TestWeightNormLinear:
@@ -62,9 +58,7 @@ class TestWeightNormLinear:
         assert jnp.all(layer.weight_g == 1.0)
 
 
-# ---------------------------------------------------------------------------
 # DINOHead
-# ---------------------------------------------------------------------------
 
 
 class TestDINOHead:
@@ -132,9 +126,7 @@ class TestDINOHead:
         assert jnp.allclose(row_norms, jnp.ones_like(row_norms), atol=1e-5)
 
 
-# ---------------------------------------------------------------------------
 # Mlp
-# ---------------------------------------------------------------------------
 
 
 class TestMlp:
@@ -215,9 +207,7 @@ class TestMlp:
         assert jnp.all(jnp.isfinite(mlp(x, KEY, inference=True)))
 
 
-# ---------------------------------------------------------------------------
 # SwiGlu
-# ---------------------------------------------------------------------------
 
 
 class TestSwiGlu:
@@ -271,9 +261,7 @@ class TestSwiGlu:
         assert jnp.all(jnp.isfinite(sg(x, KEY, inference=True)))
 
 
-# ---------------------------------------------------------------------------
 # SwiGluFused
-# ---------------------------------------------------------------------------
 
 
 class TestSwiGluFused:
@@ -333,9 +321,7 @@ class TestSwiGluFused:
         assert not jnp.allclose(out1, out2)
 
 
-# ---------------------------------------------------------------------------
 # get_ffn
-# ---------------------------------------------------------------------------
 
 
 class TestGetFfn:
@@ -375,14 +361,13 @@ class TestGetFfn:
         assert model(x, KEY).shape == (SEQLEN, 32)
 
 
-# ---------------------------------------------------------------------------
 # register_ffn
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterFfn:
     def test_register_default_name(self):
         import equinox as eqx
+
         from equimo.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
 
         @register_ffn()
@@ -394,6 +379,7 @@ class TestRegisterFfn:
 
     def test_register_custom_name(self):
         import equinox as eqx
+
         from equimo.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
 
         @register_ffn(name="MySuperFFN")
@@ -407,12 +393,14 @@ class TestRegisterFfn:
         from equimo.layers.ffn import register_ffn
 
         with pytest.raises(TypeError, match="must be a subclass of eqx.Module"):
+
             @register_ffn()
             class NotAModule:
                 pass
 
     def test_register_duplicate_name(self):
         import equinox as eqx
+
         from equimo.layers.ffn import register_ffn
 
         @register_ffn()
@@ -420,7 +408,7 @@ class TestRegisterFfn:
             pass
 
         with pytest.raises(ValueError, match="already registered"):
+
             @register_ffn(name="DuplicateFFN")
             class AnotherFFN(eqx.Module):
                 pass
-

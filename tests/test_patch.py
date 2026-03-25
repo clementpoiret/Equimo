@@ -9,11 +9,11 @@ import jax.random as jr
 import pytest
 
 from equimo.layers.patch import (
+    _PATCH_REGISTRY,
     ConvPatchEmbed,
     PatchEmbedding,
     PatchMerging,
     SEPatchMerging,
-    _PATCH_REGISTRY,
     get_patch,
     register_patch,
 )
@@ -21,9 +21,7 @@ from equimo.layers.patch import (
 KEY = jr.PRNGKey(0)
 
 
-# ---------------------------------------------------------------------------
 # PatchEmbedding
-# ---------------------------------------------------------------------------
 
 
 class TestPatchEmbedding:
@@ -155,7 +153,9 @@ class TestPatchEmbedding:
             lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
             layer,
         )
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(dtype)
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(
+            dtype
+        )
         out = layer(x)
         assert out.dtype == jnp.bfloat16
         assert jnp.all(jnp.isfinite(out))
@@ -167,7 +167,9 @@ class TestPatchEmbedding:
             lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
             layer,
         )
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(dtype)
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(
+            dtype
+        )
         out = layer(x)
         assert out.dtype == jnp.float16
         assert jnp.all(jnp.isfinite(out))
@@ -186,14 +188,14 @@ class TestPatchEmbedding:
             lambda leaf: leaf.astype(dtype) if eqx.is_inexact_array(leaf) else leaf,
             layer,
         )
-        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(dtype)
+        x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE)).astype(
+            dtype
+        )
         out = layer(x)
         assert out.dtype == jnp.bfloat16
 
 
-# ---------------------------------------------------------------------------
 # ConvPatchEmbed
-# ---------------------------------------------------------------------------
 
 
 class TestConvPatchEmbed:
@@ -276,9 +278,7 @@ class TestConvPatchEmbed:
         assert jnp.all(jnp.isfinite(out))
 
 
-# ---------------------------------------------------------------------------
 # PatchMerging
-# ---------------------------------------------------------------------------
 
 
 class TestPatchMerging:
@@ -348,9 +348,7 @@ class TestPatchMerging:
         assert jnp.all(jnp.isfinite(out))
 
 
-# ---------------------------------------------------------------------------
 # SEPatchMerging
-# ---------------------------------------------------------------------------
 
 
 class TestSEPatchMerging:
@@ -432,9 +430,7 @@ class TestSEPatchMerging:
         assert jnp.all(jnp.isfinite(out))
 
 
-# ---------------------------------------------------------------------------
 # get_patch
-# ---------------------------------------------------------------------------
 
 
 class TestGetPatch:
@@ -467,9 +463,7 @@ class TestGetPatch:
         assert layer(x).shape == (49, 128)
 
 
-# ---------------------------------------------------------------------------
 # register_patch
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterPatch:

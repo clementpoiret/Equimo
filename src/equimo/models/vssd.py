@@ -61,7 +61,9 @@ class Vssd(eqx.Module):
         patch_size: int = 4,
         depths: List[int] = [2, 4, 12, 4],
         num_heads: List[int] = [2, 4, 8, 16],
-        attentions_layers: Tuple[str | type[eqx.Module], ...] | str | type[eqx.Module] = (
+        attentions_layers: Tuple[str | type[eqx.Module], ...]
+        | str
+        | type[eqx.Module] = (
             "mamba2mixer",
             "mamba2mixer",
             "mamba2mixer",
@@ -158,14 +160,14 @@ class Vssd(eqx.Module):
         self.norm = norm_layer(self.num_features, eps=eps)
         self.head = (
             eqx.nn.Linear(self.num_features, num_classes, key=key_head)
-            if num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 
     def features(
         self,
         x: Float[Array, "..."],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         key_pd, *keys = jr.split(key, 1 + len(self.blocks))
@@ -180,7 +182,7 @@ class Vssd(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "..."],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         """Process input image through the VSSD network.

@@ -1,7 +1,6 @@
 """Tests for equimo.layers.dropout."""
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -13,17 +12,13 @@ from equimo.layers.dropout import (
     register_dropout,
 )
 
-# ---------------------------------------------------------------------------
 # Shared fixtures
-# ---------------------------------------------------------------------------
 
 KEY = jr.PRNGKey(0)
 SHAPE = (16, 64)  # (seqlen, dim) — typical token tensor
 
 
-# ---------------------------------------------------------------------------
 # DropPath
-# ---------------------------------------------------------------------------
 
 
 class TestDropPath:
@@ -126,9 +121,7 @@ class TestDropPath:
         assert layer(x, key=KEY).shape == (32, 8, 8)
 
 
-# ---------------------------------------------------------------------------
 # DropPathAdd
-# ---------------------------------------------------------------------------
 
 
 class TestDropPathAdd:
@@ -228,9 +221,7 @@ class TestDropPathAdd:
             DropPathAdd(p=jnp.array([0.1, 0.2]))
 
 
-# ---------------------------------------------------------------------------
 # get_dropout
-# ---------------------------------------------------------------------------
 
 
 class TestGetDropout:
@@ -257,9 +248,7 @@ class TestGetDropout:
         assert layer(x, key=KEY).shape == SHAPE
 
 
-# ---------------------------------------------------------------------------
 # register_dropout
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterDropout:

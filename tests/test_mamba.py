@@ -8,18 +8,14 @@ import pytest
 from equimo.layers.mamba import Mamba2Mixer, get_mixer, register_mixer
 from equimo.layers.norm import RMSNormGated
 
-# ---------------------------------------------------------------------------
 # Shared fixtures
-# ---------------------------------------------------------------------------
 
 KEY = jr.PRNGKey(0)
 SEQLEN = 16
 DIM = 64  # dim=64, expand=2 → d_inner=128, head_dim=64 → n_heads=2
 
 
-# ---------------------------------------------------------------------------
 # Mamba2Mixer
-# ---------------------------------------------------------------------------
 
 
 class TestMamba2Mixer:
@@ -147,9 +143,7 @@ class TestMamba2Mixer:
             assert mixer(x, key=KEY).shape == (seqlen, DIM)
 
 
-# ---------------------------------------------------------------------------
 # get_mixer
-# ---------------------------------------------------------------------------
 
 
 class TestGetMixer:
@@ -170,9 +164,7 @@ class TestGetMixer:
         assert mixer(x, key=KEY).shape == (SEQLEN, DIM)
 
 
-# ---------------------------------------------------------------------------
 # register_mixer
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterMixer:

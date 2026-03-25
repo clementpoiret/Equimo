@@ -11,20 +11,17 @@ import pytest
 import equimo.models as em
 from equimo.io import load_model, save_model
 from equimo.layers.activation import get_act
-from equimo.models.attnet import AttNet, attnet_xxs
+from equimo.models.attnet import attnet_xxs
 from equimo.models.fastervit import FasterViT
-from equimo.models.iformer import iformer_t
-from equimo.models.lowformer import LowFormer, lowformer_backbone_b0
+from equimo.models.lowformer import lowformer_backbone_b0
 from equimo.models.mlla import Mlla
-from equimo.models.mobilenet import MobileNetv3, mobilenetv3_small
+from equimo.models.mobilenet import mobilenetv3_small
 from equimo.models.partialformer import PartialFormer
 from equimo.models.shvit import SHViT
 from equimo.models.vssd import Vssd
 from equimo.utils import make_drop_path_schedule
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 KEY = jr.PRNGKey(0)
 NUM_CLASSES = 10
@@ -40,9 +37,7 @@ def _model_checksum(model) -> str:
     return h.hexdigest()[:16]
 
 
-# ---------------------------------------------------------------------------
 # Utility tests
-# ---------------------------------------------------------------------------
 
 
 def test_make_drop_path_schedule_uniform():
@@ -73,9 +68,7 @@ def test_get_act_hard_swish():
     assert jnp.all(jnp.isfinite(out))
 
 
-# ---------------------------------------------------------------------------
 # VisionTransformer
-# ---------------------------------------------------------------------------
 
 
 def test_vit_inference():
@@ -150,9 +143,7 @@ def test_vit_rope():
     assert jnp.all(jnp.isfinite(y_infer))
 
 
-# ---------------------------------------------------------------------------
 # IFormer
-# ---------------------------------------------------------------------------
 
 
 def test_iformer():
@@ -164,9 +155,7 @@ def test_iformer():
     assert jnp.all(jnp.isfinite(y_hat))
 
 
-# ---------------------------------------------------------------------------
 # ReduceFormer
-# ---------------------------------------------------------------------------
 
 
 def test_reduceformer():
@@ -187,9 +176,7 @@ def test_fused_reduceformer():
     assert len(y_hat) == 10
 
 
-# ---------------------------------------------------------------------------
 # Mlla
-# ---------------------------------------------------------------------------
 
 
 def test_mlla_construction():
@@ -245,9 +232,7 @@ def test_mlla_drop_path_schedule():
     assert y.shape == (NUM_CLASSES,)
 
 
-# ---------------------------------------------------------------------------
 # VSSD
-# ---------------------------------------------------------------------------
 
 
 def test_vssd_construction():
@@ -284,9 +269,7 @@ def test_vssd_forward():
     assert jnp.all(jnp.isfinite(y))
 
 
-# ---------------------------------------------------------------------------
 # AttNet
-# ---------------------------------------------------------------------------
 
 
 def test_attnet_forward():
@@ -307,9 +290,7 @@ def test_attnet_features():
     assert jnp.all(jnp.isfinite(feats))
 
 
-# ---------------------------------------------------------------------------
 # LowFormer
-# ---------------------------------------------------------------------------
 
 
 def test_lowformer_forward():
@@ -335,9 +316,7 @@ def test_lowformer_features():
     assert jnp.all(jnp.isfinite(feats))
 
 
-# ---------------------------------------------------------------------------
 # MobileNetv3
-# ---------------------------------------------------------------------------
 
 
 def test_mobilenetv3_small_forward():
@@ -354,9 +333,7 @@ def test_mobilenetv3_small_features():
     assert jnp.all(jnp.isfinite(feats))
 
 
-# ---------------------------------------------------------------------------
 # SHViT
-# ---------------------------------------------------------------------------
 
 
 def test_shvit_construction():
@@ -394,9 +371,7 @@ def test_shvit_features():
     assert jnp.all(jnp.isfinite(feats))
 
 
-# ---------------------------------------------------------------------------
 # FasterViT
-# ---------------------------------------------------------------------------
 
 
 def test_fastervit_forward():
@@ -437,9 +412,7 @@ def test_fastervit_features():
     assert jnp.all(jnp.isfinite(feats))
 
 
-# ---------------------------------------------------------------------------
 # PartialFormer
-# ---------------------------------------------------------------------------
 
 
 def test_partialformer_forward():
@@ -492,9 +465,7 @@ def test_partialformer_foreground_ratios_tuple():
     assert y.shape == (NUM_CLASSES,)
 
 
-# ---------------------------------------------------------------------------
 # Save / Load
-# ---------------------------------------------------------------------------
 
 
 def test_save_load_model_compressed():

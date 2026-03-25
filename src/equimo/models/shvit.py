@@ -133,12 +133,12 @@ class SHViT(eqx.Module):
 
     def __init__(
         self,
-        in_channels=3,
+        in_channels: int = 3,
         dim: List[int] = [128, 256, 384],
         pdim: List[int] = [32, 64, 96],
-        qk_dim=[16, 16, 16],
+        qk_dim: List[int] = [16, 16, 16],
         depths: List[int] = [1, 2, 3],
-        block_type=["s", "s", "s"],
+        block_type: List[str] = ["s", "s", "s"],
         *,
         key: PRNGKeyArray,
         act_layer: str | Callable = "relu",
@@ -236,14 +236,14 @@ class SHViT(eqx.Module):
         self.norm = norm_layer(dims[-1])
         self.head = (
             eqx.nn.Linear(dims[-1], num_classes, key=key_head)
-            if num_classes > 0
+            if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )
 
     def features(
         self,
         x: Float[Array, "..."],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         keys = jr.split(key, len(self.blocks))
@@ -257,7 +257,7 @@ class SHViT(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "..."],
-        key: PRNGKeyArray,
+        key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
     ) -> Float[Array, "..."]:
         """Process input image through the full SHViT network.

@@ -41,10 +41,16 @@ class TestAttentionLayers:
         "cls, kwargs",
         [
             (Attention, {"dim": DIM, "num_heads": NUM_HEADS}),
-            (WindowedAttention, {"dim": DIM, "num_heads": NUM_HEADS, "resolution": 4, "seq_len": 16}),
+            (
+                WindowedAttention,
+                {"dim": DIM, "num_heads": NUM_HEADS, "resolution": 4, "seq_len": 16},
+            ),
             (SHSA, {"dim": DIM, "qk_dim": 8, "pdim": 8}),
             (SHMA, {"dim": DIM, "num_heads": 1}),
-            (LinearAttention, {"input_resolution": (4, 4), "dim": DIM, "num_heads": NUM_HEADS}),
+            (
+                LinearAttention,
+                {"input_resolution": (4, 4), "dim": DIM, "num_heads": NUM_HEADS},
+            ),
             (MMSA, {"dim": DIM, "num_heads": NUM_HEADS}),
             (LinearAngularAttention, {"dim": DIM, "num_heads": NUM_HEADS}),
             (RFAttention, {"in_channels": DIM, "out_channels": DIM}),
@@ -54,12 +60,12 @@ class TestAttentionLayers:
     def test_attention_forward(self, cls, kwargs):
         key = KEY
         model = cls(**kwargs, key=key)
-        
+
         if cls in (SHSA, SHMA, RFAttention, ConvAttention):
             x = jr.normal(key, (DIM, H, W))
         else:
             x = jr.normal(key, (SEQLEN, DIM))
-            
+
         out = model(x, key=key, inference=True)
         assert out.shape == x.shape
         assert jnp.all(jnp.isfinite(out))
@@ -68,10 +74,24 @@ class TestAttentionLayers:
         "cls, kwargs",
         [
             (AttentionBlock, {"dim": DIM, "num_heads": NUM_HEADS}),
-            (HATBlock, {"dim": DIM, "num_heads": NUM_HEADS, "window_size": 4, "sr_ratio": 2}),
+            (
+                HATBlock,
+                {"dim": DIM, "num_heads": NUM_HEADS, "window_size": 4, "sr_ratio": 2},
+            ),
             (SHMABlock, {"dim": DIM}),
-            (MllaBlock, {"dim": DIM, "input_resolution": (4, 4), "num_heads": NUM_HEADS}),
-            (PartialFormerBlock, {"dim": DIM, "num_heads": NUM_HEADS, "foreground_ratio": 0.5, "patch_size": 2}),
+            (
+                MllaBlock,
+                {"dim": DIM, "input_resolution": (4, 4), "num_heads": NUM_HEADS},
+            ),
+            (
+                PartialFormerBlock,
+                {
+                    "dim": DIM,
+                    "num_heads": NUM_HEADS,
+                    "foreground_ratio": 0.5,
+                    "patch_size": 2,
+                },
+            ),
             (RFAttentionBlock, {"in_channels": DIM}),
             (ConvAttentionBlock, {"dim": DIM}),
             (LowFormerBlock, {"dim": DIM}),
@@ -80,7 +100,7 @@ class TestAttentionLayers:
     def test_block_forward(self, cls, kwargs):
         key = KEY
         model = cls(**kwargs, key=key)
-        
+
         if cls in (SHMABlock, RFAttentionBlock, LowFormerBlock, ConvAttentionBlock):
             x = jr.normal(key, (DIM, H, W))
         else:
@@ -102,17 +122,19 @@ class TestAttentionLayers:
         else:
             out = model(x, key=key, inference=True)
             assert out.shape == x.shape
-            
+
         assert jnp.all(jnp.isfinite(out))
 
     def test_registry(self):
         assert get_attn("attention") is Attention
         assert get_attn_block("attentionblock") is AttentionBlock
-        
+
     def test_low_precision(self):
         model = Attention(DIM, NUM_HEADS, key=KEY)
         model = jax.tree_util.tree_map(
-            lambda leaf: leaf.astype(jnp.bfloat16) if eqx.is_inexact_array(leaf) else leaf,
+            lambda leaf: (
+                leaf.astype(jnp.bfloat16) if eqx.is_inexact_array(leaf) else leaf
+            ),
             model,
         )
         x = jr.normal(KEY, (SEQLEN, DIM)).astype(jnp.bfloat16)
