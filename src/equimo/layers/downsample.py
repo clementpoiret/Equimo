@@ -7,6 +7,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from equimo.layers.activation import get_act
 from equimo.layers.convolution import DoubleConvBlock, SingleConvBlock
 from equimo.layers.generic import Residual
+from equimo.layers.norm import LayerNorm2d
 from equimo.layers.patch import SEPatchMerging
 from equimo.utils import nearest_power_of_2_divisor
 
@@ -314,3 +315,86 @@ class PWSEDownsampler(eqx.Module):
         )
 
         return x
+
+
+@register_downsampler()
+class ConvNeXtStem(eqx.Module):
+    """ConvNeXt stem: 4x spatial downsampling via stride-4 convolution + LayerNorm2d.
+
+    This is the initial patchification layer used in ConvNeXt, analogous to a
+    ViT patch embedding with patch_size=4.
+
+    Attributes:
+        conv: Stride-4 convolution that patchifies the input.
+        norm: Channel-wise LayerNorm applied after convolution.
+    """
+
+    conv: eqx.nn.Conv2d
+    norm: LayerNorm2d
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        out_channels: int,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        self.conv = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=4,
+            stride=4,
+            key=key,
+        )
+        self.norm = LayerNorm2d(out_channels, eps=1e-6)
+
+    def __call__(
+        self,
+        x: Float[Array, "in_channels height width"],
+        *args,
+        **kwargs,
+    ) -> Float[Array, "out_channels new_height new_width"]:
+        return self.norm(self.conv(x))
+
+
+@register_downsampler()
+class ConvNeXtDownsampler(eqx.Module):
+    """ConvNeXt inter-stage downsampler: LayerNorm2d + stride-2 convolution.
+
+    Reduces spatial dimensions by 2x while changing the channel count.
+    Normalization is applied before the convolution, following the ConvNeXt
+    design where each downsampling layer normalizes the input first.
+
+    Attributes:
+        norm: Channel-wise LayerNorm applied before convolution.
+        conv: Stride-2 convolution that halves spatial dimensions.
+    """
+
+    norm: LayerNorm2d
+    conv: eqx.nn.Conv2d
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        out_channels: int,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        self.norm = LayerNorm2d(in_channels, eps=1e-6)
+        self.conv = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=2,
+            stride=2,
+            key=key,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "in_channels height width"],
+        *args,
+        **kwargs,
+    ) -> Float[Array, "out_channels new_height new_width"]:
+        return self.conv(self.norm(x))

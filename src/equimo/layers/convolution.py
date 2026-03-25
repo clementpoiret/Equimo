@@ -1374,6 +1374,90 @@ class IFormerBlock(eqx.Module):
 
 
 @register_conv()
+class ConvNeXtBlock(eqx.Module):
+    """ConvNeXt block: DwConv7x7 -> LayerNorm2d -> PwConv1(dim->4*dim) -> GELU -> PwConv2(4*dim->dim).
+
+    Uses depthwise convolution followed by channel-wise LayerNorm and two
+    pointwise convolutions (implemented as 1x1 Conv2d). This matches the
+    original ConvNeXt design from "A ConvNet for the 2020s" (Liu et al., 2022).
+
+    Input/Output convention: (C, H, W).
+    """
+
+    dwconv: eqx.nn.Conv2d
+    norm: LayerNorm2d
+    pwconv1: eqx.nn.Conv2d
+    act: Callable = eqx.field(static=True)
+    pwconv2: eqx.nn.Conv2d
+    ls: LayerScale | eqx.nn.Identity
+    drop_path: DropPathAdd
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        kernel_size: int = 7,
+        mlp_ratio: float = 4.0,
+        act_layer: str | Callable = "gelu",
+        drop_path: float = 0.0,
+        init_values: float | None = 1e-6,
+        key: PRNGKeyArray,
+        **kwargs,
+    ):
+        key_dw, key_pw1, key_pw2 = jr.split(key, 3)
+
+        act_layer = get_act(act_layer)
+
+        mid_channels = int(dim * mlp_ratio)
+        self.dwconv = eqx.nn.Conv2d(
+            in_channels=dim,
+            out_channels=dim,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            groups=dim,
+            key=key_dw,
+        )
+        self.norm = LayerNorm2d(dim, eps=1e-6)
+        self.pwconv1 = eqx.nn.Conv2d(
+            in_channels=dim,
+            out_channels=mid_channels,
+            kernel_size=1,
+            key=key_pw1,
+        )
+        self.act = act_layer
+        self.pwconv2 = eqx.nn.Conv2d(
+            in_channels=mid_channels,
+            out_channels=dim,
+            kernel_size=1,
+            key=key_pw2,
+        )
+        self.ls = (
+            LayerScale(dim, axis=0, init_values=init_values)
+            if init_values is not None
+            else eqx.nn.Identity()
+        )
+        self.drop_path = DropPathAdd(drop_path)
+
+    def __call__(
+        self,
+        x: Float[Array, "channels height width"],
+        key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
+        **kwargs,
+    ) -> Float[Array, "channels height width"]:
+        if key is None:
+            key = jr.PRNGKey(0)
+
+        out = self.dwconv(x)
+        out = self.norm(out)
+        out = self.act(self.pwconv1(out))
+        out = self.pwconv2(out)
+        out = self.drop_path(x, self.ls(out), inference=inference, key=key)
+
+        return out
+
+
+@register_conv()
 class GenericGhostModule(eqx.Module):
     """GhostNet v3-like module with GroupNorm and training-time branch fusion.
 
