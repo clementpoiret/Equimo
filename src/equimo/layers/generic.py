@@ -44,7 +44,7 @@ class Residual(eqx.Module):
                       (default: 0)
         """
         self.module = module
-        use_ls = all([init_values, dim, axis])
+        use_ls = all(v is not None for v in [init_values, dim, axis])
         self.ls = (
             LayerScale(dim, axis=axis, init_values=init_values)
             if use_ls
@@ -143,7 +143,8 @@ class WindowedSequence(eqx.Module):
             ws_w=self.window_size,
         )
 
-        keys = jr.split(key, len(self.blocks))
+        num_windows = x_windows.shape[0]
+        window_keys = jr.split(key, num_windows)
 
         def serial_blocks(x_win, k_seq):
             ks = jr.split(k_seq, len(self.blocks))
@@ -151,7 +152,7 @@ class WindowedSequence(eqx.Module):
                 x_win = block(x_win, key=k_blk, inference=inference)
             return x_win
 
-        x_windows = jax.vmap(serial_blocks)(x_windows, keys[0])
+        x_windows = jax.vmap(serial_blocks)(x_windows, window_keys)
 
         x_out = rearrange(
             x_windows,

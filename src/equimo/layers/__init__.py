@@ -1,3 +1,4 @@
+from .activation import get_act, register_act
 from .dropout import DropPath, DropPathAdd, get_dropout, register_dropout
 from .ffn import (
     DINOHead,
@@ -38,8 +39,12 @@ from .posemb import (
     get_posemb,
     register_posemb,
 )
+from .wavelet import HWDConv, get_wavelet, register_wavelet
 
 __all__ = [
+    # Activation
+    "get_act",
+    "register_act",
     # Dropout
     "DropPath",
     "DropPathAdd",
@@ -86,4 +91,8 @@ __all__ = [
     "RoPE",
     "get_posemb",
     "register_posemb",
+    # Wavelet
+    "HWDConv",
+    "get_wavelet",
+    "register_wavelet",
 ]
