@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -27,6 +28,17 @@ from equimo.models.registry import (
 DEFAULT_REPOSITORY_URL = (
     "https://huggingface.co/poiretclement/equimo/resolve/main/models/default"
 )
+
+
+def _parse_version(v: str) -> Version:
+    """Parse a version string, with a fallback for PEP 440-style pre-releases."""
+    try:
+        return Version.parse(v)
+    except ValueError:
+        # Try to normalize PEP 440 alpha/beta/rc to SemVer
+        # e.g., 1.1.1a1 -> 1.1.1-a1
+        v = re.sub(r"(?<=\d)(?=[a-z])", "-", v)
+        return Version.parse(v)
 
 
 def _validate_identifier(identifier: str) -> None:
@@ -308,7 +320,7 @@ def load_model(
     logger.debug(f"Metadata: {metadata}")
 
     model_eqm_version = metadata.get("equimo_version", "0.2.0")
-    if Version.parse(model_eqm_version) > Version.parse(__version__):
+    if _parse_version(model_eqm_version) > _parse_version(__version__):
         logger.warning(
             f"The model you are importing was packaged with equimo "
             f"v{model_eqm_version}, but you have equimo v{__version__}. "
