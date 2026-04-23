@@ -4,12 +4,13 @@ on:
   push:
     tags:
       - '*'
-  # release:
-  #   types:
-  #     - published
 
 jobs:
+  test:
+    uses: ./.github/workflows/python-tests.yaml
+
   publish:
+    needs: test
     name: Build and publish to PyPI
     runs-on: ubuntu-latest
     permissions:
@@ -50,5 +51,3 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish
-        # env:
-        #   UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
