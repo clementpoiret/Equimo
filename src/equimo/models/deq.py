@@ -1,3 +1,23 @@
+"""DEQ model (ConvNeXt variant).
+
+Thin wrapper around :class:`~.implicit.DEQBlock` embedded in a standard
+four-stage ConvNet layout. The FPI stage is configured via three orthogonal
+components — injector, stabilizer, strategy — each resolvable from its
+registry name or passed directly as an instance / class.
+
+Defaults are minimal at the library level (``add`` + ``identity`` + ``entry``).
+Model presets such as :func:`deq_convnext_t` override these with combinations
+tuned for the specific backbone. For deep ConvNeXt / iFormer stacks the
+recommended override is:
+
+* ``fpi_injector = "prenorm_add"`` — pre-normalize ``z`` and add a 1x1
+  projection of ``x`` (precomputed once per forward).
+* ``fpi_stabilizer = "projected"`` — ``GroupNorm(z_out)`` to keep iterates
+  bounded (MDEQ-style).
+* ``fpi_strategy = "entry"`` — inject only at the stack entry; blocks keep
+  their own internal residual and normalization.
+"""
+
 __all__ = ["DEQ", "deq_convnext_t"]
 
 from typing import Callable, Optional, Sequence, Tuple
@@ -7,15 +27,22 @@ import jax
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from equimo.implicit import (
+    DEQBlock,
+    get_injector,
+    get_stabilizer,
+    get_strategy,
+)
 from equimo.layers import get_layer
 from equimo.layers.activation import get_act
-from equimo.layers.implicit import DEQBlock, get_fuser, get_strategy, get_updater
 from equimo.layers.norm import get_norm
 from equimo.models.registry import register_model
 from equimo.utils import make_drop_path_schedule
 
 
 class BlockChunk(eqx.Module):
+    """One model stage: optional downsampler + either a plain block list or a DEQ block."""
+
     block_type: str = eqx.field(static=True)
     downsample_last: bool = eqx.field(static=True)
 
@@ -38,10 +65,10 @@ class BlockChunk(eqx.Module):
         z0_module: type[eqx.Module] | None = None,
         z0_module_kwargs: dict = {},
         downsample_last: bool = False,
-        fuser: str = "add",
-        global_updater: str = "identity",
-        internal_updater: str | None = None,
-        layer_strategy: str = "standard",
+        # Minimal defaults. Model presets override these for specific backbones.
+        injector: str = "add",
+        stabilizer: str = "identity",
+        strategy: str = "entry",
         tol: float = 1e-3,
         max_steps: int = 50,
         drop_path: float | Sequence[float] = 0.0,
@@ -61,7 +88,7 @@ class BlockChunk(eqx.Module):
         self.block_type = block_type
         self.downsample_last = downsample_last
 
-        # Handle channels for main modules and downsampler
+        # Channel bookkeeping for main modules and downsampler.
         down_in = in_channels
         down_out = out_channels
         if downsampler is not None:
@@ -78,15 +105,13 @@ class BlockChunk(eqx.Module):
             block_in = in_channels
             block_out = out_channels
 
-        # Handle block type
         if module is not None:
             if block_type == "normal":
                 blocks = []
                 for i in range(depth):
-                    config = {"dim": block_in} | module_kwargs | {
+                    config = module_kwargs | {
                         k: module_kwargs[k][i] for k in keys_to_spread
                     }
-
                     blocks.append(
                         module(
                             in_channels=block_in,
@@ -101,8 +126,9 @@ class BlockChunk(eqx.Module):
                 self.blocks = tuple(blocks)
                 self.z0_block = None
                 self.deq_block = None
+
             elif block_type == "fpi":
-                key_z0, key_fuser, key_upd, key_iupd = jr.split(key_fpi, 4)
+                key_z0, key_inj, key_stab, key_strat = jr.split(key_fpi, 4)
 
                 self.blocks = None
                 self.z0_block = (
@@ -116,38 +142,26 @@ class BlockChunk(eqx.Module):
                     else None
                 )
 
-                fuser_cls = get_fuser(fuser)
-                global_updater_cls = get_updater(global_updater)
-                internal_updater_cls = (
-                    get_updater(internal_updater)
-                    if internal_updater is not None
-                    else None
-                )
-                layer_strategy_cls = get_strategy(layer_strategy)
+                injector_cls = get_injector(injector)
+                stabilizer_cls = get_stabilizer(stabilizer)
+                strategy_cls = get_strategy(strategy)
 
-                fuser_obj = fuser_cls(dim=block_in, key=key_fuser)
-                global_updater_obj = global_updater_cls(dim=block_in, key=key_upd)
-                internal_updater_obj = (
-                    internal_updater_cls(dim=block_in, key=key_iupd)
-                    if internal_updater_cls is not None
-                    else None
-                )
-                layer_strategy_obj = layer_strategy_cls(dim=block_in, key=key_fpi)
+                injector_obj = injector_cls(dim=block_in, key=key_inj)
+                stabilizer_obj = stabilizer_cls(dim=block_in, key=key_stab)
+                strategy_obj = strategy_cls(dim=block_in, key=key_strat)
 
                 self.deq_block = DEQBlock(
                     channels=block_in,
                     depth=depth,
                     module=module,
                     module_kwargs={
-                        "dim": block_in,
                         "in_channels": block_in,
                         "out_channels": block_out,
                     }
                     | module_kwargs,
-                    fuser=fuser_obj,
-                    global_updater=global_updater_obj,
-                    internal_updater=internal_updater_obj,
-                    layer_strategy=layer_strategy_obj,
+                    injector=injector_obj,
+                    stabilizer=stabilizer_obj,
+                    strategy=strategy_obj,
                     tol=tol,
                     max_steps=max_steps,
                     key=block_subkeys[0],
@@ -155,7 +169,7 @@ class BlockChunk(eqx.Module):
             else:
                 raise ValueError(f"Unknown block type {block_type}.")
         else:
-            # Only downsampler
+            # Only downsampler.
             self.blocks = None
             self.z0_block = None
             self.deq_block = None
@@ -217,6 +231,13 @@ class BlockChunk(eqx.Module):
 
 @register_model("deq")
 class DEQ(eqx.Module):
+    """Four-stage model with one or more stages promoted to a DEQ block.
+
+    Library-level FPI defaults are minimal: ``add`` injector, ``identity``
+    stabilizer, ``entry`` strategy. Override via the ``fpi_*`` kwargs, or use
+    a model preset (e.g. :func:`deq_convnext_t`) which ships a tuned combo.
+    """
+
     fpi_index: list[int] = eqx.field(static=True)
 
     blocks: Tuple[BlockChunk, ...]
@@ -238,12 +259,14 @@ class DEQ(eqx.Module):
         block_types: list[str] = ["normal", "normal", "normal", "normal"],
         dims: list[int] = [64, 128, 256, 512],
         depths: list[int] = [2, 2, 6, 2],
-        fpi_fuser: str = "add",
-        fpi_global_updater: str = "identity",
-        fpi_internal_updater: str | None = None,
-        fpi_layer_strategy: str = "standard",
+        # --- FPI configuration ---
+        # Minimal defaults. Presets override for specific backbones.
+        fpi_injector: str = "add",
+        fpi_stabilizer: str = "identity",
+        fpi_strategy: str = "entry",
         fpi_maxsteps: int = 50,
         fpi_tol: float = 1e-3,
+        # -------------------------
         drop_path_rate: float = 0.0,
         dropout: float = 0.0,
         drop_path_uniform: bool = False,
@@ -254,9 +277,7 @@ class DEQ(eqx.Module):
         key: PRNGKeyArray,
         **kwargs,
     ):
-        key_down, key_blk, key_head = jr.split(key, 3)
-
-        depth = sum(depths)
+        key_blk, key_head = jr.split(key, 2)
 
         act_layer = get_act(act_layer)
         norm_layer_cls = get_norm(norm_layer)
@@ -289,10 +310,9 @@ class DEQ(eqx.Module):
                     block_type=block_types[i],
                     z0_module=z0_module_cls,
                     z0_module_kwargs=z0_module_kwargs,
-                    fuser=fpi_fuser,
-                    global_updater=fpi_global_updater,
-                    internal_updater=fpi_internal_updater,
-                    layer_strategy=fpi_layer_strategy,
+                    injector=fpi_injector,
+                    stabilizer=fpi_stabilizer,
+                    strategy=fpi_strategy,
                     tol=fpi_tol,
                     max_steps=fpi_maxsteps,
                     drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
@@ -335,7 +355,8 @@ class DEQ(eqx.Module):
             raise ValueError("`readout` called but no fpi block is present.")
         if len(self.fpi_index) > 1:
             raise NotImplementedError(
-                "`readout` called but with multiple fpi block. This behavior is currently not supported."
+                "`readout` called but with multiple fpi blocks. "
+                "This behavior is currently not supported."
             )
 
         x = z_star
@@ -361,6 +382,11 @@ class DEQ(eqx.Module):
         return x, auxs
 
 
+# Model presets.
+# The preset ships a tuned FPI combo (pre-norm injection, norm-projection
+# stabilization, single entry injection) — the combination that reliably
+# converges for a 9-block ConvNeXt FPI stage with LayerScale(1e-6) init.
+# Users who call the bare DEQ class get the minimal defaults instead.
 _DEQ_BASE_CFG: dict = {
     "in_channels": 3,
     "num_classes": 1000,
@@ -368,12 +394,17 @@ _DEQ_BASE_CFG: dict = {
     "depths": [3, 3, 9, 3],
     "block_types": ["normal", "normal", "fpi", "normal"],
     "modules": ["convnextblock", "convnextblock", "convnextblock", "convnextblock"],
+    "module_kwargs": [{"dim": 96}, {"dim": 192}, {"dim": 384}, {"dim": 768}],
     "downsamplers": [
         "convnextstem",
         "convnextdownsampler",
         "convnextdownsampler",
         "convnextdownsampler",
     ],
+    # Tuned FPI combo for a deep ConvNeXt stack.
+    "fpi_injector": "prenorm_add",
+    "fpi_stabilizer": "projected",
+    "fpi_strategy": "entry",
 }
 
 _DEQ_REGISTRY: dict[str, tuple[dict, dict]] = {

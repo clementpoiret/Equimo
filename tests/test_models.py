@@ -716,28 +716,219 @@ def test_vit5_small_forward():
 
 
 # DEQ
+#
+# DEQ-specific concerns that these tests exercise:
+#   * The forward pass composes a fixed-point solve inside a regular forward,
+#     so both inference and training modes must behave sanely.
+#   * The solver must actually converge — ``aux["error"]`` must land below the
+#     configured tolerance, and ``||f(z*, x) - z*||`` must be small.
+#   * Gradients must flow through the NeumannPhantom adjoint (the main reason
+#     to use a DEQ at all).
+#   * Switching injector / stabilizer / strategy via kwargs must work.
 
 
 def test_deq_forward():
+    """Default preset (prenorm_add + projected + entry) — full forward pass."""
     model = em.deq_convnext_t(
         in_channels=3,
         num_classes=NUM_CLASSES,
-        fpi_layer_strategy="standard",
         key=KEY,
     )
     y, auxs = model(IMG_64, key=KEY, inference=True)
     assert y.shape == (NUM_CLASSES,)
     assert jnp.all(jnp.isfinite(y))
     assert isinstance(auxs, list)
+    # Default config has one FPI stage.
+    assert len(auxs) == 1
+
+
+def test_deq_forward_training_mode():
+    """Training forward pass with DropPath enabled.
+
+    The solver reuses a single RNG key across all Picard iterations to freeze
+    stochastic ops; without this the fixed point does not exist. This test
+    just verifies the training-mode forward runs and produces finite outputs.
+    """
+    model = em.deq_convnext_t(
+        in_channels=3,
+        num_classes=NUM_CLASSES,
+        drop_path_rate=0.1,
+        key=KEY,
+    )
+    y, auxs = model(IMG_64, key=KEY, inference=False)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+    assert len(auxs) == 1
 
 
 def test_deq_features():
+    """features() returns a 3D feature map + the aux list."""
     model = em.deq_convnext_t(
         in_channels=3,
         num_classes=0,
-        fpi_layer_strategy="standard",
         key=KEY,
     )
     feats, auxs = model.features(IMG_64, key=KEY, inference=True)
+    assert feats.ndim == 3
     assert jnp.all(jnp.isfinite(feats))
-    assert isinstance(auxs, list)
+    assert len(auxs) == 1
+
+
+def test_deq_aux_structure():
+    """Aux dict must expose everything downstream regularizers need."""
+    model = em.deq_convnext_t(
+        in_channels=3,
+        num_classes=NUM_CLASSES,
+        key=KEY,
+    )
+    _, auxs = model(IMG_64, key=KEY, inference=True)
+    aux = auxs[0]
+    for k in ("z_star", "trajectory", "depth", "error", "key", "x_context", "z0"):
+        assert k in aux, f"aux dict missing required key: {k}"
+    assert jnp.all(jnp.isfinite(aux["z_star"]))
+
+
+def test_deq_solver_converges():
+    """Solver must report convergence below tolerance and not burn max_steps."""
+    model = em.deq_convnext_t(
+        in_channels=3,
+        num_classes=NUM_CLASSES,
+        fpi_tol=1e-3,
+        fpi_maxsteps=50,
+        key=KEY,
+    )
+    _, auxs = model(IMG_64, key=KEY, inference=True)
+    aux = auxs[0]
+    # Solver tolerance is 1e-3; give an order of magnitude slack.
+    assert float(aux["error"]) < 1e-2, f"solver error: {float(aux['error']):.2e}"
+    # If depth ≈ max_steps, the solver ran out of budget without converging.
+    assert int(aux["depth"]) < 50
+
+
+def test_deq_fixed_point_consistency():
+    """At convergence, ``f(z*, x) ≈ z*`` must hold within solver tolerance."""
+    model = em.deq_convnext_t(
+        in_channels=3,
+        num_classes=0,
+        key=KEY,
+    )
+    _, auxs = model.features(IMG_64, key=KEY, inference=True)
+    aux = auxs[0]
+    z_star = aux["z_star"]
+    x_context = aux["x_context"]
+    key_solve = aux["key"]
+
+    # Locate the DEQ block (one FPI stage at index 2 in the default config).
+    deq_stage_idx = next(
+        i for i, blk in enumerate(model.blocks) if blk.deq_block is not None
+    )
+    cell = model.blocks[deq_stage_idx].deq_block.cell
+
+    z_next = cell(z_star, x_context, inference=True, key=key_solve)
+    rel = float(jnp.linalg.norm(z_next - z_star) / (jnp.linalg.norm(z_star) + 1e-8))
+    assert rel < 1e-2, f"|f(z*) - z*| / |z*| = {rel:.2e}"
+
+
+def test_deq_gradients_finite_and_nonzero():
+    """Backward pass through DEQ must produce finite, non-zero gradients.
+
+    This is the canonical DEQ smoke test: if the implicit-differentiation
+    adjoint is broken, gradients will be NaN, inf, or uniformly zero.
+    """
+    import equinox as eqx
+
+    model = em.deq_convnext_t(
+        in_channels=3,
+        num_classes=NUM_CLASSES,
+        key=KEY,
+    )
+
+    def loss_fn(m, x):
+        y, _ = m(x, key=KEY, inference=True)
+        return jnp.mean(y**2)
+
+    grads = eqx.filter_grad(loss_fn)(model, IMG_64)
+    leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_array))
+    assert len(leaves) > 0
+    assert all(jnp.all(jnp.isfinite(g)) for g in leaves), "NaN/Inf in gradients"
+    assert any(jnp.any(g != 0) for g in leaves), "All-zero gradients"
+
+
+def test_deq_determinism_same_key():
+    """Same input and same key must produce the same output.
+
+    Non-determinism here would mean the fixed point does not exist.
+    """
+    model = em.deq_convnext_t(in_channels=3, num_classes=NUM_CLASSES, key=KEY)
+    y1, _ = model(IMG_64, key=KEY, inference=True)
+    y2, _ = model(IMG_64, key=KEY, inference=True)
+    assert jnp.allclose(y1, y2)
+
+
+@pytest.mark.parametrize(
+    "injector,stabilizer,strategy",
+    [
+        # Preset default: pre-norm injection + GroupNorm projection.
+        ("prenorm_add", "projected", "entry"),
+        # Pre-norm + damped projection.
+        ("prenorm_add", "damped_projected", "entry"),
+        # Projection stabilizer alone bounds the iterate even with trivial injection.
+        ("add", "projected", "entry"),
+        # Projection at every block.
+        ("add", "projected", "per_block"),
+        # Gated injector (init_gate=0.5) is a damped Picard at init;
+        # projection on top gives a belt-and-suspenders setup.
+        ("gated", "projected", "entry"),
+        # Projection + damping with a projected forcing term.
+        ("proj_add", "damped_projected", "entry"),
+    ],
+)
+def test_deq_injector_stabilizer_strategy_combos(injector, stabilizer, strategy):
+    """Each well-posed (injector, stabilizer, strategy) combo must converge.
+
+    Combos that lack **any** bounding mechanism — e.g. ``add + identity`` or
+    ``proj_add + damped`` — are deliberately absent: ConvNeXt blocks with
+    ``LayerScale(1e-6)`` are near-identity, so without at least one of
+    {pre-norm on z, projection on output, convex-mix gate with init_gate < 1}
+    the Picard iteration ``z_{k+1} ≈ z_k + x`` diverges linearly and burns
+    through ``max_steps``. That's expected behavior, not a bug — the minimal
+    combo is the library's simple default for general use, and
+    architecture-specific presets (like ``deq_convnext_t``) layer bounding on
+    top. For a finiteness-only smoke matrix over all 32 combos, see
+    ``test_implicit.py::test_deqblock_all_combinations_run``.
+    """
+    model = em.deq_convnext_t(
+        in_channels=3,
+        num_classes=NUM_CLASSES,
+        fpi_injector=injector,
+        fpi_stabilizer=stabilizer,
+        fpi_strategy=strategy,
+        key=KEY,
+    )
+    y, auxs = model(IMG_64, key=KEY, inference=True)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+    # Every well-posed combo must converge within the solver's budget.
+    assert int(auxs[0]["depth"]) < 50
+
+
+def test_deq_blocks_is_tuple():
+    """Structural invariant: BlockChunk.blocks must be a pytree-friendly tuple."""
+    model = em.deq_convnext_t(in_channels=3, num_classes=NUM_CLASSES, key=KEY)
+    assert isinstance(model.blocks, tuple)
+
+
+def test_deq_jit_compatible():
+    """The model must trace cleanly under filter_jit."""
+    import equinox as eqx
+
+    model = em.deq_convnext_t(in_channels=3, num_classes=NUM_CLASSES, key=KEY)
+
+    @eqx.filter_jit
+    def forward(m, x, k):
+        y, _ = m(x, key=k, inference=True)
+        return y
+
+    y = forward(model, IMG_64, KEY)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
