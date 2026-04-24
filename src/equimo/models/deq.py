@@ -109,7 +109,7 @@ class BlockChunk(eqx.Module):
             if block_type == "normal":
                 blocks = []
                 for i in range(depth):
-                    config = module_kwargs | {
+                    config = {"dim": block_out} | module_kwargs | {
                         k: module_kwargs[k][i] for k in keys_to_spread
                     }
                     blocks.append(
@@ -155,6 +155,7 @@ class BlockChunk(eqx.Module):
                     depth=depth,
                     module=module,
                     module_kwargs={
+                        "dim": block_out,
                         "in_channels": block_in,
                         "out_channels": block_out,
                     }
@@ -394,7 +395,7 @@ _DEQ_BASE_CFG: dict = {
     "depths": [3, 3, 9, 3],
     "block_types": ["normal", "normal", "fpi", "normal"],
     "modules": ["convnextblock", "convnextblock", "convnextblock", "convnextblock"],
-    "module_kwargs": [{"dim": 96}, {"dim": 192}, {"dim": 384}, {"dim": 768}],
+    "module_kwargs": [{}, {}, {}, {}],
     "downsamplers": [
         "convnextstem",
         "convnextdownsampler",
