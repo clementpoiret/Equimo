@@ -145,7 +145,6 @@ class DEQBlock(eqx.Module):
         global_updater: AbstractUpdater,
         internal_updater: AbstractUpdater | None,
         layer_strategy: AbstractLayerApply,
-        beta: float,
         tol: float,
         max_steps: int,
         key: PRNGKeyArray,

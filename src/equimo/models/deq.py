@@ -42,7 +42,6 @@ class BlockChunk(eqx.Module):
         global_updater: str = "identity",
         internal_updater: str | None = None,
         layer_strategy: str = "standard",
-        beta: float = 0.8,
         tol: float = 1e-3,
         max_steps: int = 50,
         drop_path: float | Sequence[float] = 0.0,
@@ -84,11 +83,10 @@ class BlockChunk(eqx.Module):
             if block_type == "normal":
                 blocks = []
                 for i in range(depth):
-                    config = module_kwargs | {
+                    config = {"dim": block_in} | module_kwargs | {
                         k: module_kwargs[k][i] for k in keys_to_spread
                     }
 
-                    in_channels if downsample_last else out_channels
                     blocks.append(
                         module(
                             in_channels=block_in,
@@ -141,6 +139,7 @@ class BlockChunk(eqx.Module):
                     depth=depth,
                     module=module,
                     module_kwargs={
+                        "dim": block_in,
                         "in_channels": block_in,
                         "out_channels": block_out,
                     }
@@ -149,7 +148,6 @@ class BlockChunk(eqx.Module):
                     global_updater=global_updater_obj,
                     internal_updater=internal_updater_obj,
                     layer_strategy=layer_strategy_obj,
-                    beta=beta,
                     tol=tol,
                     max_steps=max_steps,
                     key=block_subkeys[0],
@@ -244,7 +242,6 @@ class DEQ(eqx.Module):
         fpi_global_updater: str = "identity",
         fpi_internal_updater: str | None = None,
         fpi_layer_strategy: str = "standard",
-        fpi_beta: float = 0.8,
         fpi_maxsteps: int = 50,
         fpi_tol: float = 1e-3,
         drop_path_rate: float = 0.0,
@@ -296,7 +293,6 @@ class DEQ(eqx.Module):
                     global_updater=fpi_global_updater,
                     internal_updater=fpi_internal_updater,
                     layer_strategy=fpi_layer_strategy,
-                    beta=fpi_beta,
                     tol=fpi_tol,
                     max_steps=fpi_maxsteps,
                     drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
@@ -372,8 +368,12 @@ _DEQ_BASE_CFG: dict = {
     "depths": [3, 3, 9, 3],
     "block_types": ["normal", "normal", "fpi", "normal"],
     "modules": ["convnextblock", "convnextblock", "convnextblock", "convnextblock"],
-    "module_kwargs": [{"dim": 96}, {"dim": 192}, {"dim": 384}, {"dim": 768}],
-    "downsamplers": ["convnextstem", "convnextdownsampler", "convnextdownsampler", "convnextdownsampler"],
+    "downsamplers": [
+        "convnextstem",
+        "convnextdownsampler",
+        "convnextdownsampler",
+        "convnextdownsampler",
+    ],
 }
 
 _DEQ_REGISTRY: dict[str, tuple[dict, dict]] = {
