@@ -932,3 +932,15 @@ def test_deq_jit_compatible():
     y = forward(model, IMG_64, KEY)
     assert y.shape == (NUM_CLASSES,)
     assert jnp.all(jnp.isfinite(y))
+
+
+def test_deq_get_fpi_cells():
+    """get_fpi_cells() must return a tuple of DEQCell instances."""
+    from equimo.implicit import DEQCell
+
+    model = em.deq_convnext_t(in_channels=3, num_classes=NUM_CLASSES, key=KEY)
+    cells = model.get_fpi_cells()
+    
+    assert isinstance(cells, tuple)
+    assert len(cells) == 1
+    assert isinstance(cells[0], DEQCell)

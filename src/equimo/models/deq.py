@@ -29,6 +29,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.implicit import (
     DEQBlock,
+    DEQCell,
     get_injector,
     get_stabilizer,
     get_strategy,
@@ -368,6 +369,13 @@ class DEQ(eqx.Module):
         x = self.head(x)
 
         return x
+
+    def get_fpi_cells(self) -> Tuple[DEQCell, ...]:
+        return tuple(
+            b.deq_block.cell
+            for b in self.blocks
+            if getattr(b, "block_type", None) == "fpi" and b.deq_block is not None
+        )
 
     def __call__(
         self,
