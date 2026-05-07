@@ -150,6 +150,83 @@ def test_vit_rope():
     assert jnp.all(jnp.isfinite(y_infer))
 
 
+# VisionParcae
+
+
+def _small_vision_parcae(**kwargs):
+    cfg = {
+        "img_size": 64,
+        "in_channels": 3,
+        "dim": 32,
+        "patch_size": 8,
+        "num_heads": 2,
+        "num_classes": NUM_CLASSES,
+        "n_layers_in_prelude": 1,
+        "n_layers_in_recurrent_block": 1,
+        "n_layers_in_coda": 1,
+        "mean_recurrence": 2,
+        "mean_backprop_depth": 1,
+        "max_recurrence": 2,
+        "key": KEY,
+    }
+    cfg.update(kwargs)
+    return em.VisionParcae(**cfg)
+
+
+def test_vision_parcae_forward():
+    model = _small_vision_parcae()
+    y = model(IMG_64, key=KEY, inference=True)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+
+
+def test_vision_parcae_features_and_aux():
+    model = _small_vision_parcae()
+    feats = model.features(IMG_64, key=KEY, inference=True)
+    fwd = model.forward_features(IMG_64, key=KEY, inference=True)
+
+    assert feats.shape == (65, 32)
+    assert fwd["x_norm_cls_token"].shape == (32,)
+    assert fwd["x_norm_patchtokens"].shape == (64, 32)
+    assert fwd["x_recurrent_state"].shape == (65, 32)
+    assert int(fwd["num_steps"]) == 2
+    assert int(fwd["num_steps_no_grad"]) == 0
+    assert int(fwd["num_steps_with_grad"]) == 2
+    assert jnp.all(jnp.isfinite(feats))
+    assert jnp.all(jnp.isfinite(fwd["recurrent_residual"]))
+
+
+@pytest.mark.parametrize("injection_type", ["diagonal", "linear", "add"])
+def test_vision_parcae_injection_variants(injection_type):
+    model = _small_vision_parcae(injection_type=injection_type)
+    y = model(IMG_64, key=KEY, inference=True)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+    assert jnp.all(jnp.isfinite(model.recurrent_contraction_factor()))
+
+
+def test_vision_parcae_tiny_factory_forward():
+    model = em.vision_parcae_tiny_patch16_224(
+        img_size=64,
+        dim=32,
+        num_heads=2,
+        recurrent_dim=32,
+        recurrent_num_heads=2,
+        patch_size=8,
+        num_classes=NUM_CLASSES,
+        n_layers_in_prelude=1,
+        n_layers_in_recurrent_block=1,
+        n_layers_in_coda=1,
+        mean_recurrence=2,
+        mean_backprop_depth=1,
+        max_recurrence=2,
+        key=KEY,
+    )
+    y = model(IMG_64, key=KEY, inference=True)
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+
+
 # IFormer
 
 
