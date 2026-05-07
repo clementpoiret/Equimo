@@ -1017,7 +1017,7 @@ def test_deq_get_fpi_cells():
 
     model = em.deq_convnext_t(in_channels=3, num_classes=NUM_CLASSES, key=KEY)
     cells = model.get_fpi_cells()
-    
+
     assert isinstance(cells, tuple)
     assert len(cells) == 1
     assert isinstance(cells[0], DEQCell)

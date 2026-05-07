@@ -1,14 +1,13 @@
 """Vision Parcae for Equimo.
 
-A ViT-style image model with a Parcae middle loop.  The model keeps the
-Equimo VisionTransformer input/readout conventions while replacing a fixed
-stack of middle transformer layers with a recurrent state update
-
+A ViT-style image model with a Parcae middle loop.
     h[t + 1] = A h[t] + B e + R(h[t], e)
 
 where ``e`` is the prelude output and ``R`` is a shared transformer block
-chunk.  The default injection is the Parcae diagonal discretisation, which
-keeps the recurrent linear dynamics contractive by construction.
+chunk.  The default injection is the original Parcae diagonal discretisation,
+which keeps the recurrent linear dynamics contractive by construction.  Use
+``injection_type="diagonal_exact_zoh"`` to select the exact-ZOH variant while
+leaving ``injection_type="diagonal"`` available for controlled comparisons.
 
 This module is intentionally self-contained.  Drop it into ``equimo/models``
 and expose the desired names from the package ``__init__`` if needed.
@@ -17,6 +16,7 @@ and expose the desired names from the package ``__init__`` if needed.
 __all__ = [
     "VisionParcae",
     "VisionParcaeDiagonalInjection",
+    "VisionParcaeDiagonalExactZOHInjection",
     "VisionParcaeLinearInjection",
     "VisionParcaeAdditiveInjection",
     "vision_parcae_tiny_patch16_224",
@@ -45,8 +45,9 @@ from equimo.layers.posemb import CompositeVisionRoPE, LearnedPosEmbed, VisionRoP
 from equimo.models.registry import register_model
 from equimo.utils import pool_sd
 
-InjectionKind = Literal["diagonal", "linear", "add"]
+InjectionKind = Literal["diagonal", "diagonal_exact_zoh", "linear", "add"]
 StateInitKind = Literal["like-init", "normal", "embed", "zero", "unit"]
+CInitKind = Literal["scaled", "identity"]
 SamplingKind = Literal[
     "fixed",
     "poisson-truncated-full",
@@ -60,6 +61,17 @@ def _inverse_softplus(x: float | Array) -> Array:
 
     x = jnp.asarray(x)
     return jnp.where(x > 20.0, x, jnp.log(jnp.expm1(x)))
+
+
+def _exact_zoh_input_gain(dt: Array, A: Array) -> Array:
+    """Return the exact zero-order-hold gain for held inputs.
+
+    ``A`` contains positive diagonal rates for the continuous generator ``-A``.
+    Using ``expm1`` computes ``(1 - exp(-dt * A)) / A`` without subtractive
+    cancellation when ``dt * A`` is small.
+    """
+
+    return -jnp.expm1(-dt * A) / A
 
 
 def _takase_std(dim: int) -> float:
@@ -128,6 +140,27 @@ def _make_scaled_linear(
         shape=linear.weight.shape,
     )
     weight = (weight * std).astype(linear.weight.dtype)
+    linear = eqx.tree_at(lambda m: m.weight, linear, weight)
+    if linear.bias is not None:
+        linear = eqx.tree_at(lambda m: m.bias, linear, jnp.zeros_like(linear.bias))
+    return linear
+
+
+def _make_identity_or_padded_linear(
+    in_features: int,
+    out_features: int,
+    *,
+    use_bias: bool,
+    key: PRNGKeyArray,
+) -> eqx.nn.Linear:
+    """Create an identity-padded ``eqx.nn.Linear`` with optional zero bias."""
+
+    linear = eqx.nn.Linear(in_features, out_features, use_bias=use_bias, key=key)
+    weight = jnp.zeros_like(linear.weight)
+    diag = min(in_features, out_features)
+    weight = weight.at[jnp.arange(diag), jnp.arange(diag)].set(
+        jnp.asarray(1.0, dtype=weight.dtype)
+    )
     linear = eqx.tree_at(lambda m: m.weight, linear, weight)
     if linear.bias is not None:
         linear = eqx.tree_at(lambda m: m.bias, linear, jnp.zeros_like(linear.bias))
@@ -203,9 +236,7 @@ def _make_block_chunk(
 
 
 class VisionParcaeDiagonalInjection(eqx.Module):
-    """Parcae diagonal injection for a sequence of visual tokens.
-
-    This is the JAX/Equinox equivalent of the reference PyTorch update
+    """Parcae diagonal injection with the original Euler input write.
 
         x[t + 1] = exp(-softplus(dt) * exp(A_log)) * x[t]
                  + softplus(dt) * B e
@@ -272,6 +303,52 @@ class VisionParcaeDiagonalInjection(eqx.Module):
         dt = jax.nn.softplus(self.dt_bias)
         A = jnp.exp(self.A_log)
         return jnp.mean(jnp.exp(-dt * A))
+
+
+class VisionParcaeDiagonalExactZOHInjection(VisionParcaeDiagonalInjection):
+    """Parcae diagonal injection with an exact zero-order-hold input write.
+
+        x[t + 1] = exp(-softplus(dt) * exp(A_log)) * x[t]
+                 + ((1 - exp(-softplus(dt) * exp(A_log))) / exp(A_log)) * B e
+
+    This keeps the same diagonal state decay, ``A_log``/``dt_bias``
+    parameterisation, full ``B`` write matrix, and identity-padded ``B``
+    initialisation as ``VisionParcaeDiagonalInjection``.  It changes only the
+    gain applied to the full-matrix input write.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        state_dim: int,
+        *,
+        dt_init: float = 0.1,
+        A_init: float = 1.0,
+        B_init_scale: float = 1.0,
+        key: PRNGKeyArray | None = None,
+    ):
+        super().__init__(
+            input_dim,
+            state_dim,
+            dt_init=dt_init,
+            A_init=A_init,
+            B_init_scale=B_init_scale,
+            key=key,
+        )
+
+    def __call__(
+        self,
+        x_t: Float[Array, "seq state_dim"],
+        e: Float[Array, "seq input_dim"],
+    ) -> Float[Array, "seq state_dim"]:
+        dtype = x_t.dtype
+        compute_dtype = jnp.result_type(self.dt_bias, self.A_log, jnp.float32)
+        dt = jax.nn.softplus(self.dt_bias.astype(compute_dtype))
+        A = jnp.exp(self.A_log.astype(compute_dtype))
+        decay = jnp.exp(-dt * A).astype(dtype)
+        input_gain = _exact_zoh_input_gain(dt, A).astype(dtype)
+        injected = jnp.einsum("...i,oi->...o", e, self.B.astype(e.dtype)).astype(dtype)
+        return x_t * decay + input_gain * injected
 
 
 class VisionParcaeLinearInjection(eqx.Module):
@@ -364,6 +441,15 @@ def _get_vision_parcae_injection(
 ) -> eqx.Module:
     if injection_type == "diagonal":
         return VisionParcaeDiagonalInjection(
+            input_dim,
+            state_dim,
+            dt_init=dt_init,
+            A_init=A_init,
+            B_init_scale=B_init_scale,
+            key=key,
+        )
+    if injection_type == "diagonal_exact_zoh":
+        return VisionParcaeDiagonalExactZOHInjection(
             input_dim,
             state_dim,
             dt_init=dt_init,
@@ -465,6 +551,7 @@ class VisionParcae(eqx.Module):
     sampling_scheme: SamplingKind = eqx.field(static=True)
     recurrent_checkpoint: bool = eqx.field(static=True)
     coda_checkpoint: bool = eqx.field(static=True)
+    C_init: CInitKind = eqx.field(static=True)
 
     def __init__(
         self,
@@ -540,12 +627,14 @@ class VisionParcae(eqx.Module):
         interpolate_antialias: bool = False,
         eps: float = 1e-5,
         dt_init: float = 0.1,
-        A_init: float = 1.0,
-        B_init_scale: float = 1.0,
+        alpha_init: float | None = None,
+        A_init: float | None = None,
+        B_init_scale: float | None = None,
         linear_injection_bias: bool = True,
         injection_bias: bool | None = None,
         linear_injection_init_std: float | None = None,
         C_bias: bool = True,
+        C_init: CInitKind = "scaled",
         C_init_std: float | None = None,
         **kwargs,
     ):
@@ -563,6 +652,20 @@ class VisionParcae(eqx.Module):
             raise ValueError("VisionParcae requires n_layers_in_recurrent_block > 0.")
         if mean_recurrence < 1:
             raise ValueError("mean_recurrence must be >= 1.")
+
+        if dt_init <= 0:
+            raise ValueError("dt_init must be positive.")
+
+        if alpha_init is not None:
+            if not 0.0 < alpha_init < 1.0:
+                raise ValueError("alpha_init must be in (0, 1).")
+            guide_A_init = -math.log(alpha_init) / dt_init
+            guide_B_init = (1.0 - alpha_init) / dt_init
+            A_init = guide_A_init if A_init is None else A_init
+            B_init_scale = guide_B_init if B_init_scale is None else B_init_scale
+
+        A_init = 1.0 if A_init is None else A_init
+        B_init_scale = 1.0 if B_init_scale is None else B_init_scale
 
         recurrent_dim = dim if recurrent_dim is None else recurrent_dim
         recurrent_num_heads = (
@@ -585,6 +688,8 @@ class VisionParcae(eqx.Module):
         )
         if mean_backprop_depth < 0:
             raise ValueError("mean_backprop_depth must be >= 0.")
+        if C_init not in ("scaled", "identity"):
+            raise ValueError(f"Invalid C_init: {C_init!r}.")
 
         if max_recurrence is None:
             max_recurrence = max(
@@ -648,6 +753,7 @@ class VisionParcae(eqx.Module):
         self.sampling_scheme = sampling_scheme
         self.recurrent_checkpoint = recurrent_checkpoint
         self.coda_checkpoint = coda_checkpoint
+        self.C_init = C_init
 
         block = get_attn_block(block)
         attn_layer = get_attn(attn_layer)
@@ -815,13 +921,21 @@ class VisionParcae(eqx.Module):
             key=key_core,
         )
 
-        self.C = _make_scaled_linear(
-            recurrent_dim,
-            dim,
-            use_bias=C_bias,
-            key=key_state_project,
-            std=C_init_std,
-        )
+        if C_init == "identity":
+            self.C = _make_identity_or_padded_linear(
+                recurrent_dim,
+                dim,
+                use_bias=C_bias,
+                key=key_state_project,
+            )
+        else:
+            self.C = _make_scaled_linear(
+                recurrent_dim,
+                dim,
+                use_bias=C_bias,
+                key=key_state_project,
+                std=C_init_std,
+            )
 
         self.coda = _make_block_chunk(
             depth=n_layers_in_coda,
