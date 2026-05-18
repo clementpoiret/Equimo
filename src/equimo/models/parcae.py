@@ -14,11 +14,13 @@ and expose the desired names from the package ``__init__`` if needed.
 """
 
 __all__ = [
+    "BInitMode",
     "VisionParcae",
     "VisionParcaeDiagonalInjection",
     "VisionParcaeDiagonalExactZOHInjection",
     "VisionParcaeLinearInjection",
     "VisionParcaeAdditiveInjection",
+    "dynamics_from_alpha",
     "vision_parcae_tiny_patch16_224",
     "vision_parcae_small_patch16_224",
     "vision_parcae_base_patch16_224",
@@ -46,6 +48,7 @@ from equimo.models.registry import register_model
 from equimo.utils import pool_sd
 
 InjectionKind = Literal["diagonal", "diagonal_exact_zoh", "linear", "add"]
+BInitMode = Literal["raw", "fixed_point", "target_depth", "one_step"]
 StateInitKind = Literal["like-init", "normal", "embed", "zero", "unit"]
 CInitKind = Literal["scaled", "identity"]
 SamplingKind = Literal[
@@ -72,6 +75,61 @@ def _exact_zoh_input_gain(dt: Array, A: Array) -> Array:
     """
 
     return -jnp.expm1(-dt * A) / A
+
+
+def dynamics_from_alpha(
+    *,
+    alpha: float,
+    dt: float,
+    injection_type: str,
+    mode: BInitMode,
+    target_depth: int | None = None,
+    target_scale: float = 1.0,
+    raw_B_init_scale: float | None = None,
+) -> tuple[float, float]:
+    """Return ``(A_init, B_init_scale)`` for alpha-guided diagonal dynamics.
+
+    ``fixed_point`` targets the linear fixed point ``h_inf ~= target_scale * e``.
+    ``target_depth`` targets ``h[target_depth] ~= target_scale * e`` from
+    ``h0 = 0``.  ``one_step`` is the ``target_depth=1`` case.
+    """
+
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be in (0, 1).")
+    if dt <= 0:
+        raise ValueError("dt must be positive.")
+
+    A_init = -math.log(alpha) / dt
+
+    if mode == "raw":
+        if raw_B_init_scale is None:
+            raise ValueError("raw mode requires raw_B_init_scale.")
+        return A_init, raw_B_init_scale
+
+    if injection_type not in ("diagonal", "diagonal_exact_zoh"):
+        raise ValueError("B_init_mode only applies to diagonal injections.")
+
+    if mode == "one_step":
+        target_depth = 1
+
+    if mode in ("target_depth", "one_step"):
+        if target_depth is None or target_depth < 1:
+            raise ValueError("target_depth mode requires target_depth >= 1.")
+        denom = 1.0 - alpha**target_depth
+        if injection_type == "diagonal":
+            B_init_scale = target_scale * (1.0 - alpha) / (dt * denom)
+        else:
+            B_init_scale = target_scale * A_init / denom
+        return A_init, B_init_scale
+
+    if mode == "fixed_point":
+        if injection_type == "diagonal":
+            B_init_scale = target_scale * (1.0 - alpha) / dt
+        else:
+            B_init_scale = target_scale * A_init
+        return A_init, B_init_scale
+
+    raise ValueError(f"Unknown B init mode: {mode!r}.")
 
 
 def _takase_std(dim: int) -> float:
@@ -545,6 +603,9 @@ class VisionParcae(eqx.Module):
     mean_backprop_depth: int = eqx.field(static=True)
     max_recurrence: int = eqx.field(static=True)
     injection_type: InjectionKind = eqx.field(static=True)
+    B_init_mode: BInitMode = eqx.field(static=True)
+    B_init_target_depth: int | None = eqx.field(static=True)
+    B_init_target_scale: float = eqx.field(static=True)
     state_init: StateInitKind = eqx.field(static=True)
     state_init_scale: float | None = eqx.field(static=True)
     sample_recurrence: bool = eqx.field(static=True)
@@ -628,6 +689,9 @@ class VisionParcae(eqx.Module):
         eps: float = 1e-5,
         dt_init: float = 0.1,
         alpha_init: float | None = None,
+        B_init_mode: BInitMode = "fixed_point",
+        B_init_target_depth: int | None = None,
+        B_init_target_scale: float = 1.0,
         A_init: float | None = None,
         B_init_scale: float | None = None,
         linear_injection_bias: bool = True,
@@ -655,14 +719,37 @@ class VisionParcae(eqx.Module):
 
         if dt_init <= 0:
             raise ValueError("dt_init must be positive.")
+        if B_init_mode not in ("raw", "fixed_point", "target_depth", "one_step"):
+            raise ValueError(f"Unknown B init mode: {B_init_mode!r}.")
 
+        resolved_B_init_mode = B_init_mode
         if alpha_init is not None:
-            if not 0.0 < alpha_init < 1.0:
-                raise ValueError("alpha_init must be in (0, 1).")
-            guide_A_init = -math.log(alpha_init) / dt_init
-            guide_B_init = (1.0 - alpha_init) / dt_init
-            A_init = guide_A_init if A_init is None else A_init
-            B_init_scale = guide_B_init if B_init_scale is None else B_init_scale
+            if A_init is not None:
+                raise ValueError("alpha_init and A_init are mutually exclusive.")
+            if B_init_scale is not None and B_init_mode != "raw":
+                raise ValueError(
+                    "B_init_scale with alpha_init requires B_init_mode='raw'."
+                )
+            if (
+                B_init_mode == "raw"
+                and (B_init_target_depth is not None or B_init_target_scale != 1.0)
+            ):
+                raise ValueError("raw B_init_mode does not use target settings.")
+            A_init, B_init_scale = dynamics_from_alpha(
+                alpha=alpha_init,
+                dt=dt_init,
+                injection_type=injection_type,
+                mode=B_init_mode,
+                target_depth=B_init_target_depth,
+                target_scale=B_init_target_scale,
+                raw_B_init_scale=B_init_scale,
+            )
+        elif B_init_mode in ("target_depth", "one_step"):
+            raise ValueError(f"B_init_mode={B_init_mode!r} requires alpha_init.")
+        elif B_init_target_depth is not None or B_init_target_scale != 1.0:
+            raise ValueError("B_init target settings require alpha_init.")
+        else:
+            resolved_B_init_mode = "raw"
 
         A_init = 1.0 if A_init is None else A_init
         B_init_scale = 1.0 if B_init_scale is None else B_init_scale
@@ -747,6 +834,9 @@ class VisionParcae(eqx.Module):
         self.mean_backprop_depth = mean_backprop_depth
         self.max_recurrence = max_recurrence
         self.injection_type = injection_type
+        self.B_init_mode = resolved_B_init_mode
+        self.B_init_target_depth = B_init_target_depth
+        self.B_init_target_scale = B_init_target_scale
         self.state_init = state_init
         self.state_init_scale = state_init_scale
         self.sample_recurrence = sample_recurrence

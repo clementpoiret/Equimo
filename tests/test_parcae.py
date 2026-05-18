@@ -28,6 +28,7 @@ from equimo.models.parcae import (
     _inverse_softplus,
     _takase_std,
     _to_scalar_i32,
+    dynamics_from_alpha,
 )
 
 
@@ -80,6 +81,63 @@ def test_std_helpers_match_expected_scaling():
 def test_default_max_recurrence_reserves_static_scan_budget():
     assert _default_max_recurrence(3, sample_recurrence=False) == 6
     assert _default_max_recurrence(3, sample_recurrence=True) >= 10
+
+
+def test_dynamics_from_alpha_calibrates_B_init_modes():
+    alpha = 0.95
+    dt = 1.0
+    A_init = -jnp.log(alpha) / dt
+
+    assert dynamics_from_alpha(
+        alpha=alpha,
+        dt=dt,
+        injection_type="diagonal",
+        mode="fixed_point",
+    ) == pytest.approx((float(A_init), 1.0 - alpha))
+    assert dynamics_from_alpha(
+        alpha=alpha,
+        dt=dt,
+        injection_type="diagonal_exact_zoh",
+        mode="fixed_point",
+    ) == pytest.approx((float(A_init), float(A_init)))
+    assert dynamics_from_alpha(
+        alpha=alpha,
+        dt=dt,
+        injection_type="diagonal",
+        mode="one_step",
+    ) == pytest.approx((float(A_init), 1.0))
+    assert dynamics_from_alpha(
+        alpha=alpha,
+        dt=dt,
+        injection_type="diagonal",
+        mode="target_depth",
+        target_depth=4,
+        target_scale=0.5,
+    ) == pytest.approx((float(A_init), 0.5 * (1.0 - alpha) / (1.0 - alpha**4)))
+
+
+def test_dynamics_from_alpha_validates_ambiguous_modes():
+    with pytest.raises(ValueError, match="raw mode requires raw_B_init_scale"):
+        dynamics_from_alpha(
+            alpha=0.95,
+            dt=1.0,
+            injection_type="diagonal",
+            mode="raw",
+        )
+    with pytest.raises(ValueError, match="target_depth mode requires"):
+        dynamics_from_alpha(
+            alpha=0.95,
+            dt=1.0,
+            injection_type="diagonal",
+            mode="target_depth",
+        )
+    with pytest.raises(ValueError, match="only applies to diagonal"):
+        dynamics_from_alpha(
+            alpha=0.95,
+            dt=1.0,
+            injection_type="linear",
+            mode="fixed_point",
+        )
 
 
 def test_to_scalar_i32_accepts_scalars_and_rejects_bad_inputs():
@@ -402,6 +460,73 @@ def test_recurrent_loop_matches_closed_form_exact_zoh_without_core_block():
         jnp.mean(jnp.linalg.norm(expected - expected_prev, axis=-1)),
         rtol=1e-5,
     )
+
+
+def test_alpha_init_one_step_mode_initializes_euler_pass_through_write():
+    model = _coreless(
+        _tiny_parcae(
+            mean_recurrence=1,
+            mean_backprop_depth=1,
+            max_recurrence=1,
+            dt_init=1.0,
+            alpha_init=0.95,
+            B_init_mode="one_step",
+        )
+    )
+    e = jr.normal(KEY, (SEQ, DIM))
+    h, _ = model._iterate_recurrent(
+        e,
+        H=1,
+        W=4,
+        inference=True,
+        key=KEY,
+        num_steps=1,
+    )
+
+    assert model.B_init_mode == "one_step"
+    assert jnp.allclose(jnp.diag(model.adapter.B), 1.0)
+    assert jnp.allclose(h, e, rtol=1e-5, atol=1e-6)
+
+
+def test_alpha_init_target_depth_mode_initializes_exact_zoh_target_write():
+    target_depth = 4
+    model = _coreless(
+        _tiny_parcae(
+            injection_type="diagonal_exact_zoh",
+            mean_recurrence=target_depth,
+            mean_backprop_depth=target_depth,
+            max_recurrence=target_depth,
+            dt_init=1.0,
+            alpha_init=0.95,
+            B_init_mode="target_depth",
+            B_init_target_depth=target_depth,
+        )
+    )
+    e = jr.normal(KEY, (SEQ, DIM))
+    h, _ = model._iterate_recurrent(
+        e,
+        H=1,
+        W=4,
+        inference=True,
+        key=KEY,
+        num_steps=target_depth,
+    )
+
+    assert model.B_init_mode == "target_depth"
+    assert model.B_init_target_depth == target_depth
+    assert isinstance(model.adapter, VisionParcaeDiagonalExactZOHInjection)
+    assert jnp.allclose(h, e, rtol=1e-5, atol=1e-6)
+
+
+def test_alpha_init_rejects_ambiguous_B_init_configuration():
+    with pytest.raises(ValueError, match="requires B_init_mode='raw'"):
+        _tiny_parcae(
+            alpha_init=0.95,
+            B_init_mode="one_step",
+            B_init_scale=1.0,
+        )
+    with pytest.raises(ValueError, match="requires alpha_init"):
+        _tiny_parcae(B_init_mode="target_depth", B_init_target_depth=2)
 
 
 def test_recurrent_loop_zero_steps_returns_initial_state():
