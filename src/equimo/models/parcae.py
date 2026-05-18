@@ -702,7 +702,8 @@ class VisionParcae(eqx.Module):
         C_init_std: float | None = None,
         **kwargs,
     ):
-        del kwargs
+        if kwargs:
+            raise TypeError(f"Unexpected VisionParcae arguments: {sorted(kwargs)}")
 
         if injection_bias is not None:
             if injection_type != "linear":
@@ -722,6 +723,14 @@ class VisionParcae(eqx.Module):
         if B_init_mode not in ("raw", "fixed_point", "target_depth", "one_step"):
             raise ValueError(f"Unknown B init mode: {B_init_mode!r}.")
 
+        if B_init_mode == "fixed_point" and B_init_target_depth is not None:
+            raise ValueError(
+                "B_init_target_depth is only used with B_init_mode='target_depth'."
+            )
+
+        if B_init_mode == "one_step" and B_init_target_depth is not None:
+            raise ValueError("B_init_mode='one_step' does not use B_init_target_depth.")
+
         resolved_B_init_mode = B_init_mode
         if alpha_init is not None:
             if A_init is not None:
@@ -730,11 +739,15 @@ class VisionParcae(eqx.Module):
                 raise ValueError(
                     "B_init_scale with alpha_init requires B_init_mode='raw'."
                 )
-            if (
-                B_init_mode == "raw"
-                and (B_init_target_depth is not None or B_init_target_scale != 1.0)
+            if B_init_mode == "raw" and (
+                B_init_target_depth is not None or B_init_target_scale != 1.0
             ):
                 raise ValueError("raw B_init_mode does not use target settings.")
+
+            is_diagonal_injection = injection_type in ("diagonal", "diagonal_exact_zoh")
+            if not is_diagonal_injection:
+                raise ValueError("alpha_init only applies to diagonal injections.")
+
             A_init, B_init_scale = dynamics_from_alpha(
                 alpha=alpha_init,
                 dt=dt_init,
