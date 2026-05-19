@@ -1,11 +1,11 @@
-"""Tests for equimo.layers.ffn."""
+"""Tests for equimo.core.layers.ffn."""
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.ffn import (
+from equimo.core.layers.ffn import (
     DINOHead,
     Mlp,
     SwiGlu,
@@ -368,7 +368,7 @@ class TestRegisterFfn:
     def test_register_default_name(self):
         import equinox as eqx
 
-        from equimo.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
+        from equimo.core.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
 
         @register_ffn()
         class CustomFFN(eqx.Module):
@@ -380,7 +380,7 @@ class TestRegisterFfn:
     def test_register_custom_name(self):
         import equinox as eqx
 
-        from equimo.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
+        from equimo.core.layers.ffn import _FFN_REGISTRY, get_ffn, register_ffn
 
         @register_ffn(name="MySuperFFN")
         class CustomFFN2(eqx.Module):
@@ -390,7 +390,7 @@ class TestRegisterFfn:
         assert get_ffn("mysuperffn") is CustomFFN2
 
     def test_register_non_eqx_module(self):
-        from equimo.layers.ffn import register_ffn
+        from equimo.core.layers.ffn import register_ffn
 
         with pytest.raises(TypeError, match="must be a subclass of eqx.Module"):
 
@@ -401,7 +401,7 @@ class TestRegisterFfn:
     def test_register_duplicate_name(self):
         import equinox as eqx
 
-        from equimo.layers.ffn import register_ffn
+        from equimo.core.layers.ffn import register_ffn
 
         @register_ffn()
         class DuplicateFFN(eqx.Module):

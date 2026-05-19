@@ -4,9 +4,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from equimo.experimental.text import TextEncoder
+from equimo.language.models import TextTransformerEncoder
 from equimo.conversion.utils import convert_torch_to_equinox
-from equimo.io import save_model
+from equimo.serialization import save_model
 from tips import text_encoder
 
 CKPT_PATHS = {
@@ -111,8 +111,8 @@ def get_text_config(v):
 def main():
     try:
         import torch
-    except:
-        raise ImportError("`torch` not available")
+    except ImportError as exc:
+        raise ImportError("`torch` not available") from exc
 
     key = jax.random.PRNGKey(42)
     base_config = {
@@ -126,7 +126,7 @@ def main():
 
         cfg = base_config | config
 
-        tips_text = TextEncoder(
+        tips_text = TextTransformerEncoder(
             **cfg,
             key=key,
         )

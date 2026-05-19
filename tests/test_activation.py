@@ -1,11 +1,11 @@
-"""Tests for equimo.layers.activation."""
+"""Tests for equimo.core.layers.activation."""
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.activation import _ACT_REGISTRY, get_act, register_act
+from equimo.core.layers.activation import _ACT_REGISTRY, get_act, register_act
 
 KEY = jr.PRNGKey(0)
 X = jnp.ones((4, 8), dtype=jnp.float32)

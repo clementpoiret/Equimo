@@ -8,9 +8,9 @@ import numpy as np
 import torch
 from einops import rearrange
 
-import equimo.models as em
+import equimo.vision.models as em
 from equimo.conversion.utils import convert_torch_to_equinox
-from equimo.io import save_model
+from equimo.serialization import save_model
 
 DIR = Path("~/.cache/torch/hub/eupe").expanduser()
 IMG_SIZE = 224
@@ -68,7 +68,7 @@ def trace_model_divergence_vit(jax_model, pt_model, arr, key):
     diff = np.abs(x_pt.detach().numpy().squeeze(0) - np.array(x_jax_tokens))
     print(f"{'Token Prep':<25} | {diff.max():<15.6f} | {diff.mean():<15.6f}")
     if diff.mean() > 1e-4:
-        print(f"\n[!] Divergence isolated at Token Preparation.")
+        print("\n[!] Divergence isolated at Token Preparation.")
         return x_pt, x_jax_tokens, pt_model.patch_embed, jax_model.patch_embed
 
     # 2. Evaluate Residual Blocks
@@ -238,8 +238,8 @@ convnext_sizes: dict[str, dict] = {
 def main():
     try:
         import torch
-    except:
-        raise ImportError("`torch` not available")
+    except ImportError as exc:
+        raise ImportError("`torch` not available") from exc
 
     key = jax.random.PRNGKey(42)
 

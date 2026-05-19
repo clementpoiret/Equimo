@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.attention."""
+"""Tests for equimo.vision.layers.attention."""
 
 import jax
 import jax.numpy as jnp
@@ -6,7 +6,7 @@ import jax.random as jr
 import pytest
 import equinox as eqx
 
-from equimo.layers.attention import (
+from equimo.vision.layers.attention import (
     Attention,
     WindowedAttention,
     AttentionBlock,

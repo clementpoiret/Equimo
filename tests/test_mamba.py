@@ -1,12 +1,12 @@
-"""Tests for equimo.layers.mamba."""
+"""Tests for equimo.core.layers.mamba."""
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.mamba import Mamba2Mixer, get_mixer, register_mixer
-from equimo.layers.norm import RMSNormGated
+from equimo.core.layers.mamba import Mamba2Mixer, get_mixer, register_mixer
+from equimo.core.layers.norm import RMSNormGated
 
 # Shared fixtures
 
@@ -169,7 +169,7 @@ class TestGetMixer:
 
 class TestRegisterMixer:
     def test_register_default_name(self):
-        from equimo.layers.mamba import _MIXER_REGISTRY
+        from equimo.core.layers.mamba import _MIXER_REGISTRY
 
         @register_mixer()
         class CustomMixer(eqx.Module):
@@ -179,7 +179,7 @@ class TestRegisterMixer:
         assert get_mixer("custommixer") is CustomMixer
 
     def test_register_custom_name(self):
-        from equimo.layers.mamba import _MIXER_REGISTRY
+        from equimo.core.layers.mamba import _MIXER_REGISTRY
 
         @register_mixer(name="MySpecialMixer")
         class CustomMixer2(eqx.Module):

@@ -1,0 +1,63 @@
+stages:
+  - lint
+  - test
+  - publish
+
+variables:
+  UV_CACHE_DIR: .cache/uv
+
+default:
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim  # uv pre-installed
+  cache:
+    key:
+      files:
+        - pyproject.toml
+      prefix: uv
+    paths:
+      - .cache/uv
+  before_script:
+    - uv sync --group dev
+
+lint:
+  stage: lint
+  script:
+    - uv run ruff check src
+    - uv run ruff format --check src
+    - uv run ty check
+
+test:
+  stage: test
+  script:
+    - uv run pytest --junitxml=report.xml
+  artifacts:
+    reports:
+      junit: report.xml
+
+publish:
+  stage: publish
+  needs:
+    - test
+  rules:
+    - if: $CI_COMMIT_TAG
+  id_tokens:
+    PYPI_ID_TOKEN:
+      aud: pypi
+  environment:
+    name: release
+    url: https://pypi.org/project/equimo/
+  script:
+    - |
+      TAG_VERSION=${CI_COMMIT_TAG#v}
+      PROJECT_VERSION=$(grep -m 1 '^version = ' pyproject.toml | awk -F'"' '{print $2}')
+      
+      echo "Tag version: $TAG_VERSION"
+      echo "Project version: $PROJECT_VERSION"
+      
+      if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+        echo "Error: Tag version ($TAG_VERSION) does not match pyproject.toml version ($PROJECT_VERSION)"
+        exit 1
+      fi
+
+    - uv build
+    - uv publish
+

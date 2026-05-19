@@ -1,7 +1,7 @@
 [project]
 name = "Equimo"
 version = "1.1.1a6"
-description = "Implementation of popular vision models in Jax"
+description = "Implementation of modern multimodal models in JAX/Equinox"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -36,8 +36,8 @@ torch = [
   "torch>=2.6.0",
   "timm>=1.0.15",
 ]
-# Required for equimo.experimental.text (text tokenizer)
-text = [
+# Required for equimo.language tokenizers
+language = [
   "tensorflow>=2.18.1",
   "tensorflow-text>=2.18.1",
 ]
@@ -54,11 +54,14 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3.5",
-    # "timm>=1.0.20",
-    # "torch>=2.9.0",
-    # "transformers>=5.5.0",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.2",
+    "ruff>=0.15.7",
+    "ty>=0.0.24",
 ]
 
-# [tool.pytest.ini_options]
-# pythonpath = ["src"]
+[tool.ruff.lint]
+ignore = ["E731", "E741", "F722"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_equimo_integration.py" = ["F401"]

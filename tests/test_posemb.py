@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.posemb."""
+"""Tests for equimo.vision.layers.posemb."""
 
 import equinox as eqx
 import jax
@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.posemb import (
+from equimo.vision.layers.posemb import (
     CompositeVisionRoPE,
     DinoRoPE,
     LearnedPosEmbed,
@@ -1109,7 +1109,7 @@ class TestGetPosemb:
 
 class TestRegisterPosemb:
     def test_register_default_name(self):
-        from equimo.layers.posemb import _POSEMB_REGISTRY
+        from equimo.vision.layers.posemb import _POSEMB_REGISTRY
 
         @register_posemb()
         class CustomPosEmb(eqx.Module):
@@ -1119,7 +1119,7 @@ class TestRegisterPosemb:
         assert get_posemb("customposemb") is CustomPosEmb
 
     def test_register_custom_name(self):
-        from equimo.layers.posemb import _POSEMB_REGISTRY
+        from equimo.vision.layers.posemb import _POSEMB_REGISTRY
 
         @register_posemb(name="MySpecialPosEmb")
         class CustomPosEmb2(eqx.Module):

@@ -8,23 +8,23 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-import equimo.models as em
-from equimo.io import load_model, save_model
-from equimo.layers.activation import get_act
-from equimo.models.attnet import attnet_xxs
-from equimo.models.fastervit import FasterViT
-from equimo.models.lowformer import lowformer_backbone_b0
-from equimo.models.mlla import Mlla
-from equimo.models.mobilenet import mobilenetv3_small
-from equimo.models.partialformer import PartialFormer
-from equimo.models.shvit import SHViT
-from equimo.models.vit import (
+import equimo.vision.models as em
+from equimo.serialization import load_model, save_model
+from equimo.core.layers.activation import get_act
+from equimo.vision.models.attnet import attnet_xxs
+from equimo.vision.models.fastervit import FasterViT
+from equimo.vision.models.lowformer import lowformer_backbone_b0
+from equimo.vision.models.mlla import Mlla
+from equimo.vision.models.mobilenet import mobilenetv3_small
+from equimo.vision.models.partialformer import PartialFormer
+from equimo.vision.models.shvit import SHViT
+from equimo.vision.models.vit import (
     dinov2_vits14_reg,
     dinov3_vits16_pretrain_lvd1689m,
     siglip2_vitb16_256,
     vit5_small,
 )
-from equimo.models.vssd import Vssd
+from equimo.vision.models.vssd import Vssd
 from equimo.utils import make_drop_path_schedule
 
 # Helpers
@@ -1013,7 +1013,7 @@ def test_deq_jit_compatible():
 
 def test_deq_get_fpi_cells():
     """get_fpi_cells() must return a tuple of DEQCell instances."""
-    from equimo.implicit import DEQCell
+    from equimo.core.implicit import DEQCell
 
     model = em.deq_convnext_t(in_channels=3, num_classes=NUM_CLASSES, key=KEY)
     cells = model.get_fpi_cells()

@@ -6,6 +6,7 @@ tests/data/siglip2_vitb16_256_reference.npz:
     uv run python torch_models.py
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -58,8 +59,6 @@ print(f"  patch_tokens shape: {patch_tokens.shape}")
 print(f"  patch_tokens[0, :4]: {patch_tokens[0, :4]}")
 
 # --- EUPE ViT-T/16 ---
-import sys
-
 DIR = Path("~/.cache/torch/hub/eupe").expanduser()
 if str(DIR) not in sys.path:
     sys.path.insert(0, str(DIR))
@@ -69,21 +68,25 @@ torch_hub_cfg = {
     "model": "eupe_vitt16",
     "source": "local",
     "pretrained": True,
-    "weights": str((Path("~/.cache/torch/hub/eupe/weights/EUPE-ViT-T.pt")).expanduser()),
+    "weights": str(
+        (Path("~/.cache/torch/hub/eupe/weights/EUPE-ViT-T.pt")).expanduser()
+    ),
 }
 
 try:
     model = torch.hub.load(**torch_hub_cfg).eval()
-    
+
     # 224x224 is the standard size for EUPE ViT-T
     img_np_224 = rng.standard_normal((3, 224, 224)).astype(np.float32)
     x_224 = torch.from_numpy(img_np_224).unsqueeze(0)
-    
+
     with torch.no_grad():
-        out = model.forward_features(x_224)["x_prenorm"]  # Contains cls/reg + patch tokens
-        
+        out = model.forward_features(x_224)[
+            "x_prenorm"
+        ]  # Contains cls/reg + patch tokens
+
     features = out.numpy()
-    
+
     output = OUTPUT_DIR / "eupe_vitt16_reference.npz"
     np.savez(output, features=features, img=img_np_224)
     print(f"Saved EUPE reference to {output}")

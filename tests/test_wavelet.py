@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.wavelet."""
+"""Tests for equimo.vision.layers.wavelet."""
 
 import equinox as eqx
 import jax
@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.wavelet import (
+from equimo.vision.layers.wavelet import (
     _WAVELET_REGISTRY,
     HWDConv,
     _depthwise_conv2d_stride2,

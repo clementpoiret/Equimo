@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.generic: Residual, WindowedSequence, BlockChunk."""
+"""Tests for equimo.core.layers.generic: Residual, WindowedSequence, BlockChunk."""
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -6,8 +6,8 @@ import jax.random as jr
 import pytest
 from jaxtyping import Array, PRNGKeyArray
 
-from equimo.layers.generic import BlockChunk, Residual, WindowedSequence
-from equimo.layers.norm import LayerScale
+from equimo.core.layers.generic import BlockChunk, Residual, WindowedSequence
+from equimo.core.layers.norm import LayerScale
 
 KEY = jr.PRNGKey(0)
 DIM = 16

@@ -64,10 +64,10 @@ def convert_params_from_torch(
         return_torch (bool): Return both jax and torch models.
     """
     try:
-        import timm
-        import torch
-    except:
-        raise ImportError("`torch` not available")
+        import timm  # ty: ignore[unresolved-import]
+        import torch  # ty: ignore[unresolved-import]
+    except ImportError as exc:
+        raise ImportError("`torch` not available") from exc
 
     # Load the pytorch model
     match source:
@@ -88,6 +88,9 @@ def convert_params_from_torch(
                     "The `timm` source is selected but `timm_cfg` is None."
                 )
             torch_model = timm.create_model(*timm_cfg)
+
+    if torch_model is None:
+        raise ValueError(f"Unknown conversion source: {source!r}")
 
     torch_params = dict(torch_model.named_parameters())
 
@@ -165,7 +168,7 @@ def convert_torch_to_equinox(
     torch_whitelist: list[str] = [],
     jax_whitelist: list[str] = [],
     strict: bool = True,
-    source: Literal["torchhub", "timm"] = "torchhub",
+    source: Literal["torchhub", "timm", "custom"] = "torchhub",
     torch_hub_cfg: Optional[dict] = None,
     torch_model=None,
     timm_cfg: Optional[list] = None,

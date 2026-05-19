@@ -17,7 +17,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.models.parcae import (
+from equimo.vision.models.parcae import (
     VisionParcae,
     VisionParcaeAdditiveInjection,
     VisionParcaeDiagonalExactZOHInjection,

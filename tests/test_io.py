@@ -1,4 +1,4 @@
-"""Tests for equimo.io."""
+"""Tests for serialization and vision IO."""
 
 import json
 from pathlib import Path
@@ -10,15 +10,9 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.io import (
-    _MODEL_REGISTRY,
-    _center_crop_square,
-    _validate_identifier,
-    get_model_cls,
-    load_model,
-    register_model,
-    save_model,
-)
+from equimo.registry import _MODEL_REGISTRY, get_model_cls, register_model
+from equimo.serialization import _validate_identifier, load_model, save_model
+from equimo.vision.io import _center_crop_square
 
 KEY = jr.PRNGKey(0)
 
@@ -158,15 +152,34 @@ class TestRegisterModel:
             class AnotherModel(eqx.Module):
                 pass
 
+    def test_register_same_name_different_modalities(self):
+        @register_model("shared_test_model", modality="vision")
+        class SharedVisionModel(eqx.Module):
+            pass
+
+        @register_model("shared_test_model", modality="language")
+        class SharedLanguageModel(eqx.Module):
+            pass
+
+        assert (
+            get_model_cls("shared_test_model", modality="vision") is SharedVisionModel
+        )
+        assert (
+            get_model_cls("shared_test_model", modality="language")
+            is SharedLanguageModel
+        )
+        with pytest.raises(ValueError, match="Ambiguous model class"):
+            get_model_cls("shared_test_model")
+
 
 class TestGetModelCls:
     def test_string_resolution_builtin(self):
-        from equimo.models import VisionTransformer
+        from equimo.vision.models import VisionTransformer
 
         assert get_model_cls("vit") is VisionTransformer
 
     def test_string_case_insensitive(self):
-        from equimo.models import VisionTransformer
+        from equimo.vision.models import VisionTransformer
 
         assert get_model_cls("VIT") is VisionTransformer
         assert get_model_cls("Vit") is VisionTransformer
@@ -361,20 +374,20 @@ class TestSaveLoadRoundTrip:
 
 class TestDownload:
     def test_invalid_identifier_raises(self):
-        from equimo.io import download
+        from equimo.serialization import download
 
         with pytest.raises(ValueError, match="Unsafe model identifier"):
             download("../../malicious", repository="http://example.com")
 
     def test_identifier_with_slash_raises(self):
-        from equimo.io import download
+        from equimo.serialization import download
 
         with pytest.raises(ValueError):
             download("model/subdir", repository="http://example.com")
 
     def test_cached_file_returned_without_request(self, tmp_path):
         """If the archive already exists on disk, no HTTP request should be made."""
-        from equimo.io import download
+        from equimo.serialization import download
 
         identifier = "vit_test_cache"
         model_name = identifier.split("_")[0]
@@ -385,7 +398,7 @@ class TestDownload:
         cache_path.touch()
 
         try:
-            with patch("equimo.io.requests.get") as mock_get:
+            with patch("equimo.serialization.requests.get") as mock_get:
                 result = download(identifier, repository="http://example.com")
                 mock_get.assert_not_called()
             assert result == cache_path
@@ -394,7 +407,7 @@ class TestDownload:
 
     def test_download_makes_get_request(self, tmp_path):
         """When archive is absent, a streaming GET must be issued."""
-        from equimo.io import download
+        from equimo.serialization import download
 
         identifier = "vit_test_dl_xyz"
         model_name = identifier.split("_")[0]
@@ -411,9 +424,9 @@ class TestDownload:
 
         try:
             with patch(
-                "equimo.io.requests.get", return_value=mock_response
+                "equimo.serialization.requests.get", return_value=mock_response
             ) as mock_get:
-                result = download(identifier, repository="http://example.com")
+                download(identifier, repository="http://example.com")
                 mock_get.assert_called_once()
                 call_kwargs = mock_get.call_args
                 assert call_kwargs.kwargs.get("stream") is True
@@ -450,39 +463,39 @@ class TestLoadImage:
         return str(path)
 
     def test_output_shape_chw(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         out = load_image(sample_image_path)
         assert out.ndim == 3
         assert out.shape[0] == 3  # channels first
 
     def test_output_dtype_float32(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         out = load_image(sample_image_path)
         assert out.dtype == jnp.float32
 
     def test_output_range_0_1(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         out = load_image(sample_image_path)
         assert float(jnp.min(out)) >= 0.0
         assert float(jnp.max(out)) <= 1.0
 
     def test_grayscale_converted_to_rgb(self, grayscale_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         out = load_image(grayscale_image_path)
         assert out.shape[0] == 3
 
     def test_resize(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         out = load_image(sample_image_path, size=32)
         assert out.shape == (3, 32, 32)
 
     def test_normalization_applied(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
@@ -491,7 +504,7 @@ class TestLoadImage:
         assert not jnp.allclose(out_norm, out_raw)
 
     def test_normalization_formula(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         mean = [0.5, 0.5, 0.5]
         std = [0.5, 0.5, 0.5]
@@ -501,14 +514,14 @@ class TestLoadImage:
         assert jnp.allclose(out_norm, expected, atol=1e-5)
 
     def test_center_crop(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         out = load_image(sample_image_path, center_crop=True)
         _, h, w = out.shape
         assert h == w
 
     def test_center_crop_then_resize(self, sample_image_path):
-        from equimo.io import load_image
+        from equimo.vision.io import load_image
 
         out = load_image(sample_image_path, center_crop=True, size=32)
         assert out.shape == (3, 32, 32)

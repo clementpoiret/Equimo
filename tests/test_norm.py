@@ -1,11 +1,11 @@
-"""Tests for equimo.layers.norm."""
+"""Tests for equimo.core.layers.norm."""
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.norm import (
+from equimo.core.layers.norm import (
     DyT,
     LayerNorm2d,
     LayerScale,
@@ -382,7 +382,7 @@ class TestGetNorm:
 
 class TestRegisterNorm:
     def test_register_default_name(self):
-        from equimo.layers.norm import _NORM_REGISTRY
+        from equimo.core.layers.norm import _NORM_REGISTRY
 
         @register_norm()
         class MyCustomNorm(eqx.Module):
@@ -392,7 +392,7 @@ class TestRegisterNorm:
         assert get_norm("mycustomnorm") is MyCustomNorm
 
     def test_register_custom_name(self):
-        from equimo.layers.norm import _NORM_REGISTRY
+        from equimo.core.layers.norm import _NORM_REGISTRY
 
         @register_norm(name="SuperNorm42")
         class AnotherNorm(eqx.Module):

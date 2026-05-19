@@ -1,4 +1,4 @@
-"""Unit tests for DEQ components in ``equimo.implicit``.
+"""Unit tests for DEQ components in ``equimo.core.implicit``.
 
 Structured by concern:
 
@@ -21,11 +21,11 @@ import jax.random as jr
 import pytest
 from jaxtyping import PRNGKeyArray
 
-from equimo.implicit._base import (
+from equimo.core.implicit._base import (
     AbstractInjector,
 )
-from equimo.implicit.deq import DEQBlock, DEQCell, _init_z0
-from equimo.implicit.injectors import (
+from equimo.core.implicit.deq import DEQBlock, DEQCell, _init_z0
+from equimo.core.implicit.injectors import (
     Add,
     FiLM,
     Gated,
@@ -34,14 +34,14 @@ from equimo.implicit.injectors import (
     get_injector,
     register_injector,
 )
-from equimo.implicit.stabilizers import (
+from equimo.core.implicit.stabilizers import (
     Damped,
     DampedProject,
     GroupNormProject,
     Identity,
     get_stabilizer,
 )
-from equimo.implicit.strategies import (
+from equimo.core.implicit.strategies import (
     EntryInjection,
     PerBlockInjection,
     ScheduledInjection,

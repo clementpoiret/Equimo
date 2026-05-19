@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.squeeze_excite."""
+"""Tests for equimo.vision.layers.squeeze_excite."""
 
 import equinox as eqx
 import jax
@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.squeeze_excite import (
+from equimo.vision.layers.squeeze_excite import (
     EffectiveSEModule,
     SEModule,
     _SE_REGISTRY,

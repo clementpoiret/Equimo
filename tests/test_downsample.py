@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.downsample."""
+"""Tests for equimo.vision.layers.downsample."""
 
 import equinox as eqx
 import jax
@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.downsample import (
+from equimo.vision.layers.downsample import (
     ConvNormDownsampler,
     PWSEDownsampler,
     _DOWNSAMPLER_REGISTRY,

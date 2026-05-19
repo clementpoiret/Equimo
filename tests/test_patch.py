@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.patch."""
+"""Tests for equimo.vision.layers.patch."""
 
 import math
 
@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.patch import (
+from equimo.vision.layers.patch import (
     _PATCH_REGISTRY,
     ConvPatchEmbed,
     PatchEmbedding,
@@ -316,7 +316,7 @@ class TestPatchMerging:
 
     def test_conv_types_are_single_conv_block(self):
         """conv1/2/3 must be SingleConvBlock instances."""
-        from equimo.layers.convolution import SingleConvBlock
+        from equimo.vision.layers.convolution import SingleConvBlock
 
         layer = PatchMerging(self.DIM, key=KEY)
         assert isinstance(layer.conv1, SingleConvBlock)

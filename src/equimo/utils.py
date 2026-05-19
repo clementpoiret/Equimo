@@ -57,7 +57,7 @@ class PCAVisualizer:
     ) -> None:
         """Creates a PCA object for visualizing features of shape [..., F]."""
         try:
-            from sklearn import decomposition
+            from sklearn import decomposition  # ty: ignore[unresolved-import]
         except ImportError:
             raise ImportError(
                 "You need sklearn to use the PCAVisualizer, install it using `uv add equimo[viz]`"
@@ -92,7 +92,7 @@ def plot_image_and_feature_map(
     Plots an image and its feature map side by side and saves the figure.
     """
     try:
-        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt  # ty: ignore[unresolved-import]
     except ImportError:
         raise ImportError("Matplotlib is required to plot an image")
 
@@ -267,7 +267,7 @@ def count_params(model: eqx.Module):
     return num_params / 1_000_000
 
 
-def cost_analysis(model: eqx.Module, input_example: Float[Array, "..."]):
+def cost_analysis(model: t.Any, input_example: Float[Array, "..."]):
     """Estimates the memory usage, flops, and #params of a model's forward pass.
 
     This function JIT-compiles the model's forward pass for a given input,
@@ -288,7 +288,7 @@ def cost_analysis(model: eqx.Module, input_example: Float[Array, "..."]):
     def fpass(x):
         return model(x, inference=True, key=key)
 
-    analysis: dict | list[dict] = fpass.lower(input_example).compile().cost_analysis()
+    analysis = fpass.lower(input_example).compile().cost_analysis() or {}
     cost_dict: dict = analysis[0] if isinstance(analysis, list) else analysis
 
     # Memory

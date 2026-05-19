@@ -1,4 +1,4 @@
-"""Tests for equimo.layers.convolution."""
+"""Tests for equimo.vision.layers.convolution."""
 
 import jax
 import jax.numpy as jnp
@@ -6,7 +6,7 @@ import jax.random as jr
 import pytest
 import equinox as eqx
 
-from equimo.layers.convolution import (
+from equimo.vision.layers.convolution import (
     SingleConvBlock,
     DoubleConvBlock,
     Stem,
@@ -32,7 +32,6 @@ from equimo.layers.convolution import (
     ShiftFFN,
     FreeNetBlock,
     get_conv,
-    register_conv,
 )
 
 KEY = jr.PRNGKey(0)
@@ -146,7 +145,7 @@ class TestConvolutionLayers:
         assert jnp.all(jnp.isfinite(out))
 
     def test_ghostnet_fusion(self):
-        from equimo.layers.convolution import update_ghostnet, finalize_ghostnet
+        from equimo.vision.layers.convolution import update_ghostnet, finalize_ghostnet
 
         model = GhostBottleneck(IN_CHANNELS, IN_CHANNELS * 2, OUT_CHANNELS, key=KEY)
 

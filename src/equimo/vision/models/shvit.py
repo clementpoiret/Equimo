@@ -1,0 +1,284 @@
+# ty: ignore[call-non-callable]
+# ty: ignore[invalid-assignment]
+# ty: ignore[too-many-positional-arguments]
+__all__ = ["SHViT"]
+
+
+from typing import Callable, List, Optional, Tuple
+
+import equinox as eqx
+import jax
+import jax.random as jr
+import numpy as np
+from einops import reduce
+from jaxtyping import Array, Float, PRNGKeyArray
+
+from equimo.core.layers.activation import get_act
+from equimo.vision.layers.attention import SHSA
+from equimo.vision.layers.convolution import DoubleConvBlock, SingleConvBlock
+from equimo.core.layers.generic import BlockChunk, Residual
+from equimo.core.layers.norm import get_norm
+from equimo.registry import register_model
+from equimo.utils import nearest_power_of_2_divisor, to_list
+
+
+class BasicBlock(eqx.Module):
+    """Basic processing block combining convolution, attention and FFN.
+
+    Processes features through three stages:
+    1. Depthwise convolution with group normalization
+    2. Optional SHSA (Single Head Self-Attention) mixer
+    3. Feed-forward network using convolutions
+
+    Attributes:
+        conv: Depthwise convolution with normalization and residual
+        mixer: SHSA attention block or identity if block_type != 's'
+        ffn: Feed-forward network using convolutions
+    """
+
+    conv: Residual
+    mixer: eqx.Module
+    ffn: DoubleConvBlock
+
+    def __init__(
+        self,
+        dim: int,
+        qk_dim: int,
+        pdim: int,
+        block_type: str,
+        *,
+        key: PRNGKeyArray,
+        act_layer: Callable = jax.nn.relu,
+        drop_path: float = 0.0,
+        norm_max_group: int = 32,
+        **kwargs,
+    ):
+        key_conv1, key_shsa, key_conv2 = jr.split(key, 3)
+        num_groups = nearest_power_of_2_divisor(dim, norm_max_group)
+        self.conv = Residual(
+            eqx.nn.Sequential(
+                [
+                    eqx.nn.Conv(
+                        num_spatial_dims=2,
+                        in_channels=dim,
+                        out_channels=dim,
+                        kernel_size=3,
+                        stride=1,
+                        padding=1,
+                        groups=dim,
+                        key=key_conv1,
+                    ),
+                    eqx.nn.GroupNorm(num_groups, dim),
+                ]
+            ),
+            drop_path=drop_path,
+        )
+        self.mixer = (
+            Residual(
+                SHSA(
+                    dim,
+                    qk_dim,
+                    pdim,
+                    key=key_shsa,
+                ),
+                drop_path=drop_path,
+            )
+            if block_type == "s"
+            else eqx.nn.Identity()
+        )
+        self.ffn = DoubleConvBlock(
+            dim=dim,
+            hidden_channels=int(dim**2),
+            act_layer=act_layer,
+            drop_path=drop_path,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            key=key_conv2,
+        )
+
+    def __call__(
+        self,
+        x: Float[Array, "seqlen dim"],
+        key: PRNGKeyArray,
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "seqlen dim"]:
+        key_conv, key_mixer, key_ffn = jr.split(key, 3)
+        return self.ffn(
+            self.mixer(
+                self.conv(x, inference=inference, key=key_conv),
+                inference=inference,
+                key=key_mixer,
+            ),
+            inference=inference,
+            key=key_ffn,
+        )
+
+
+@register_model("shvit", modality="vision")
+class SHViT(eqx.Module):
+    """Single Head Vision Transformer (SHViT)[1].
+
+    A vision transformer that processes images through a simplified architecture
+    combining convolutions and self-attention mechanisms. Features progressive
+    spatial reduction and channel expansion through multiple stages.
+
+    Attributes:
+        patch_embed: Initial patch embedding through conv layers
+        blocks: List of processing blocks with downsampling
+        head: Classification head with normalization
+
+    References:
+        [1]: Yun, et al., 2024. https://arxiv.org/abs/2401.16456
+    """
+
+    patch_embed: eqx.nn.Sequential
+    blocks: Tuple[eqx.Module, ...]
+    norm: eqx.Module
+    head: eqx.Module
+
+    def __init__(
+        self,
+        in_channels: int = 3,
+        dim: List[int] = [128, 256, 384],
+        pdim: List[int] = [32, 64, 96],
+        qk_dim: List[int] = [16, 16, 16],
+        depths: List[int] = [1, 2, 3],
+        block_type: List[str] = ["s", "s", "s"],
+        *,
+        key: PRNGKeyArray,
+        act_layer: str | Callable = "relu",
+        norm_layer: str | type[eqx.Module] = "layernorm",
+        drop_path_rate: float = 0.0,
+        drop_path_uniform: bool = False,
+        num_classes: int | None = 1000,
+        **kwargs,
+    ):
+        act_layer = get_act(act_layer)
+        norm_layer = get_norm(norm_layer)
+
+        key_conv1, key_conv2, key_conv3, key_conv4, key_head, *block_subkeys = jr.split(
+            key, 5 + len(depths)
+        )
+
+        n_chunks = len(depths)
+        dims = to_list(dim, n_chunks)
+
+        self.patch_embed = eqx.nn.Sequential(
+            [
+                SingleConvBlock(
+                    in_channels=in_channels,
+                    out_channels=dims[0] // 8,
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                    act_layer=act_layer,
+                    key=key_conv1,
+                ),
+                SingleConvBlock(
+                    in_channels=dims[0] // 8,
+                    out_channels=dims[0] // 4,
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                    act_layer=act_layer,
+                    key=key_conv2,
+                ),
+                SingleConvBlock(
+                    in_channels=dims[0] // 4,
+                    out_channels=dims[0] // 2,
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                    act_layer=act_layer,
+                    key=key_conv3,
+                ),
+                SingleConvBlock(
+                    in_channels=dims[0] // 2,
+                    out_channels=dims[0],
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                    act_layer=lambda x: x,
+                    key=key_conv4,
+                ),
+            ]
+        )
+
+        dpr = (
+            np.linspace(0.0, drop_path_rate, n_chunks).tolist()
+            if not drop_path_uniform
+            else to_list(drop_path_rate, n_chunks)
+        )
+
+        qk_dims = to_list(qk_dim, n_chunks)
+        pdims = to_list(pdim, n_chunks)
+        block_types = to_list(block_type, n_chunks)
+        self.blocks = tuple(
+            BlockChunk(
+                depth=depth,
+                module=BasicBlock,
+                module_kwargs={
+                    "dim": dims[i],
+                    "qk_dim": qk_dims[i],
+                    "pdim": pdims[i],
+                    "block_type": block_types[i],
+                    "act_layer": act_layer,
+                },
+                downsampler="pwsedownsampler" if i < len(depths) - 1 else None,
+                downsampler_kwargs=(
+                    {"in_channels": dims[i], "out_channels": dims[i + 1]}
+                    if i < len(depths) - 1
+                    else {}
+                ),
+                downsampler_needs_key=i < len(depths) - 1,
+                downsample_last=True,
+                drop_path=dpr[i],
+                key=block_subkeys[i],
+            )
+            for i, depth in enumerate(depths)
+        )
+
+        self.norm = norm_layer(dims[-1])
+        self.head = (
+            eqx.nn.Linear(dims[-1], num_classes, key=key_head)
+            if num_classes is not None and num_classes > 0
+            else eqx.nn.Identity()
+        )
+
+    def features(
+        self,
+        x: Float[Array, "..."],
+        key: PRNGKeyArray = jr.PRNGKey(42),
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "..."]:
+        keys = jr.split(key, len(self.blocks))
+
+        x = self.patch_embed(x)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, inference=inference, key=keys[i])
+
+        return x
+
+    def __call__(
+        self,
+        x: Float[Array, "..."],
+        key: PRNGKeyArray = jr.PRNGKey(42),
+        inference: Optional[bool] = None,
+    ) -> Float[Array, "..."]:
+        """Process input image through the full SHViT network.
+
+        Args:
+            x: Input image tensor
+            inference: Whether to enable dropout during inference
+            key: PRNG key for random operations
+
+        Returns:
+            Classification logits for each class
+        """
+        x = self.features(x, inference=inference, key=key)
+        x = jax.vmap(self.norm)(x)
+        x = reduce(x, "c h w -> c", "mean")
+        x = self.head(x)
+
+        return x

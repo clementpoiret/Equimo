@@ -4,9 +4,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import equimo.models as em
+import equimo.vision.models as em
 from equimo.conversion.utils import convert_torch_to_equinox
-from equimo.io import load_model, save_model
+from equimo.serialization import load_model, save_model
 
 
 def compare(j, t) -> float:
@@ -18,8 +18,8 @@ def compare(j, t) -> float:
 def main():
     try:
         import torch
-    except:
-        raise ImportError("`torch` not available")
+    except ImportError as exc:
+        raise ImportError("`torch` not available") from exc
 
     key = jax.random.PRNGKey(42)
     siglip2_config = {

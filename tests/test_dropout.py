@@ -1,11 +1,11 @@
-"""Tests for equimo.layers.dropout."""
+"""Tests for equimo.core.layers.dropout."""
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from equimo.layers.dropout import (
+from equimo.core.layers.dropout import (
     DropPath,
     DropPathAdd,
     get_dropout,
@@ -253,7 +253,7 @@ class TestGetDropout:
 
 class TestRegisterDropout:
     def test_register_default_name(self):
-        from equimo.layers.dropout import _DROPOUT_REGISTRY
+        from equimo.core.layers.dropout import _DROPOUT_REGISTRY
 
         @register_dropout()
         class CustomDropout(eqx.Module):
@@ -263,7 +263,7 @@ class TestRegisterDropout:
         assert get_dropout("customdropout") is CustomDropout
 
     def test_register_custom_name(self):
-        from equimo.layers.dropout import _DROPOUT_REGISTRY
+        from equimo.core.layers.dropout import _DROPOUT_REGISTRY
 
         @register_dropout(name="MyDropout")
         class CustomDropout2(eqx.Module):
