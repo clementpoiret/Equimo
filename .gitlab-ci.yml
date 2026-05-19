@@ -23,7 +23,7 @@ lint:
   script:
     - uv run ruff check src
     - uv run ruff format --check src
-    - uv run ty check
+    - uv run ty check src
 
 test:
   stage: test
