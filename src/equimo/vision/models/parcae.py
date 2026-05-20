@@ -1434,39 +1434,26 @@ class VisionParcae(eqx.Module):
             def active_update(c):
                 h_active, _last_active = c
 
-                def no_grad_update(h_arg):
-                    h_next = self._recurrent_step(
-                        jax.lax.stop_gradient(h_arg),
-                        jax.lax.stop_gradient(e),
-                        H=H,
-                        W=W,
-                        inference=inference,
-                        key=key_step,
-                        rope_sincos=rope_sincos,
-                        checkpoint=False,
-                        **kwargs,
-                    )
-                    return jax.lax.stop_gradient(h_next)
+                is_no_grad = t < no_grad_steps
 
-                def grad_update(h_arg):
-                    return self._recurrent_step(
-                        h_arg,
-                        e,
-                        H=H,
-                        W=W,
-                        inference=inference,
-                        key=key_step,
-                        rope_sincos=rope_sincos,
-                        checkpoint=self.recurrent_checkpoint,
-                        **kwargs,
-                    )
+                # Conditionally stop gradients on inputs
+                h_in = jnp.where(is_no_grad, jax.lax.stop_gradient(h_active), h_active)
+                e_in = jnp.where(is_no_grad, jax.lax.stop_gradient(e), e)
 
-                h_next = jax.lax.cond(
-                    t < no_grad_steps,
-                    no_grad_update,
-                    grad_update,
-                    h_active,
+                h_next = self._recurrent_step(
+                    h_in,
+                    e_in,
+                    H=H,
+                    W=W,
+                    inference=inference,
+                    key=key_step,
+                    rope_sincos=rope_sincos,
+                    checkpoint=self.recurrent_checkpoint,
+                    **kwargs,
                 )
+
+                # Conditionally stop gradients on the output
+                h_next = jnp.where(is_no_grad, jax.lax.stop_gradient(h_next), h_next)
                 return h_next, h_active
 
             return jax.lax.cond(
