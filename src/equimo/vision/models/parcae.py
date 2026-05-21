@@ -1420,29 +1420,86 @@ class VisionParcae(eqx.Module):
             key=key_rope,
         )
 
-        ts = jnp.arange(self.max_recurrence, dtype=jnp.int32)
         keys = jr.split(key_loop, self.max_recurrence)
 
-        def body(carry, xs):
+        # Keep the detached prefix out of the reverse-mode scan. With batched
+        # stochastic depths, masking no-grad steps inside one scan still makes
+        # XLA carry the full max_recurrence body through the backward pass.
+        if inference:
+            no_grad_scan_bound = 0
+            grad_scan_bound = self.max_recurrence
+        elif num_steps_pair is not None:
+            no_grad_scan_bound = self.max_recurrence
+            grad_scan_bound = self.max_recurrence
+        elif (
+            num_steps is None
+            and self.sample_recurrence
+            and self.sampling_scheme == "poisson-full"
+        ):
+            no_grad_scan_bound = 0
+            grad_scan_bound = self.max_recurrence
+        else:
+            grad_scan_bound = min(self.max_recurrence, self.mean_backprop_depth)
+            no_grad_scan_bound = self.max_recurrence - grad_scan_bound
+
+        def no_grad_body(carry, xs):
             h_cur, last_cur = carry
             t, key_step = xs
-            active = t < total_steps
+            active = t < no_grad_steps
 
             def inactive(c):
                 return c
 
             def active_update(c):
-                h_active, _last_active = c
-
-                is_no_grad = t < no_grad_steps
-
-                # Conditionally stop gradients on inputs
-                h_in = jnp.where(is_no_grad, jax.lax.stop_gradient(h_active), h_active)
-                e_in = jnp.where(is_no_grad, jax.lax.stop_gradient(e), e)
-
+                h_active, _ = c
                 h_next = self._recurrent_step(
-                    h_in,
-                    e_in,
+                    jax.lax.stop_gradient(h_active),
+                    jax.lax.stop_gradient(e),
+                    H=H,
+                    W=W,
+                    inference=inference,
+                    key=key_step,
+                    rope_sincos=rope_sincos,
+                    checkpoint=False,
+                    **kwargs,
+                )
+                return jax.lax.stop_gradient(h_next), h_active
+
+            return jax.lax.cond(
+                active, active_update, inactive, (h_cur, last_cur)
+            ), None
+
+        if no_grad_scan_bound:
+            no_grad_ts = jnp.arange(no_grad_scan_bound, dtype=jnp.int32)
+            (h, last_h), _ = jax.lax.scan(
+                no_grad_body,
+                (h, h),
+                (no_grad_ts, keys[:no_grad_scan_bound]),
+            )
+            h = jax.lax.stop_gradient(h)
+            last_h = jax.lax.stop_gradient(last_h)
+        else:
+            last_h = h
+
+        def grad_body(carry, t):
+            h_cur, last_cur = carry
+            active = t < grad_steps
+
+            def inactive(c):
+                return c
+
+            def active_update(c):
+                h_active, _ = c
+                key_index = jnp.minimum(
+                    no_grad_steps + t,
+                    jnp.asarray(self.max_recurrence - 1, jnp.int32),
+                )
+                key_step = jax.lax.dynamic_index_in_dim(
+                    keys, key_index, axis=0, keepdims=False
+                )
+                h_next = self._recurrent_step(
+                    h_active,
+                    e,
                     H=H,
                     W=W,
                     inference=inference,
@@ -1451,16 +1508,15 @@ class VisionParcae(eqx.Module):
                     checkpoint=self.recurrent_checkpoint,
                     **kwargs,
                 )
-
-                # Conditionally stop gradients on the output
-                h_next = jnp.where(is_no_grad, jax.lax.stop_gradient(h_next), h_next)
                 return h_next, h_active
 
             return jax.lax.cond(
                 active, active_update, inactive, (h_cur, last_cur)
             ), None
 
-        (h, last_h), _ = jax.lax.scan(body, (h, h), (ts, keys))
+        if grad_scan_bound:
+            grad_ts = jnp.arange(grad_scan_bound, dtype=jnp.int32)
+            (h, last_h), _ = jax.lax.scan(grad_body, (h, last_h), grad_ts)
 
         residual = jnp.mean(jnp.linalg.norm(h - last_h, axis=-1))
         aux = {
