@@ -2,6 +2,12 @@ from typing import Callable, Optional
 
 import equinox as eqx
 
+from .patch import (
+    SpectrogramPatchEmbedding,
+    get_patch,
+    register_patch,
+)
+
 _AUDIO_LAYER_REGISTRY: dict[str, type[eqx.Module]] = {}
 
 
@@ -41,4 +47,10 @@ def get_layer(module: str | type[eqx.Module]) -> type[eqx.Module]:
     return _AUDIO_LAYER_REGISTRY[module_lower]
 
 
-__all__ = ["get_layer", "register_layer"]
+__all__ = [
+    "SpectrogramPatchEmbedding",
+    "get_layer",
+    "get_patch",
+    "register_layer",
+    "register_patch",
+]
