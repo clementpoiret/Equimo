@@ -316,7 +316,9 @@ def _build_ast(
 
     base_cfg, variant_cfg = _AST_REGISTRY[variant]
     cfg = base_cfg | variant_cfg | overrides
-    model = cast(AudioSpectrogramTransformer, AudioSpectrogramTransformer(**cfg, key=key))
+    model = cast(
+        AudioSpectrogramTransformer, AudioSpectrogramTransformer(**cfg, key=key)
+    )
 
     if pretrained:
         if variant not in _AST_PRETRAINED_VARIANTS:
