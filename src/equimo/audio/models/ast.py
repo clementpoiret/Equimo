@@ -8,6 +8,8 @@ __all__ = [
     "ast_small_patch16_224",
     "ast_base_patch16_224",
     "ast_base_patch16_384",
+    "ast_base_patch16_audioset_10_10_0_4593",
+    "ast_base_patch16_speechcommands_v2_10_10_0_9812",
 ]
 
 from typing import Callable, Literal, Optional, Tuple, cast
@@ -45,6 +47,7 @@ class AudioSpectrogramTransformer(eqx.Module):
     blocks: Tuple[eqx.Module, ...]
     pos_drop: eqx.nn.Dropout
     norm: eqx.Module
+    head_norm: eqx.Module
     head: eqx.Module
 
     dim: int = eqx.field(static=True)
@@ -86,6 +89,7 @@ class AudioSpectrogramTransformer(eqx.Module):
         ffn_bias: bool = True,
         ffn_kwargs: dict = {},
         norm_layer: str | type[eqx.Module] = "layernorm",
+        head_norm_layer: str | type[eqx.Module] | None = None,
         init_values: float | None = None,
         global_pool: Literal["token", "avg", "avgmax", "max"] = "token",
         num_classes: int | None = 527,
@@ -166,6 +170,11 @@ class AudioSpectrogramTransformer(eqx.Module):
         )
 
         self.norm = norm_layer(dim, eps=eps)
+        self.head_norm = (
+            get_norm(head_norm_layer)(dim, eps=eps)
+            if head_norm_layer is not None
+            else eqx.nn.Identity()
+        )
         self.head = (
             eqx.nn.Linear(dim, num_classes, key=key_head)
             if num_classes is not None and num_classes > 0
@@ -232,6 +241,7 @@ class AudioSpectrogramTransformer(eqx.Module):
                 reduce_include_prefix=False,
             )
 
+        x = self.head_norm(x)
         return self.head(x)
 
 
@@ -262,6 +272,35 @@ _AST_REGISTRY: dict[str, tuple[dict, dict]] = {
         _AST_BASE_CFG,
         {"dim": 768, "num_heads": [12], "depths": [12]},
     ),
+    "ast_base_patch16_audioset_10_10_0_4593": (
+        _AST_BASE_CFG,
+        {
+            "dim": 768,
+            "num_heads": [12],
+            "depths": [12],
+            "act_layer": "exactgelu",
+            "head_norm_layer": "layernorm",
+            "eps": 1e-12,
+        },
+    ),
+    "ast_base_patch16_speechcommands_v2_10_10_0_9812": (
+        _AST_BASE_CFG,
+        {
+            "input_tdim": 128,
+            "dim": 768,
+            "num_heads": [12],
+            "depths": [12],
+            "num_classes": 35,
+            "act_layer": "exactgelu",
+            "head_norm_layer": "layernorm",
+            "eps": 1e-12,
+        },
+    ),
+}
+
+_AST_PRETRAINED_VARIANTS = {
+    "ast_base_patch16_audioset_10_10_0_4593",
+    "ast_base_patch16_speechcommands_v2_10_10_0_9812",
 }
 
 
@@ -280,6 +319,13 @@ def _build_ast(
     model = cast(AudioSpectrogramTransformer, AudioSpectrogramTransformer(**cfg, key=key))
 
     if pretrained:
+        if variant not in _AST_PRETRAINED_VARIANTS:
+            supported = ", ".join(sorted(_AST_PRETRAINED_VARIANTS))
+            raise ValueError(
+                f"No pretrained weights are available for {variant!r}. "
+                f"Supported AST pretrained variants: {supported}."
+            )
+
         from equimo.serialization import load_weights
 
         return cast(
@@ -312,3 +358,17 @@ def ast_base_patch16_224(**kwargs) -> AudioSpectrogramTransformer:
 def ast_base_patch16_384(**kwargs) -> AudioSpectrogramTransformer:
     """AST-B/16 - base architecture matching the reference ``base384`` size."""
     return _build_ast("ast_base_patch16_384", **kwargs)
+
+
+def ast_base_patch16_audioset_10_10_0_4593(
+    **kwargs,
+) -> AudioSpectrogramTransformer:
+    """AST-B/16 fine-tuned on AudioSet with 10x10 strides (0.4593 mAP)."""
+    return _build_ast("ast_base_patch16_audioset_10_10_0_4593", **kwargs)
+
+
+def ast_base_patch16_speechcommands_v2_10_10_0_9812(
+    **kwargs,
+) -> AudioSpectrogramTransformer:
+    """AST-B/16 fine-tuned on SpeechCommands V2 with 10x10 strides (98.12%)."""
+    return _build_ast("ast_base_patch16_speechcommands_v2_10_10_0_9812", **kwargs)

@@ -2,7 +2,7 @@
 
 **WARNING**: This is a research library implementing recent model architectures. The implementations are based on paper descriptions and may not be exact replicas of the original implementations. Use with caution in production environments.
 
-Equimo provides JAX/Equinox implementations of recent architectures across modalities. Vision is the most complete modality today; language has first-class text encoders/tokenizers, and audio has package boundaries ready for future implementations.
+Equimo provides JAX/Equinox implementations of recent architectures across modalities. Vision is the most complete modality today; language has first-class text encoders/tokenizers, and audio includes AST spectrogram models.
 
 ## Features
 
@@ -42,7 +42,7 @@ modality-specific code:
 | `equimo.core` | Shared layers, scan ops, implicit/DEQ utilities, EMA helpers |
 | `equimo.vision` | Vision models, vision layers, and image IO |
 | `equimo.language` | Text encoders and tokenizers |
-| `equimo.audio` | Audio extension namespace; model/layer/IO scaffolding only for now |
+| `equimo.audio` | Audio models, audio layers, and audio IO scaffolding |
 | `equimo.serialization` | Checkpoint save/load, weight loading, archive download/decompression |
 | `equimo.registry` | Modality-aware model registry |
 
@@ -85,6 +85,12 @@ Beyond a standard ViT (e.g., DINOv2 or SigLIP), Equimo provides other SotA archi
 †: DINOv3 is a `VisionTransformer` configuration using RoPE positional embeddings and SwiGLU FFN. Pretrained weights are available — see [pretrained models](#list-of-pretrained-models).
 
 ‡: FreeNet building blocks (`FreeNetBlock`, `S2Mixer`, `ShiftNeck`) are implemented in `equimo.vision.layers` and registered in the convolution registry. There is no standalone `FreeNet` model class; use `BlockChunk` to compose a full network from these blocks.
+
+## Implemented Audio Models
+
+| Model | Paper | Year | Status |
+| ----- | ----- | ---- | ------ |
+| AST   | [AST: Audio Spectrogram Transformer](https://arxiv.org/abs/2104.01778) | 2021 | ✅ |
 
 ## Vision Usage
 
@@ -149,6 +155,7 @@ model = em.dinov2_vitb14(pretrained=True)
 | `LowFormer`         | `lowformer_backbone_{b0,b1,b2,b3}`                                                                                                                             |
 | `ReduceFormer`      | `reduceformer_backbone_{b1,b2,b3}`                                                                                                                             |
 | `MobileNetv3`       | `mobilenetv3_{small,large}`                                                                                                                                    |
+| `AudioSpectrogramTransformer` | `ast_{tiny,small,base}_patch16_224`, `ast_base_patch16_384`, `ast_base_patch16_audioset_10_10_0_4593`, `ast_base_patch16_speechcommands_v2_10_10_0_9812` |
 
 > `LowFormer` requires `attention_type` (`"softmax"` or `"sigmoid"`) which has
 > no sensible default and must be supplied by the caller.
@@ -514,6 +521,7 @@ The following models have pretrained weights available in Equimo:
 - [SigLIP2](https://arxiv.org/abs/2502.14786)
 - [TIPS](https://arxiv.org/abs/2410.16512)
 - [EUPE](https://arxiv.org/abs/2603.22387) (both ViT and ConvNeXt variants)
+- [AST](https://arxiv.org/abs/2104.01778)
 
 Model identifiers map to filenames in Equimo's [HuggingFace repository](https://huggingface.co/poiretclement/equimo/tree/main/models/default).
 
@@ -532,12 +540,32 @@ Examples:
 - `siglip2_vitl16_512`
 - `siglip2_vitso400m16_384`
 - `tips_vitg14_lr`
+- `ast_base_patch16_audioset_10_10_0_4593`
+- `ast_base_patch16_speechcommands_v2_10_10_0_9812`
 
 ## Audio
 
-`equimo.audio` currently provides package boundaries for future audio support:
-`equimo.audio.models`, `equimo.audio.layers`, and `equimo.audio.io`. No audio loaders
-or audio model implementations are shipped yet.
+`equimo.audio` provides AST spectrogram models and reusable audio layers. AST
+inputs are single log-mel spectrograms shaped `(time, frequency)`, and batch
+inference can be done with `jax.vmap`.
+
+```python
+import jax
+import jax.numpy as jnp
+import equimo.audio.models as am
+
+key = jax.random.PRNGKey(0)
+model = am.ast_base_patch16_audioset_10_10_0_4593(pretrained=True)
+
+x = jnp.ones((1024, 128))  # (time, frequency)
+logits = model(x, key=key, inference=True)
+features = model.forward_features(x, key=key, inference=True)
+```
+
+Pretrained AST checkpoints currently available:
+
+- `ast_base_patch16_audioset_10_10_0_4593`: Full AudioSet, 10x10 strides, weight-averaged checkpoint.
+- `ast_base_patch16_speechcommands_v2_10_10_0_9812`: SpeechCommands V2-35, 10x10 strides, non-averaged checkpoint.
 
 ## Mixed Precision
 
