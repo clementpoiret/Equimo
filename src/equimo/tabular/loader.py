@@ -1,8 +1,7 @@
-"""Load pretrained TabPFN v3 (Prior Labs) checkpoints into the Equinox model.
+"""State-dict helpers for TabPFN.
 
-The Equinox module tree mirrors the PyTorch attribute names, so loading is a
-direct path -> state-dict-key match (no transposes: eqx ``Linear`` weight is
-``(out, in)`` like torch). torch is only needed to read the ``.ckpt``.
+This module is intentionally minimal after the tabular API refactor. It expects
+state-dict keys to match the current Equinox module tree.
 """
 
 import jax
@@ -12,48 +11,53 @@ import equinox as eqx
 from jaxtyping import PRNGKeyArray
 
 from equimo.conversion.utils import stringify_name
-from equimo.tabular.model import TabPFNV3
+from equimo.tabular.models.tabpfn import TabPFN
 
-# torch buffers / params with no Equinox counterpart (recomputed or unused).
+# Torch buffers / params with no Equinox counterpart (recomputed or unused).
 _IGNORED_TORCH = ("regression_borders", "column_aggregator.rope.freqs")
 
-# config keys consumed by TabPFNV3.__init__ (others in the ckpt config are ignored).
+# Config keys consumed by TabPFN.__init__.
 _CONFIG_KEYS = (
-    "max_num_classes",
-    "embed_dim",
-    "dist_embed_num_blocks",
-    "dist_embed_num_heads",
-    "dist_embed_num_inducing_points",
+    "num_classes",
+    "dim",
+    "depths",
+    "num_heads",
+    "mlp_ratio",
     "feature_group_size",
-    "feat_agg_num_blocks",
-    "feat_agg_num_heads",
-    "feat_agg_num_cls_tokens",
-    "feat_agg_rope_base",
-    "use_rope",
-    "nlayers",
-    "icl_num_heads",
-    "icl_num_kv_heads_test",
+    "num_inducing_points",
+    "num_cls_tokens",
+    "num_kv_heads_test",
     "decoder_head_dim",
     "decoder_num_heads",
     "decoder_use_softmax_scaling",
-    "ff_factor",
-    "softmax_scaling_mlp_hidden_dim",
+    "use_rope",
+    "rope_base",
+    "scaling_mlp_hidden_dim",
     "use_nan_indicators",
+    "drop_path_rate",
+    "drop_path_uniform",
+    "context_block",
+    "preprocessor_layer",
+    "label_embedding_layer",
+    "decoder_layer",
+    "act_layer",
+    "norm_layer",
+    "eps",
 )
 
 
-def build_model(config: dict, *, key: PRNGKeyArray) -> TabPFNV3:
-    """Instantiate a (randomly initialised) TabPFNV3 from a checkpoint config dict."""
+def build_model(config: dict, *, key: PRNGKeyArray) -> TabPFN:
+    """Instantiate a randomly initialised TabPFN from a config dict."""
     kwargs = {k: config[k] for k in _CONFIG_KEYS if k in config}
-    return TabPFNV3(**kwargs, key=key)
+    return TabPFN(**kwargs, key=key)
 
 
 def load_state_dict(
-    model: TabPFNV3,
+    model: TabPFN,
     state_dict: dict,
     *,
     strict: bool = True,
-) -> TabPFNV3:
+) -> TabPFN:
     """Copy a torch ``state_dict`` into ``model`` by matching pytree paths to keys.
 
     Returns the model in inference mode. ``state_dict`` values may be torch
@@ -90,8 +94,8 @@ def load_state_dict(
     return eqx.nn.inference_mode(model, value=True)
 
 
-def from_pretrained(ckpt_path: str, *, key: PRNGKeyArray | None = None) -> TabPFNV3:
-    """Build a TabPFNV3 from a ``.ckpt`` file and load its weights."""
+def from_pretrained(ckpt_path: str, *, key: PRNGKeyArray | None = None) -> TabPFN:
+    """Build a TabPFN from a ``.ckpt`` file and load its weights."""
     import torch  # local import: only needed to read the checkpoint
 
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
