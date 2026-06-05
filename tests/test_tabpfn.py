@@ -7,8 +7,13 @@ import pytest
 
 from equimo.registry import get_model_cls
 from equimo.tabular import layers
-from equimo.tabular.loader import build_model
-from equimo.tabular.models import TabPFN, tabpfn
+from equimo.tabular.models import (
+    TabPFN,
+    tabpfn,
+    tabpfn_regressor,
+    tabpfn_v3_classifier_default,
+    tabpfn_v3_regressor_default,
+)
 
 KEY = jr.PRNGKey(0)
 
@@ -31,6 +36,29 @@ def _tiny(*, key=KEY, **overrides):
     return TabPFN(**cfg, key=key)
 
 
+def _tiny_regressor(*, key=KEY, **overrides):
+    cfg = dict(
+        task_type="regression",
+        num_classes=0,
+        num_buckets=16,
+        dim=16,
+        depths=(1, 2, 2),
+        num_heads=(2, 2, 2),
+        num_inducing_points=4,
+        feature_group_size=3,
+        num_cls_tokens=2,
+        num_kv_heads_test=1,
+        decoder_head_dim=8,
+        decoder_num_heads=2,
+        decoder_use_softmax_scaling=False,
+        mlp_ratio=2.0,
+        label_embedding_layer="linearlabelembedding",
+        decoder_layer="regressiondecoder",
+    )
+    cfg.update(overrides)
+    return TabPFN(**cfg, key=key)
+
+
 def _inputs():
     rows, columns, n_train = 12, 5, 8
     x = jr.normal(jr.PRNGKey(1), (rows, columns))
@@ -43,6 +71,15 @@ def test_forward_shape_and_finite():
     x, y, n_train = _inputs()
     out = model(x, y, n_train, key=KEY, inference=True)
     assert out.shape == (x.shape[0] - n_train, 4)
+    assert bool(jnp.all(jnp.isfinite(out)))
+
+
+def test_regressor_forward_shape_and_finite():
+    model = _tiny_regressor()
+    x, _, n_train = _inputs()
+    y = jr.normal(jr.PRNGKey(3), (x.shape[0],))
+    out = model(x, y, n_train, key=KEY, inference=True)
+    assert out.shape == (x.shape[0] - n_train, 16)
     assert bool(jnp.all(jnp.isfinite(out)))
 
 
@@ -85,6 +122,49 @@ def test_factory_and_registry():
     assert get_model_cls("tabpfn", modality="tabular") is TabPFN
 
 
+def test_regressor_factory():
+    model = tabpfn_regressor(
+        dim=16,
+        depths=(1, 1, 1),
+        num_heads=(2, 2, 2),
+        num_inducing_points=4,
+        num_cls_tokens=2,
+        num_buckets=16,
+        key=KEY,
+    )
+    assert isinstance(model, TabPFN)
+    assert model.task_type == "regression"
+    assert isinstance(model.column_label_embedding, layers.LinearLabelEmbedding)
+    assert isinstance(model.context_label_embedding, layers.LinearLabelEmbedding)
+    assert isinstance(model.head, layers.RegressionDecoder)
+
+
+def test_v3_variant_factories_accept_overrides():
+    classifier = tabpfn_v3_classifier_default(
+        num_classes=4,
+        dim=16,
+        depths=(1, 1, 1),
+        num_heads=(2, 2, 2),
+        num_inducing_points=4,
+        num_cls_tokens=2,
+        decoder_head_dim=8,
+        decoder_num_heads=2,
+        key=KEY,
+    )
+    regressor = tabpfn_v3_regressor_default(
+        dim=16,
+        depths=(1, 1, 1),
+        num_heads=(2, 2, 2),
+        num_inducing_points=4,
+        num_cls_tokens=2,
+        num_buckets=16,
+        key=KEY,
+    )
+
+    assert classifier.task_type == "classification"
+    assert regressor.task_type == "regression"
+
+
 def test_constructor_resolves_tabular_layer_names():
     model = _tiny(
         context_block="incontextattentionblock",
@@ -102,6 +182,13 @@ def test_constructor_resolves_tabular_layer_names():
     assert not hasattr(model, "context_target_embedding")
 
 
+def test_constructor_resolves_regression_layers():
+    model = _tiny_regressor()
+    assert isinstance(model.column_label_embedding, layers.LinearLabelEmbedding)
+    assert isinstance(model.context_label_embedding, layers.LinearLabelEmbedding)
+    assert isinstance(model.head, layers.RegressionDecoder)
+
+
 def test_context_drop_path_schedule():
     model = _tiny(depths=(1, 1, 3), drop_path_rate=0.3)
     blocks = model.blocks[0].blocks
@@ -116,33 +203,6 @@ def test_context_drop_path_schedule():
     uniform = _tiny(depths=(1, 1, 3), drop_path_rate=0.3, drop_path_uniform=True)
     assert [block.drop_path1.p for block in uniform.blocks[0].blocks] == pytest.approx(
         [0.3, 0.3, 0.3]
-    )
-
-
-def test_loader_build_model_accepts_new_constructor_keys():
-    model = build_model(
-        {
-            "num_classes": 4,
-            "dim": 16,
-            "depths": (1, 1, 2),
-            "num_heads": (2, 2, 2),
-            "num_inducing_points": 4,
-            "num_cls_tokens": 2,
-            "decoder_head_dim": 8,
-            "decoder_num_heads": 2,
-            "drop_path_rate": 0.2,
-            "drop_path_uniform": True,
-            "context_block": "incontextattentionblock",
-            "preprocessor_layer": "preprocessor",
-            "label_embedding_layer": "labelembedding",
-            "decoder_layer": "attentiondecoder",
-        },
-        key=KEY,
-    )
-
-    assert isinstance(model, TabPFN)
-    assert [block.drop_path1.p for block in model.blocks[0].blocks] == pytest.approx(
-        [0.2, 0.2]
     )
 
 

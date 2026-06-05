@@ -1,7 +1,19 @@
 # ty: ignore[invalid-assignment]
 # ty: ignore[call-non-callable]
 # ty: ignore[too-many-positional-arguments]
-__all__ = ["TabPFN", "tabpfn"]
+__all__ = [
+    "TabPFN",
+    "tabpfn",
+    "tabpfn_regressor",
+    "tabpfn_v3_classifier_default",
+    "tabpfn_v3_classifier_binary",
+    "tabpfn_v3_classifier_multiclass",
+    "tabpfn_v3_classifier_ood",
+    "tabpfn_v3_regressor_default",
+    "tabpfn_v3_regressor_mediumdata",
+    "tabpfn_v3_regressor_ood",
+    "tabpfn_v3_regressor_timeseries",
+]
 
 from collections.abc import Callable, Sequence
 from typing import Optional, Tuple
@@ -9,7 +21,7 @@ from typing import Optional, Tuple
 import equinox as eqx
 import jax
 import jax.random as jr
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.core.layers.activation import get_act
 from equimo.core.layers.generic import BlockChunk
@@ -28,7 +40,7 @@ from equimo.utils import make_drop_path_schedule, to_list
 
 @register_model("tabpfn", modality="tabular")
 class TabPFN(eqx.Module):
-    """TabPFN-style in-context classifier for a single tabular dataset.
+    """TabPFN-style in-context predictor for a single tabular dataset.
 
     Inputs are unbatched. Use ``jax.vmap`` over datasets if a batch dimension is
     needed.
@@ -45,6 +57,8 @@ class TabPFN(eqx.Module):
     head: eqx.Module
 
     num_classes: int = eqx.field(static=True)
+    num_buckets: int = eqx.field(static=True)
+    task_type: str = eqx.field(static=True)
     dim: int = eqx.field(static=True)
     context_dim: int = eqx.field(static=True)
     depths: Tuple[int, int, int] = eqx.field(static=True)
@@ -57,6 +71,8 @@ class TabPFN(eqx.Module):
         self,
         *,
         num_classes: int = 160,
+        num_buckets: int = 5000,
+        task_type: str = "classification",
         dim: int = 128,
         depths: Sequence[int] = (3, 3, 24),
         num_heads: int | Sequence[int] = (8, 8, 8),
@@ -83,6 +99,8 @@ class TabPFN(eqx.Module):
         eps: float = 1e-5,
         key: PRNGKeyArray,
     ) -> None:
+        if task_type not in ("classification", "regression"):
+            raise ValueError("task_type must be 'classification' or 'regression'.")
         if len(depths) != 3:
             raise ValueError("TabPFN expects three depths: feature, column, context.")
 
@@ -111,13 +129,14 @@ class TabPFN(eqx.Module):
         )
         in_features = feature_group_size * (2 if use_nan_indicators else 1)
         self.x_embed = eqx.nn.Linear(in_features, dim, key=key_x)
+        num_outputs = num_classes if task_type == "classification" else num_buckets
         self.column_label_embedding = label_embedding_layer(
-            num_classes,
+            num_outputs,
             dim,
             key=key_col_y,
         )
         self.context_label_embedding = label_embedding_layer(
-            num_classes,
+            num_outputs,
             context_dim,
             key=key_ctx_y,
         )
@@ -171,16 +190,20 @@ class TabPFN(eqx.Module):
         )
         self.norm = norm_layer(context_dim, eps=eps)
         self.head = decoder_layer(
-            num_classes,
+            num_outputs,
             context_dim,
             head_dim=decoder_head_dim,
             num_heads=decoder_num_heads,
             use_softmax_scaling=decoder_use_softmax_scaling,
             scaling_mlp_hidden_dim=scaling_mlp_hidden_dim,
+            mlp_ratio=mlp_ratio,
+            act_layer=act_layer,
             key=key_head,
         )
 
         self.num_classes = num_classes
+        self.num_buckets = num_buckets
+        self.task_type = task_type
         self.dim = dim
         self.context_dim = context_dim
         self.depths = depths
@@ -192,7 +215,7 @@ class TabPFN(eqx.Module):
     def features(
         self,
         x: Float[Array, "rows columns"],
-        y: Int[Array, " rows"],
+        y: Array,
         n_train: int,
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
@@ -229,7 +252,7 @@ class TabPFN(eqx.Module):
     def forward_features(
         self,
         x: Float[Array, "rows columns"],
-        y: Int[Array, " rows"],
+        y: Array,
         n_train: int,
         key: PRNGKeyArray,
         inference: Optional[bool] = None,
@@ -246,7 +269,7 @@ class TabPFN(eqx.Module):
     def __call__(
         self,
         x: Float[Array, "rows columns"],
-        y: Int[Array, " rows"],
+        y: Array,
         n_train: int,
         key: PRNGKeyArray = jr.PRNGKey(42),
         inference: Optional[bool] = None,
@@ -258,19 +281,64 @@ class TabPFN(eqx.Module):
 
 
 _TABPFN_BASE_CFG: dict = {
+    "task_type": "classification",
     "num_classes": 160,
+    "num_buckets": 5000,
     "dim": 128,
     "depths": (3, 3, 24),
     "num_heads": (8, 8, 8),
+    "mlp_ratio": 2.0,
+    "feature_group_size": 3,
+    "num_inducing_points": 128,
+    "num_cls_tokens": 4,
+    "num_kv_heads_test": 1,
+    "decoder_head_dim": 64,
+    "decoder_num_heads": 6,
+    "decoder_use_softmax_scaling": True,
+    "use_rope": True,
+    "rope_base": 100_000.0,
+    "scaling_mlp_hidden_dim": 64,
+    "use_nan_indicators": True,
+    "context_block": "incontextattentionblock",
+    "preprocessor_layer": "preprocessor",
+    "label_embedding_layer": "labelembedding",
+    "decoder_layer": "attentiondecoder",
+    "act_layer": "exactgelu",
+    "norm_layer": "rmsnorm",
+    "eps": 1e-5,
+}
+
+_TABPFN_REGRESSOR_CFG: dict = {
+    "task_type": "regression",
+    "num_classes": 0,
+    "label_embedding_layer": "linearlabelembedding",
+    "decoder_layer": "regressiondecoder",
+    "decoder_use_softmax_scaling": False,
 }
 
 _TABPFN_REGISTRY: dict[str, tuple[dict, dict]] = {
     "tabpfn": (_TABPFN_BASE_CFG, {}),
+    "tabpfn_v3_classifier_default": (_TABPFN_BASE_CFG, {}),
+    "tabpfn_v3_classifier_binary": (_TABPFN_BASE_CFG, {}),
+    "tabpfn_v3_classifier_multiclass": (_TABPFN_BASE_CFG, {}),
+    "tabpfn_v3_classifier_ood": (_TABPFN_BASE_CFG, {}),
+    "tabpfn_regressor": (_TABPFN_BASE_CFG, _TABPFN_REGRESSOR_CFG),
+    "tabpfn_v3_regressor_default": (_TABPFN_BASE_CFG, _TABPFN_REGRESSOR_CFG),
+    "tabpfn_v3_regressor_mediumdata": (_TABPFN_BASE_CFG, _TABPFN_REGRESSOR_CFG),
+    "tabpfn_v3_regressor_ood": (_TABPFN_BASE_CFG, _TABPFN_REGRESSOR_CFG),
+    "tabpfn_v3_regressor_timeseries": (_TABPFN_BASE_CFG, _TABPFN_REGRESSOR_CFG),
+}
+
+_TABPFN_PRETRAINED_IDENTIFIERS = {
+    "tabpfn": "tabpfn_v3_classifier_default",
+    "tabpfn_regressor": "tabpfn_v3_regressor_default",
 }
 
 
 def _build_tabpfn(
     variant: str,
+    pretrained: bool = False,
+    inference_mode: bool = True,
     key: PRNGKeyArray | None = None,
     **overrides,
 ) -> TabPFN:
@@ -279,12 +347,122 @@ def _build_tabpfn(
 
     base_cfg, variant_cfg = _TABPFN_REGISTRY[variant]
     cfg = base_cfg | variant_cfg | overrides
-    return TabPFN(**cfg, key=key)
+    model = TabPFN(**cfg, key=key)
+
+    if pretrained:
+        from equimo.serialization import load_weights
+
+        identifier = _TABPFN_PRETRAINED_IDENTIFIERS.get(variant, variant)
+        model = load_weights(
+            model,
+            identifier=identifier,
+            inference_mode=inference_mode,
+        )
+
+    return model
 
 
 def tabpfn(
+    pretrained: bool = False,
+    inference_mode: bool = True,
     key: PRNGKeyArray | None = None,
     **kwargs,
 ) -> TabPFN:
-    """Build a TabPFN model with default Equimo tabular settings."""
-    return _build_tabpfn("tabpfn", key=key, **kwargs)
+    """Build the default TabPFN v3 classifier."""
+    return _build_tabpfn(
+        "tabpfn",
+        pretrained=pretrained,
+        inference_mode=inference_mode,
+        key=key,
+        **kwargs,
+    )
+
+
+def tabpfn_regressor(
+    pretrained: bool = False,
+    inference_mode: bool = True,
+    key: PRNGKeyArray | None = None,
+    **kwargs,
+) -> TabPFN:
+    """Build the default TabPFN v3 regressor."""
+    return _build_tabpfn(
+        "tabpfn_regressor",
+        pretrained=pretrained,
+        inference_mode=inference_mode,
+        key=key,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_classifier_default(
+    pretrained: bool = False, **kwargs
+) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_classifier_default",
+        pretrained=pretrained,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_classifier_binary(
+    pretrained: bool = False, **kwargs
+) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_classifier_binary",
+        pretrained=pretrained,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_classifier_multiclass(
+    pretrained: bool = False, **kwargs
+) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_classifier_multiclass",
+        pretrained=pretrained,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_classifier_ood(pretrained: bool = False, **kwargs) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_classifier_ood",
+        pretrained=pretrained,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_regressor_default(pretrained: bool = False, **kwargs) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_regressor_default",
+        pretrained=pretrained,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_regressor_mediumdata(
+    pretrained: bool = False, **kwargs
+) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_regressor_mediumdata",
+        pretrained=pretrained,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_regressor_ood(pretrained: bool = False, **kwargs) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_regressor_ood",
+        pretrained=pretrained,
+        **kwargs,
+    )
+
+
+def tabpfn_v3_regressor_timeseries(
+    pretrained: bool = False, **kwargs
+) -> TabPFN:
+    return _build_tabpfn(
+        "tabpfn_v3_regressor_timeseries",
+        pretrained=pretrained,
+        **kwargs,
+    )
