@@ -8,6 +8,7 @@ import jax.random as jr
 import numpy as np
 import pytest
 
+import equimo.tabular.models as tm
 import equimo.vision.models as em
 from equimo.serialization import load_model, save_model
 from equimo.core.layers.activation import get_act
@@ -774,6 +775,38 @@ def test_eupe_vitt16_matches_torch():
 
     mae = float(np.mean(np.abs(eq_features - ref["features"][0])))
     assert mae < 5e-4, f"EUPE features MAE vs PyTorch: {mae:.2e}"
+
+
+def test_tabpfn_v3_classifier_default_matches_torch():
+    """TabPFN v3 classifier logits must match original PyTorch output.
+
+    Reference logits were extracted with the original TabPFN torch checkpoint
+    on a fixed small tabular dataset (see models/tabpfn3.py).
+    """
+    ref = np.load(
+        Path(__file__).parent / "data" / "tabpfn_v3_classifier_default_reference.npz"
+    )
+    archive = (
+        Path("~/.cache/equimo/tabpfn/tabpfn_v3_classifier_default.tar.lz4")
+        .expanduser()
+    )
+    if not archive.exists():
+        pytest.skip("TabPFN v3 converted weights are not cached locally.")
+
+    key = jr.PRNGKey(42)
+    model = tm.tabpfn_v3_classifier_default(pretrained=True)
+    logits = np.array(
+        model(
+            jnp.array(ref["x"]),
+            jnp.array(ref["y"]),
+            int(ref["n_train"]),
+            key=key,
+            inference=True,
+        )
+    )
+
+    mae = float(np.mean(np.abs(logits - ref["logits"])))
+    assert mae < 1e-4, f"TabPFN v3 classifier MAE vs PyTorch: {mae:.2e}"
 
 
 def test_vit5_small_forward():

@@ -1,6 +1,6 @@
 [project]
 name = "Equimo"
-version = "1.1.1a6"
+version = "1.1.1a7"
 description = "Implementation of modern multimodal models in JAX/Equinox"
 readme = "README.md"
 requires-python = ">=3.12"
