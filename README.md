@@ -2,7 +2,7 @@
 
 **WARNING**: This is a research library implementing recent model architectures. The implementations are based on paper descriptions and may not be exact replicas of the original implementations. Use with caution in production environments.
 
-Equimo provides JAX/Equinox implementations of recent architectures across modalities. Vision is the most complete modality today; language has first-class text encoders/tokenizers, and audio includes AST spectrogram models.
+Equimo provides JAX/Equinox implementations of recent architectures across modalities. Vision is the most complete modality today; language has first-class text encoders/tokenizers, audio includes AST spectrogram models, and tabular includes TabPFN-3 core models.
 
 ## Features
 
@@ -13,7 +13,7 @@ Equimo provides JAX/Equinox implementations of recent architectures across modal
 - String-based layer resolution everywhere — pass `"layernorm"` instead of `eqx.nn.LayerNorm`
 - Modular design for easy experimentation
 - Extensive documentation and type hints
-- Modality-specific namespaces: `equimo.vision`, `equimo.language`, `equimo.audio`
+- Modality-specific namespaces: `equimo.vision`, `equimo.language`, `equimo.audio`, `equimo.tabular`
 - Generic serialization utilities in `equimo.serialization`
 
 ## Installation
@@ -43,6 +43,7 @@ modality-specific code:
 | `equimo.vision` | Vision models, vision layers, and image IO |
 | `equimo.language` | Text encoders and tokenizers |
 | `equimo.audio` | Audio models, audio layers, and audio IO scaffolding |
+| `equimo.tabular` | Tabular models and tabular layers |
 | `equimo.serialization` | Checkpoint save/load, weight loading, archive download/decompression |
 | `equimo.registry` | Modality-aware model registry |
 
@@ -91,6 +92,40 @@ Beyond a standard ViT (e.g., DINOv2 or SigLIP), Equimo provides other SotA archi
 | Model | Paper | Year | Status |
 | ----- | ----- | ---- | ------ |
 | AST   | [AST: Audio Spectrogram Transformer](https://arxiv.org/abs/2104.01778) | 2021 | ✅ |
+
+## Implemented Tabular Models
+
+| Model | Paper | Year | Status |
+| ----- | ----- | ---- | ------ |
+| TabPFN-3 | [TabPFN-3: Technical Report](https://arxiv.org/abs/2605.13986) | 2026 | ✅ |
+
+Equimo implements the core TabPFN-3 classifier and regressor architecture in
+JAX/Equinox, with Equimo-native converted weights. TabPFN-3 is a transformer
+foundation model from Prior Labs that uses in-context learning to solve tabular
+prediction tasks in a single forward pass. The upstream model card describes it
+as intended for structured classification and regression tasks up to 1M samples
+and 2000 features, trained purely on synthetic tabular tasks.
+
+Equimo exposes the model core directly: inputs are unbatched `x`, `y`, and
+`n_train` arrays, not the upstream `TabPFNClassifier`/`TabPFNRegressor`
+sklearn-style preprocessing and ensembling API. Classification variants return
+test-row log probabilities over the class vocabulary; regression variants return
+raw 5000-bucket logits.
+
+Available constructors:
+
+- Classifier: `tabpfn()`, `tabpfn_v3_classifier_default()`,
+  `tabpfn_v3_classifier_binary()`, `tabpfn_v3_classifier_multiclass()`,
+  `tabpfn_v3_classifier_ood()`
+- Regressor: `tabpfn_regressor()`, `tabpfn_v3_regressor_default()`,
+  `tabpfn_v3_regressor_mediumdata()`, `tabpfn_v3_regressor_ood()`,
+  `tabpfn_v3_regressor_timeseries()`
+
+The specialized checkpoint names mirror the Prior Labs release: binary and
+multiclass classifier variants, OOD classifier/regressor variants, a medium-data
+regressor, and a time-series regressor. Upstream TabPFN-3 weights are released
+under `tabpfn-3-license-v1.0`; review that license before using pretrained
+weights outside research or internal evaluation.
 
 ## Vision Usage
 
@@ -156,6 +191,7 @@ model = em.dinov2_vitb14(pretrained=True)
 | `ReduceFormer`      | `reduceformer_backbone_{b1,b2,b3}`                                                                                                                             |
 | `MobileNetv3`       | `mobilenetv3_{small,large}`                                                                                                                                    |
 | `AudioSpectrogramTransformer` | `ast_{tiny,small,base}_patch16_224`, `ast_base_patch16_384`, `ast_base_patch16_audioset_10_10_0_4593`, `ast_base_patch16_speechcommands_v2_10_10_0_9812` |
+| `TabPFN`            | `tabpfn`, `tabpfn_v3_classifier_*`, `tabpfn_regressor`, `tabpfn_v3_regressor_*`                                                                                |
 
 > `LowFormer` requires `attention_type` (`"softmax"` or `"sigmoid"`) which has
 > no sensible default and must be supplied by the caller.
@@ -522,6 +558,7 @@ The following models have pretrained weights available in Equimo:
 - [TIPS](https://arxiv.org/abs/2410.16512)
 - [EUPE](https://arxiv.org/abs/2603.22387) (both ViT and ConvNeXt variants)
 - [AST](https://arxiv.org/abs/2104.01778)
+- [TabPFN-3](https://arxiv.org/abs/2605.13986)
 
 Model identifiers map to filenames in Equimo's [HuggingFace repository](https://huggingface.co/poiretclement/equimo/tree/main/models/default).
 
@@ -542,6 +579,14 @@ Examples:
 - `tips_vitg14_lr`
 - `ast_base_patch16_audioset_10_10_0_4593`
 - `ast_base_patch16_speechcommands_v2_10_10_0_9812`
+- `tabpfn_v3_classifier_default`
+- `tabpfn_v3_classifier_binary`
+- `tabpfn_v3_classifier_multiclass`
+- `tabpfn_v3_classifier_ood`
+- `tabpfn_v3_regressor_default`
+- `tabpfn_v3_regressor_mediumdata`
+- `tabpfn_v3_regressor_ood`
+- `tabpfn_v3_regressor_timeseries`
 
 ## Audio
 
@@ -566,6 +611,31 @@ Pretrained AST checkpoints currently available:
 
 - `ast_base_patch16_audioset_10_10_0_4593`: Full AudioSet, 10x10 strides, weight-averaged checkpoint.
 - `ast_base_patch16_speechcommands_v2_10_10_0_9812`: SpeechCommands V2-35, 10x10 strides, non-averaged checkpoint.
+
+## Tabular
+
+`equimo.tabular` provides TabPFN-3 models and reusable tabular layers.
+
+```python
+import jax
+import jax.numpy as jnp
+import equimo.tabular.models as tm
+
+key = jax.random.PRNGKey(42)
+model = tm.tabpfn_v3_classifier_default(pretrained=True)
+
+x = jnp.ones((12, 5))  # (rows, columns)
+y = jnp.array([0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0])
+n_train = 8
+
+log_probs = model(x, y, n_train, key=key, inference=True)
+features = model.forward_features(x, y, n_train, key=key, inference=True)
+```
+
+For regression, use `tm.tabpfn_v3_regressor_default(pretrained=True)` or one of
+the specialized regressor variants. The regressor returns raw bucket logits; any
+post-processing to scalar predictions should follow the chosen downstream
+regression decoding strategy.
 
 ## Mixed Precision
 
@@ -605,5 +675,27 @@ If you use Equimo in your research, please cite:
   year = {2024},
   publisher = {GitHub},
   url = {https://github.com/clementpoiret/equimo}
+}
+```
+
+If you use TabPFN models through Equimo, please also cite the relevant TabPFN
+work:
+
+```bibtex
+@misc{grinsztajn2026tabpfn3technicalreport,
+  title = {TabPFN-3: Technical Report},
+  author = {L{\'e}o Grinsztajn and Klemens Fl{\"o}ge and Oscar Key and Felix Birkel and Philipp Jund and Brendan Roof and Mihir Manium and Shi Bin and Hoo and Magnus B{\"u}hler and Anurag Garg and Dominik Safaric and Jake Robertson and Benjamin J{\"a}ger and Simone Alessi and Adrian Hayler and Vladyslav Moroshan and Lennart Purucker and Philipp Singer and Alan Arazi and Julien Siems and Jan Hendrik Metzen and Georg Grab and Nick Erickson and Siyuan Guo and Eliott Kalfon and Simon Bing and David Salinas and Clara Cornu and Lilly Charlotte Wehrhahn and Diana Kriuchkova and Kursat Kaya and Lydia Sidhoum and Marie Salmon and Jerry Chen and Madelon Hulsebos and Yann LeCun and Samuel M{\"u}ller and Bernhard Sch{\"o}lkopf and Sauraj Gambhir and Noah Hollmann and Frank Hutter},
+  year = {2026},
+  eprint = {2605.13986},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2605.13986},
+}
+
+@inproceedings{hollmann2023tabpfn,
+  title = {TabPFN: A Transformer That Solves Small Tabular Classification Problems in a Second},
+  author = {Noah Hollmann and Samuel M{\"u}ller and Katharina Eggensperger and Frank Hutter},
+  booktitle = {International Conference on Learning Representations},
+  year = {2023},
+  url = {https://arxiv.org/abs/2207.01848},
 }
 ```
