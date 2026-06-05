@@ -18,6 +18,8 @@ __all__ = [
     # Decoder and embeddings
     "AttentionDecoder",
     "LabelEmbedding",
+    "LinearLabelEmbedding",
+    "RegressionDecoder",
     "get_decoder",
     "get_embedding",
     "register_decoder",
@@ -56,6 +58,8 @@ from .blocks import (
 from .decoder import (
     AttentionDecoder,
     LabelEmbedding,
+    LinearLabelEmbedding,
+    RegressionDecoder,
     get_decoder,
     get_embedding,
     register_decoder,
