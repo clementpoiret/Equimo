@@ -93,3 +93,5 @@ def _import_builtin_models(modality: str | None) -> None:
         import equimo.language.models  # noqa: F401
     if registry_modality in (None, "audio"):
         import equimo.audio.models  # noqa: F401
+    if registry_modality in (None, "tabular"):
+        import equimo.tabular.models  # noqa: F401
