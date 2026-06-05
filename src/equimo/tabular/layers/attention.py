@@ -1,3 +1,5 @@
+# ty: ignore[invalid-assignment]
+# ty: ignore[call-non-callable]
 from typing import Callable
 
 import equinox as eqx
@@ -111,9 +113,9 @@ class SoftmaxScaling(eqx.Module):
         n: Array | int,
     ) -> Float[Array, "heads seqlen head_dim"]:
         logn = jnp.log(jnp.maximum(jnp.asarray(n, q.dtype), 1.0)).reshape(1)
-        base = _call_mlp(
-            self.base_mlp, logn, inference=True
-        ).reshape(self.num_heads, 1, self.head_dim)
+        base = _call_mlp(self.base_mlp, logn, inference=True).reshape(
+            self.num_heads, 1, self.head_dim
+        )
         modulation = 1 + jnp.tanh(_call_mlp(self.query_mlp, q, inference=True))
         return q * base * modulation
 
@@ -145,18 +147,10 @@ class Attention(eqx.Module):
         if self.head_dim * num_heads != dim:
             raise ValueError("dim must be divisible by num_heads.")
         inner_dim = num_heads * self.head_dim
-        self.q_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_q
-        )
-        self.k_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_k
-        )
-        self.v_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_v
-        )
-        self.proj = eqx.nn.Linear(
-            inner_dim, dim, use_bias=False, key=key_out
-        )
+        self.q_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_q)
+        self.k_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_k)
+        self.v_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_v)
+        self.proj = eqx.nn.Linear(inner_dim, dim, use_bias=False, key=key_out)
         self.num_heads = num_heads
 
     def cross(
@@ -215,18 +209,10 @@ class CrossAttention(eqx.Module):
         if self.head_dim * num_heads != dim:
             raise ValueError("dim must be divisible by num_heads.")
         inner_dim = num_heads * self.head_dim
-        self.q_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_q
-        )
-        self.k_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_k
-        )
-        self.v_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_v
-        )
-        self.proj = eqx.nn.Linear(
-            inner_dim, dim, use_bias=False, key=key_out
-        )
+        self.q_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_q)
+        self.k_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_k)
+        self.v_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_v)
+        self.proj = eqx.nn.Linear(inner_dim, dim, use_bias=False, key=key_out)
         self.softmax_scaling = softmax_scaling
         self.num_heads = num_heads
 
@@ -276,18 +262,10 @@ class InContextAttention(eqx.Module):
         if self.head_dim * num_heads != dim:
             raise ValueError("dim must be divisible by num_heads.")
         inner_dim = num_heads * self.head_dim
-        self.q_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_q
-        )
-        self.k_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_k
-        )
-        self.v_proj = eqx.nn.Linear(
-            dim, inner_dim, use_bias=False, key=key_v
-        )
-        self.proj = eqx.nn.Linear(
-            inner_dim, dim, use_bias=False, key=key_out
-        )
+        self.q_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_q)
+        self.k_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_k)
+        self.v_proj = eqx.nn.Linear(dim, inner_dim, use_bias=False, key=key_v)
+        self.proj = eqx.nn.Linear(inner_dim, dim, use_bias=False, key=key_out)
         self.softmax_scaling = softmax_scaling
         self.num_heads = num_heads
         self.num_kv_heads_test = num_kv_heads_test
@@ -298,12 +276,8 @@ class InContextAttention(eqx.Module):
         n_train: int,
     ) -> Float[Array, "rows dim"]:
         q = _to_heads(self.q_proj, x, self.num_heads, self.head_dim)
-        k = _to_heads(self.k_proj, x, self.num_heads, self.head_dim)[
-            :, :n_train
-        ]
-        v = _to_heads(self.v_proj, x, self.num_heads, self.head_dim)[
-            :, :n_train
-        ]
+        k = _to_heads(self.k_proj, x, self.num_heads, self.head_dim)[:, :n_train]
+        v = _to_heads(self.v_proj, x, self.num_heads, self.head_dim)[:, :n_train]
 
         if self.num_kv_heads_test is None:
             out = _scaled_dot_product_attention(

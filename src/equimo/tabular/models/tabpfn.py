@@ -1,6 +1,8 @@
 # ty: ignore[invalid-assignment]
 # ty: ignore[call-non-callable]
 # ty: ignore[too-many-positional-arguments]
+# ty: ignore[unknown-argument]
+# ty: ignore[invalid-return-type]
 __all__ = [
     "TabPFN",
     "tabpfn",
@@ -394,9 +396,7 @@ def tabpfn_regressor(
     )
 
 
-def tabpfn_v3_classifier_default(
-    pretrained: bool = False, **kwargs
-) -> TabPFN:
+def tabpfn_v3_classifier_default(pretrained: bool = False, **kwargs) -> TabPFN:
     return _build_tabpfn(
         "tabpfn_v3_classifier_default",
         pretrained=pretrained,
@@ -404,9 +404,7 @@ def tabpfn_v3_classifier_default(
     )
 
 
-def tabpfn_v3_classifier_binary(
-    pretrained: bool = False, **kwargs
-) -> TabPFN:
+def tabpfn_v3_classifier_binary(pretrained: bool = False, **kwargs) -> TabPFN:
     return _build_tabpfn(
         "tabpfn_v3_classifier_binary",
         pretrained=pretrained,
@@ -414,9 +412,7 @@ def tabpfn_v3_classifier_binary(
     )
 
 
-def tabpfn_v3_classifier_multiclass(
-    pretrained: bool = False, **kwargs
-) -> TabPFN:
+def tabpfn_v3_classifier_multiclass(pretrained: bool = False, **kwargs) -> TabPFN:
     return _build_tabpfn(
         "tabpfn_v3_classifier_multiclass",
         pretrained=pretrained,
@@ -440,9 +436,7 @@ def tabpfn_v3_regressor_default(pretrained: bool = False, **kwargs) -> TabPFN:
     )
 
 
-def tabpfn_v3_regressor_mediumdata(
-    pretrained: bool = False, **kwargs
-) -> TabPFN:
+def tabpfn_v3_regressor_mediumdata(pretrained: bool = False, **kwargs) -> TabPFN:
     return _build_tabpfn(
         "tabpfn_v3_regressor_mediumdata",
         pretrained=pretrained,
@@ -458,9 +452,7 @@ def tabpfn_v3_regressor_ood(pretrained: bool = False, **kwargs) -> TabPFN:
     )
 
 
-def tabpfn_v3_regressor_timeseries(
-    pretrained: bool = False, **kwargs
-) -> TabPFN:
+def tabpfn_v3_regressor_timeseries(pretrained: bool = False, **kwargs) -> TabPFN:
     return _build_tabpfn(
         "tabpfn_v3_regressor_timeseries",
         pretrained=pretrained,

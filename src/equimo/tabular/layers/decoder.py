@@ -1,3 +1,4 @@
+# ty: ignore[invalid-assignment]
 from typing import Callable
 
 import equinox as eqx

@@ -1,3 +1,6 @@
+# ty: ignore[invalid-assignment]
+# ty: ignore[too-many-positional-arguments]
+# ty: ignore[unknown-argument]
 from collections.abc import Callable, Sequence
 
 import equinox as eqx
@@ -404,8 +407,7 @@ class InducedAttentionBlock(eqx.Module):
             key=key_attn2,
         )
         self.inducing_vectors = (
-            jr.truncated_normal(key_inducing, -2, 2, (num_inducing_points, dim))
-            * 0.02
+            jr.truncated_normal(key_inducing, -2, 2, (num_inducing_points, dim)) * 0.02
         )
 
     def __call__(

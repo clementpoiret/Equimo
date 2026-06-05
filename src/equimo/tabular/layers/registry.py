@@ -29,11 +29,7 @@ def _register_module(
             f"to {registry[registry_name]}."
         )
 
-    if (
-        add_to_layer_registry
-        and registry_name in _LAYER_REGISTRY
-        and not force
-    ):
+    if add_to_layer_registry and registry_name in _LAYER_REGISTRY and not force:
         raise ValueError(
             f"Cannot register '{registry_name}'. It is already registered "
             f"to {_LAYER_REGISTRY[registry_name]}."
