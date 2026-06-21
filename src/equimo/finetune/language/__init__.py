@@ -1,3 +1,5 @@
 """Language fine-tuning namespace reserved for selector adapters and recipes."""
 
-__all__: tuple[str, ...] = ()
+from . import selectors
+
+__all__ = ("selectors",)
