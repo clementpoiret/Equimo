@@ -182,7 +182,7 @@ plan = eqft.prepare_finetune(
     model,
     trainable=eqft.TrainableSpec(
         mode="full",
-        freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+        freeze=eqft.TargetSpec(tags_any=("embedding.patch",)),
     ),
     labels=eqft.LLRDConfig(decay=0.75),
 )
@@ -223,11 +223,12 @@ For EMA/SWA, request named views such as `view="ema"` or `view="swa"` from the
 same method.
 For optimizer-state memory savings, `rfft.adamw8_from_plan` can quantize large,
 eligible AdamW moment groups while Equimo still emits the same plan metadata.
-For sharpness-aware updates, `rfft.make_sam_step` and `rfft.SAMConfig` wrap a
-Rollfast base optimizer with an explicit two-pass SAM/ASAM step.
-For AdaLoRA-style runs, `rfft.make_adalora_controller` emits fixed-shape rank
-masks for Equimo rank-masked adapters; use `eqft.lora_rank_groups` to build
-controller groups and `eqft.apply_lora_rank_pattern` to apply emitted masks.
+For sharpness-aware updates, `rfft.make_sam_step`, `rfft.SAMConfig`, and
+`rfft.ASAMConfig` wrap a Rollfast base optimizer with an explicit two-pass
+SAM/ASAM step. For AdaLoRA-style runs, `rfft.make_adalora_controller` emits
+fixed-shape rank support masks for Equimo AdaLoRA adapters; use
+`eqft.lora_rank_groups` to build controller groups and
+`eqft.apply_lora_rank_pattern` to apply emitted masks.
 For LP-FT or gradual unfreezing, `rfft.reconfigure_optimizer` can migrate
 compatible optimizer state between two Equimo plans and report what changed.
 After optimizer initialization, `rfft.optimizer_state_memory_summary` reports

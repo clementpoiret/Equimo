@@ -102,20 +102,30 @@ def l2_sp_loss(
 
     resolved_config = L2SPConfig() if config is None else config
     resolved_reduction = resolved_config.reduction if reduction is None else reduction
-    pairs = tuple(
-        _l2_leaf(leaf, ref)
-        for _, leaf, ref in _matched_l2_entries(
-            model,
-            reference,
-            resolved_config,
-        )
+    entries = _matched_l2_entries(
+        model,
+        reference,
+        resolved_config,
     )
-    if not pairs:
+    shared_pairs = tuple(
+        _l2_leaf(leaf, ref)
+        for path, leaf, ref in entries
+        if _include_l2_path(path, leaf, resolved_config)
+    )
+    new_pairs = tuple(
+        _norm_leaf(leaf)
+        for path, leaf, _ in entries
+        if _include_l2_new_path(path, leaf, resolved_config)
+    )
+    if not shared_pairs and not new_pairs:
         return jnp.asarray(0.0)
-    sums, counts = zip(*pairs, strict=True)
-    penalty = _reduce_l2sp_terms(sums, counts, resolved_reduction)
-    scale = resolved_config.alpha / 2.0 if coefficient is None else coefficient
-    return penalty * scale
+    shared_penalty = _reduce_l2sp_terms_from_pairs(shared_pairs, resolved_reduction)
+    new_penalty = _reduce_l2sp_terms_from_pairs(new_pairs, resolved_reduction)
+    if coefficient is not None:
+        return (shared_penalty + new_penalty) * coefficient
+    return shared_penalty * (resolved_config.alpha / 2.0) + new_penalty * (
+        resolved_config.beta / 2.0
+    )
 
 
 def adapter_norm_loss(
@@ -130,7 +140,6 @@ def adapter_norm_loss(
         "ia3",
         "scale_shift",
         "vera",
-        "side_tuning",
     ),
     reduction: Literal["mean", "sum"] = "mean",
     coefficient: float | None = None,
@@ -161,7 +170,9 @@ def adalora_orthogonality_loss(
 
     losses = tuple(
         leaf.orthogonality_loss()
-        for leaf in jtu.tree_leaves(model, is_leaf=lambda x: isinstance(x, AdaLoRAModule))
+        for leaf in jtu.tree_leaves(
+            model, is_leaf=lambda x: isinstance(x, AdaLoRAModule)
+        )
         if isinstance(leaf, AdaLoRAModule)
     )
     if not losses:
@@ -185,6 +196,21 @@ def adalora_orthogonality_aux_loss_spec(
     )
 
 
+def delta_attention_aux_loss_spec(
+    *,
+    coefficient_hint: float = 1.0,
+) -> AuxLossSpec:
+    """Return the explicit AuxLossSpec for DELTA attention regularization."""
+
+    return AuxLossSpec(
+        name="delta_attention",
+        registry_key="equimo.delta_attention_loss",
+        coefficient_hint=coefficient_hint,
+        reduction="sum",
+        normalizer="none",
+    )
+
+
 def task_vector_norm_loss(
     task_vector: PyTree,
     *,
@@ -199,6 +225,59 @@ def task_vector_norm_loss(
         return jnp.asarray(0.0)
     sums, counts = zip(*pairs, strict=True)
     penalty = _reduce_terms(sums, counts, reduction)
+    return penalty if coefficient is None else penalty * coefficient
+
+
+def delta_attention_loss(
+    student_features: Mapping | tuple | list | jax.Array,
+    teacher_features: Mapping | tuple | list | jax.Array,
+    attention_weights: Mapping | tuple | list | jax.Array,
+    *,
+    config: DELTAAttentionConfig | None = None,
+    coefficient: float | None = None,
+    reduction: Literal["sum", "mean"] | None = None,
+) -> jax.Array:
+    """Return DELTA attention-weighted feature-map transfer loss.
+
+    The default layout follows the DELTA reference implementation: feature maps
+    are shaped ``(batch, channels, *spatial)`` and attention weights are
+    per-channel vectors.
+    """
+
+    resolved_config = DELTAAttentionConfig() if config is None else config
+    selected_student = select_feature_taps(student_features, resolved_config.layers)
+    selected_teacher = select_feature_taps(teacher_features, resolved_config.layers)
+    selected_attention = _select_attention_taps(
+        attention_weights,
+        resolved_config.layers,
+    )
+    if not (len(selected_student) == len(selected_teacher) == len(selected_attention)):
+        raise ValueError(
+            "student, teacher, and attention selectors resolved different counts: "
+            f"{len(selected_student)}, {len(selected_teacher)}, "
+            f"{len(selected_attention)}."
+        )
+
+    resolved_reduction = resolved_config.reduction if reduction is None else reduction
+    losses = tuple(
+        _delta_attention_leaf(
+            student,
+            teacher,
+            attention,
+            config=resolved_config,
+            reduction=resolved_reduction,
+        )
+        for student, teacher, attention in zip(
+            selected_student,
+            selected_teacher,
+            selected_attention,
+            strict=True,
+        )
+    )
+    if not losses:
+        return jnp.asarray(0.0)
+    stacked = jnp.stack(losses)
+    penalty = jnp.sum(stacked) if resolved_reduction == "sum" else jnp.mean(stacked)
     return penalty if coefficient is None else penalty * coefficient
 
 
@@ -411,6 +490,70 @@ def _ewc_leaf(leaf, ref, fisher):
     return jnp.sum(values), jnp.asarray(values.size)
 
 
+def _delta_attention_leaf(
+    student: jax.Array,
+    teacher: jax.Array,
+    attention: jax.Array,
+    *,
+    config: DELTAAttentionConfig,
+    reduction: Literal["sum", "mean"],
+) -> jax.Array:
+    student = jnp.asarray(student)
+    teacher = jnp.asarray(teacher)
+    if student.shape != teacher.shape:
+        raise ValueError(
+            "DELTA feature-map shape mismatch: "
+            f"got {student.shape} and {teacher.shape}."
+        )
+    if config.stop_gradient_teacher:
+        teacher = jax.lax.stop_gradient(teacher)
+
+    channel_axis = _delta_channel_axis(student, config)
+    diff = jnp.moveaxis(student - teacher, channel_axis, -1)
+    channels = diff.shape[-1]
+    attention = jnp.asarray(attention)
+    if attention.shape != (channels,):
+        raise ValueError(
+            "DELTA attention weights must have one value per channel; "
+            f"got {attention.shape}, expected ({channels},)."
+        )
+
+    spatial_axes = _delta_spatial_axes(diff)
+    spatial_size = (
+        math.prod(diff.shape[axis] for axis in spatial_axes) if spatial_axes else 1
+    )
+    squared = jnp.sum(diff**2, axis=spatial_axes) if spatial_axes else diff**2
+    weighted = channels * squared * attention / spatial_size
+    loss = 0.5 * jnp.sum(weighted)
+    if reduction == "sum":
+        return loss
+    if reduction == "mean":
+        return loss / jnp.maximum(jnp.asarray(weighted.size), 1)
+    raise ValueError(f"Unsupported DELTA reduction {reduction!r}.")
+
+
+def _delta_channel_axis(features: jax.Array, config: DELTAAttentionConfig) -> int:
+    raw_axis = config.feature_alignment.get("channel_axis")
+    if raw_axis is None:
+        raw_axis = 1 if features.ndim >= 4 else 0
+    axis = int(raw_axis)
+    if axis < 0:
+        axis += features.ndim
+    if not 0 <= axis < features.ndim:
+        raise ValueError(
+            f"DELTA channel_axis {raw_axis!r} is out of range for shape {features.shape}."
+        )
+    return axis
+
+
+def _delta_spatial_axes(features_channel_last: jax.Array) -> tuple[int, ...]:
+    if features_channel_last.ndim <= 2:
+        return ()
+    if features_channel_last.ndim >= 4:
+        return tuple(range(1, features_channel_last.ndim - 1))
+    return tuple(range(0, features_channel_last.ndim - 1))
+
+
 def _matched_l2_entries(
     model: PyTree,
     reference: PyTree,
@@ -419,17 +562,20 @@ def _matched_l2_entries(
     model_entries = _inexact_array_entries(model)
     reference_entries = _inexact_array_entries(reference)
     if len(model_entries) != len(reference_entries):
-        raise ValueError("l2_sp_loss requires compatible inexact-array tree structures.")
+        raise ValueError(
+            "l2_sp_loss requires compatible inexact-array tree structures."
+        )
 
     matched: list[tuple[Path, jax.Array, jax.Array]] = []
-    for (path, leaf), (ref_path, ref) in zip(model_entries, reference_entries, strict=True):
+    for (path, leaf), (ref_path, ref) in zip(
+        model_entries, reference_entries, strict=True
+    ):
         if path != ref_path:
             raise ValueError(
                 "l2_sp_loss requires matching inexact-array paths; "
                 f"got {path_to_str(path)} and {path_to_str(ref_path)}."
             )
-        if _include_l2_path(path, leaf, config):
-            matched.append((path, leaf, ref))
+        matched.append((path, leaf, ref))
     return tuple(matched)
 
 
@@ -442,8 +588,33 @@ def _include_l2_path(path: Path, leaf: jax.Array, config: L2SPConfig) -> bool:
     if config.shared_mask == "all":
         return True
     tags = canonical_tags_for_path(path, leaf)
-    excluded = {"head", "lora", "dora", "adapter", "prompt", "prefix", "ia3", "scale_shift"}
+    excluded = {
+        "head",
+        "lora",
+        "dora",
+        "adapter",
+        "prompt",
+        "prefix",
+        "ia3",
+        "scale_shift",
+    }
     return tags.isdisjoint(excluded)
+
+
+def _include_l2_new_path(path: Path, leaf: jax.Array, config: L2SPConfig) -> bool:
+    if config.beta == 0.0:
+        return False
+    if config.new_mask not in {"none", "head", "newly_initialized", "all"}:
+        raise ValueError(
+            "L2SPConfig.new_mask must be 'none', 'head', 'newly_initialized', or 'all'."
+        )
+    if config.new_mask == "none":
+        return False
+    if config.new_mask == "all":
+        return True
+    tags = canonical_tags_for_path(path, leaf)
+    path_parts = {str(part).strip("[]'\"") for part in path}
+    return "head" in tags or "head" in path_parts or "head" in path_to_str(path)
 
 
 def _inexact_array_entries(tree: PyTree) -> tuple[tuple[Path, jax.Array], ...]:
@@ -484,6 +655,16 @@ def _reduce_l2sp_terms(
         count = jnp.sum(jnp.stack(counts))
         return total / jnp.maximum(count, 1)
     raise ValueError(f"Unsupported L2-SP reduction {reduction!r}.")
+
+
+def _reduce_l2sp_terms_from_pairs(
+    pairs: tuple[tuple[jax.Array, jax.Array], ...],
+    reduction: Literal["sum", "mean_per_parameter"],
+) -> jax.Array:
+    if not pairs:
+        return jnp.asarray(0.0)
+    sums, counts = zip(*pairs, strict=True)
+    return _reduce_l2sp_terms(sums, counts, reduction)
 
 
 def _reduce_values(
@@ -539,8 +720,7 @@ def _select_sequence_taps(
             index = int(layer)
             if not 0 <= index < len(taps):
                 raise ValueError(
-                    f"Feature tap index {index} is out of range for "
-                    f"{len(taps)} taps."
+                    f"Feature tap index {index} is out of range for {len(taps)} taps."
                 )
             selected.append(jnp.asarray(taps[index]))
             continue
@@ -552,6 +732,21 @@ def _select_sequence_taps(
             "but a sequence was provided."
         )
     return tuple(selected)
+
+
+def _select_attention_taps(
+    attention: Mapping | tuple | list | jax.Array,
+    layers: tuple[str, ...],
+) -> tuple[jax.Array, ...]:
+    if isinstance(attention, Mapping):
+        return select_feature_taps(attention, layers)
+    if isinstance(attention, (tuple, list)):
+        if len(attention) == len(layers):
+            return tuple(jnp.asarray(item) for item in attention)
+        return select_feature_taps(tuple(attention), layers)
+    if len(layers) != 1:
+        raise ValueError("A single DELTA attention vector requires exactly one layer.")
+    return (jnp.asarray(attention),)
 
 
 def _is_percentage_selector(selector: str) -> bool:
@@ -585,6 +780,8 @@ __all__ = (
     "adalora_orthogonality_aux_loss_spec",
     "adalora_orthogonality_loss",
     "adapter_norm_loss",
+    "delta_attention_aux_loss_spec",
+    "delta_attention_loss",
     "ewc_loss",
     "feature_distillation_loss",
     "feature_distillation_loss_from_taps",

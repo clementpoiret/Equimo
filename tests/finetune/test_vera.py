@@ -49,10 +49,20 @@ def test_vera_shared_reuses_compatible_random_bases(tiny_vision_transformer):
         shared.blocks[0].attn.proj.vera_B,
         shared.blocks[1].attn.proj.vera_B,
     )
+    assert shared.blocks[0].attn.proj.share_scope == "shape_compatible"
+    assert (
+        shared.blocks[0].attn.proj.basis_pool_key
+        == shared.blocks[1].attn.proj.basis_pool_key
+    )
+    assert (
+        shared.blocks[0].attn.proj.basis_key_data
+        == shared.blocks[1].attn.proj.basis_key_data
+    )
     assert not jnp.array_equal(
         unshared.blocks[0].attn.proj.vera_A,
         unshared.blocks[1].attn.proj.vera_A,
     )
+    assert unshared.blocks[0].attn.proj.share_scope == "per_module"
 
 
 def test_vera_zero_output_scale_identity(tiny_vision_transformer):

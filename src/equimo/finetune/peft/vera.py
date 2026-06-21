@@ -47,6 +47,10 @@ class VeRALinear(eqx.Module):
     frozen_A_init: str = eqx.field(static=True)
     frozen_B_init: str = eqx.field(static=True)
     mergeable: bool = eqx.field(static=True)
+    basis_generation: str = eqx.field(static=True)
+    basis_key_data: tuple[int, ...] = eqx.field(static=True)
+    basis_pool_key: tuple[str, ...] = eqx.field(static=True)
+    share_scope: str = eqx.field(static=True)
 
     def __init__(
         self,
@@ -64,6 +68,10 @@ class VeRALinear(eqx.Module):
         vera_B: jax.Array | None = None,
         vera_input_scale: jax.Array | None = None,
         vera_output_scale: jax.Array | None = None,
+        basis_generation: str = "jax.random.PRNGKey_split",
+        basis_key_data: tuple[int, ...] = (),
+        basis_pool_key: tuple[str, ...] = (),
+        share_scope: str = "shape_compatible",
     ):
         key_a, key_b = jr.split(key, 2)
         self.base = base
@@ -71,6 +79,10 @@ class VeRALinear(eqx.Module):
         self.frozen_A_init = frozen_A_init
         self.frozen_B_init = frozen_B_init
         self.mergeable = mergeable
+        self.basis_generation = basis_generation
+        self.basis_key_data = basis_key_data
+        self.basis_pool_key = basis_pool_key
+        self.share_scope = share_scope
         self.vera_A = (
             _init_frozen_matrix(
                 key_a,
@@ -133,7 +145,10 @@ def apply_vera(
     config = VeRAConfig() if config is None else config
     module_paths = _target_linear_paths(model, config.target, tagger=tagger)
     keys = jr.split(key, len(module_paths))
-    shared_bases: dict[tuple[int, int, int, str, str, str], tuple[jax.Array, jax.Array]] = {}
+    shared_bases: dict[
+        tuple[int, int, int, str, str, str],
+        tuple[jax.Array, jax.Array, tuple[int, ...]],
+    ] = {}
     updated = model
     for module_path, subkey in zip(module_paths, keys, strict=True):
         module = get_path(updated, module_path)
@@ -145,8 +160,11 @@ def apply_vera(
                 f"{type(module).__name__}, expected eqx.nn.Linear."
             )
         vera_A = vera_B = None
+        basis_key_data = _key_data_tuple(subkey)
+        basis_pool_key = _vera_pool_key(module, config)
+        share_scope = "shape_compatible" if config.shared else "per_module"
         if config.shared:
-            vera_A, vera_B = _shared_vera_bases(
+            vera_A, vera_B, basis_key_data = _shared_vera_bases(
                 module,
                 config,
                 subkey,
@@ -167,6 +185,10 @@ def apply_vera(
                 mergeable=config.mergeable,
                 vera_A=vera_A,
                 vera_B=vera_B,
+                basis_generation="jax.random.PRNGKey_split",
+                basis_key_data=basis_key_data,
+                basis_pool_key=basis_pool_key,
+                share_scope=share_scope,
             ),
         )
     return updated
@@ -223,16 +245,12 @@ def _shared_vera_bases(
     module: eqx.nn.Linear,
     config: VeRAConfig,
     key: jax.Array,
-    cache: dict[tuple[int, int, int, str, str, str], tuple[jax.Array, jax.Array]],
-) -> tuple[jax.Array, jax.Array]:
-    cache_key = (
-        int(config.rank),
-        int(module.in_features),
-        int(module.out_features),
-        str(module.weight.dtype),
-        config.frozen_A_init,
-        config.frozen_B_init,
-    )
+    cache: dict[
+        tuple[int, int, int, str, str, str],
+        tuple[jax.Array, jax.Array, tuple[int, ...]],
+    ],
+) -> tuple[jax.Array, jax.Array, tuple[int, ...]]:
+    cache_key = _vera_pool_key(module, config)
     if cache_key not in cache:
         key_a, key_b = jr.split(key, 2)
         cache[cache_key] = (
@@ -250,8 +268,31 @@ def _shared_vera_bases(
                 fan_in=config.rank,
                 dtype=module.weight.dtype,
             ),
+            _key_data_tuple(key),
         )
     return cache[cache_key]
+
+
+def _vera_pool_key(
+    module: eqx.nn.Linear,
+    config: VeRAConfig,
+) -> tuple[int, int, int, str, str, str]:
+    return (
+        int(config.rank),
+        int(module.in_features),
+        int(module.out_features),
+        str(module.weight.dtype),
+        config.frozen_A_init,
+        config.frozen_B_init,
+    )
+
+
+def _key_data_tuple(key: jax.Array) -> tuple[int, ...]:
+    try:
+        data = jr.key_data(key)
+    except AttributeError:
+        data = key
+    return tuple(int(part) for part in jnp.ravel(jnp.asarray(data)))
 
 
 def _init_frozen_matrix(

@@ -1,4 +1,4 @@
-# Full, Partial, and Surgical Fine-Tuning
+# Full and Partial Fine-Tuning
 
 Full fine-tuning selects all parameter leaves unless a freeze selector removes
 them:
@@ -18,6 +18,3 @@ Partial fine-tuning selects a depth range. Ranges are half-open:
 ```python
 eqft.TrainableSpec(mode="partial", depth_range=(8, 12))
 ```
-
-Surgical fine-tuning selects regions for shifts such as `input`, `feature`,
-`output`, `corruption`, `subpopulation`, and `label_space`.

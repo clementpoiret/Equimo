@@ -63,6 +63,7 @@ class PTuningV2Config(PromptConfig):
     num_tokens: int = 10
     depth: Literal["shallow", "deep", "all"] = "all"
     share_across_layers: bool = False
+    reparameterizer: Literal["none", "mlp"] = "none"
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,7 @@ def apply_prompts(
     """Wrap a model with trainable prompt tokens."""
 
     config = PromptConfig() if config is None else config
+    _validate_prompt_config(config)
     dim = _infer_dim(model)
     prompt_count = _prompt_count(model, config)
     prompts = _init_prompts(model, config, dim, prompt_count, key)
@@ -558,6 +560,13 @@ def _prepends_before_all(config: PromptConfig) -> bool:
 
 def _uses_deep_prompts(config: PromptConfig) -> bool:
     return config.depth in {"deep", "all"}
+
+
+def _validate_prompt_config(config: PromptConfig) -> None:
+    if isinstance(config, PTuningV2Config) and config.reparameterizer != "none":
+        raise ValueError(
+            "PTuningV2Config.reparameterizer='mlp' is declared but not implemented."
+        )
 
 
 __all__ = (

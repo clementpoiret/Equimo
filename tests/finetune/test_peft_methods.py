@@ -64,6 +64,48 @@ def test_adalora_orthogonality_aux_loss_spec_is_explicit(tiny_vision_transformer
     assert spec.reduction == "sum"
 
 
+def test_adalora_rank_pattern_zeros_singulars_without_persistent_mask(
+    tiny_vision_transformer,
+):
+    model = eqft.apply_adalora(
+        tiny_vision_transformer,
+        eqft.AdaLoRAConfig(
+            rank=3,
+            target=eqft.TargetSpec(tags_any=("attention.proj",), max_depth=0),
+        ),
+        key=jr.PRNGKey(12),
+    )
+    path, module = eqft.iter_adalora_modules(model)[0]
+    singular = jnp.asarray([1.0, 2.0, 3.0], dtype=module.singular.dtype)
+    model = eqx.tree_at(
+        lambda tree: eqft.iter_adalora_modules(tree)[0][1].singular,
+        model,
+        singular,
+    )
+    rank_groups = eqft.lora_rank_groups(model)
+    name = eqft.path_to_str(path)
+
+    masked = eqft.apply_lora_rank_pattern(
+        model,
+        {name: jnp.asarray([True, False, True])},
+    )
+    masked_module = eqft.iter_adalora_modules(masked)[0][1]
+
+    assert rank_groups == {name: 3}
+    assert masked_module.final_mask is None
+    assert jnp.allclose(masked_module.singular, jnp.asarray([1.0, 0.0, 3.0]))
+
+    final = eqft.apply_lora_rank_pattern(
+        model,
+        {name: jnp.asarray([False, True, True])},
+        final=True,
+    )
+    final_module = eqft.iter_adalora_modules(final)[0][1]
+
+    assert jnp.array_equal(final_module.final_mask, jnp.asarray([False, True, True]))
+    assert jnp.allclose(final_module.singular, jnp.asarray([0.0, 2.0, 3.0]))
+
+
 def test_lora_fa_custom_vjp_freezes_A_and_corrects_B_gradient(tiny_vision_transformer):
     x = jnp.ones((4,), dtype=jnp.float32)
     model = eqft.apply_lora_fa(
@@ -114,9 +156,35 @@ def test_fourierft_identity_trainables_and_merge_equivalence(tiny_vision_transfo
     )
 
     assert jnp.allclose(tiny_vision_transformer(x), model(x), atol=1e-6)
+    assert module.frequency_selection == "random"
+    assert (
+        module.transform_normalization
+        == "jax.numpy.fft.ifft default 1/n inverse scaling"
+    )
+    assert module.reshape_convention == "row_major_flatten_out_in"
     assert plan.trainable.blocks[0].attn.proj.coefficients_real is not None
     assert plan.trainable.blocks[0].attn.proj.frequency_indices is None
     assert jnp.allclose(trained(x), merged(x), atol=1e-6)
+
+
+def test_fourierft_deduplicates_conjugate_frequencies(tiny_vision_transformer):
+    model = eqft.apply_fourierft(
+        tiny_vision_transformer,
+        eqft.FourierFTConfig(
+            num_coefficients=2,
+            frequency_selection="explicit",
+            frequency_indices=(1, -1),
+            target=eqft.TargetSpec(tags_any=("attention.proj",), max_depth=0),
+        ),
+    )
+    module = model.blocks[0].attn.proj
+
+    assert module.frequency_indices.shape == (1,)
+    assert module.frequency_selection == "explicit"
+    assert (
+        module.delta_weight().dtype
+        == tiny_vision_transformer.blocks[0].attn.proj.weight.dtype
+    )
 
 
 def test_eva_initializes_lora_A_from_activation_artifacts(tiny_vision_transformer):
@@ -135,7 +203,10 @@ def test_eva_initializes_lora_A_from_activation_artifacts(tiny_vision_transforme
 
     assert jnp.allclose(tiny_vision_transformer(x), model(x), atol=1e-6)
     assert model.blocks[0].attn.proj.lora_A.shape[0] >= 1
-    assert jnp.array_equal(model.blocks[0].attn.proj.lora_B, jnp.zeros_like(model.blocks[0].attn.proj.lora_B))
+    assert jnp.array_equal(
+        model.blocks[0].attn.proj.lora_B,
+        jnp.zeros_like(model.blocks[0].attn.proj.lora_B),
+    )
 
 
 def test_eva_accepts_valid_calibration_artifacts(tiny_vision_transformer):
@@ -228,6 +299,49 @@ def test_eva_consumes_activation_svd_statistics(tiny_vision_transformer):
     assert model.blocks[1].attn.proj.lora_A.shape == (1, 4)
 
 
+def test_eva_rank_allocation_ties_use_logical_parameter_id(tiny_vision_transformer):
+    svd_payload = {
+        "right_singular_vectors": jnp.eye(4, dtype=jnp.float32),
+        "singular_values": jnp.asarray([4.0, 3.0, 2.0, 1.0], dtype=jnp.float32),
+    }
+    artifacts = {
+        "blocks.0.attn.proj": eqft.CalibrationArtifact(
+            kind="activation_svd",
+            base_checkpoint_hash="base-hash",
+            logical_parameter_ids=("blocks.0.attn.proj",),
+            statistics=svd_payload,
+            sample_count=8,
+            data_fingerprint="dataset-a",
+            accumulation_dtype="float32",
+            distributed_reduction="deterministic_sum",
+        ),
+        "blocks.1.attn.proj": eqft.CalibrationArtifact(
+            kind="activation_svd",
+            base_checkpoint_hash="base-hash",
+            logical_parameter_ids=("blocks.1.attn.proj",),
+            statistics=svd_payload,
+            sample_count=8,
+            data_fingerprint="dataset-a",
+            accumulation_dtype="float32",
+            distributed_reduction="deterministic_sum",
+        ),
+    }
+
+    model = eqft.apply_eva_lora(
+        tiny_vision_transformer,
+        eqft.EVAInitializerConfig(
+            rank_budget=3,
+            calibration=eqft.CalibrationSpec(artifact_kind="activation_svd"),
+        ),
+        activation_artifacts=artifacts,
+        target=eqft.TargetSpec(tags_any=("attention.proj",)),
+        key=jr.PRNGKey(26),
+    )
+
+    assert model.blocks[0].attn.proj.lora_A.shape == (2, 4)
+    assert model.blocks[1].attn.proj.lora_A.shape == (1, 4)
+
+
 def test_eva_rejects_non_artifact_when_calibration_is_pinned(tiny_vision_transformer):
     artifacts = {
         "blocks.0.attn.proj": jnp.eye(4, dtype=jnp.float32),
@@ -284,42 +398,6 @@ def test_eva_rejects_calibration_fingerprint_mismatch(tiny_vision_transformer):
             activation_artifacts=artifacts,
             target=eqft.TargetSpec(tags_any=("attention.proj",)),
             key=jr.PRNGKey(24),
-        )
-
-
-def test_loftq_initialization_reconstructs_quantized_residual(tiny_vision_transformer):
-    x = jnp.ones((2, 3))
-    weight = tiny_vision_transformer.blocks[0].attn.proj.weight
-    q_weight = weight - jnp.ones_like(weight) * 0.01
-    config = eqft.LoftQConfig(
-        rank=4,
-        quantizer=eqft.QuantizerSpec(id="test", bits=4, format="fake"),
-    )
-    model = eqft.apply_loftq_lora(
-        tiny_vision_transformer,
-        config,
-        quantized_weights={"blocks.0.attn.proj": q_weight},
-        target=eqft.TargetSpec(tags_any=("attention.proj",), max_depth=0),
-        key=jr.PRNGKey(3),
-    )
-    module = model.blocks[0].attn.proj
-
-    assert jnp.allclose(tiny_vision_transformer(x), model(x), atol=1e-5)
-    assert dict(module.metadata)["method"] == "loftq"
-    eqft.validate_loftq_lora(
-        model,
-        config,
-        quantized_weights={"blocks.0.attn.proj": q_weight},
-        target=eqft.TargetSpec(tags_any=("attention.proj",), max_depth=0),
-    )
-    with pytest.raises(ValueError, match="quantization fingerprint mismatch"):
-        eqft.validate_loftq_lora(
-            model,
-            config,
-            quantized_weights={
-                "blocks.0.attn.proj": q_weight + jnp.ones_like(q_weight) * 0.01
-            },
-            target=eqft.TargetSpec(tags_any=("attention.proj",), max_depth=0),
         )
 
 
@@ -417,63 +495,6 @@ def test_boft_requires_explicit_block_size(tiny_vision_transformer):
         )
 
 
-def test_convpass_identity_and_requires_patch_grid(tiny_vision_transformer):
-    x = jnp.ones((2, 3))
-    model = eqft.apply_convpass(
-        tiny_vision_transformer,
-        eqft.ConvPassConfig(bottleneck=2, patch_grid=(1, 2)),
-        key=jr.PRNGKey(4),
-    )
-    plan = eqft.prepare_finetune(
-        model,
-        trainable=eqft.TrainableSpec(
-            mode="peft",
-            method_name="convpass",
-            train_head=False,
-        ),
-    )
-
-    assert jnp.allclose(tiny_vision_transformer(x), model(x), atol=1e-6)
-    assert plan.trainable.blocks[0].convpass.down.weight is not None
-    assert plan.trainable.blocks[0].base.attn.proj.weight is None
-
-
-def test_repadapter_identity_merge_and_delta_round_trip(tiny_vision_transformer):
-    x = jnp.ones((2, 3))
-    model = eqft.apply_repadapter(
-        tiny_vision_transformer,
-        eqft.RepAdapterConfig(
-            bottleneck=2,
-            target=eqft.TargetSpec(tags_any=("attention.proj",), max_depth=0),
-        ),
-        key=jr.PRNGKey(5),
-    )
-    module = model.blocks[0].attn.proj
-    trained_module = eqx.tree_at(
-        lambda m: m.up.weight,
-        module,
-        jnp.ones_like(module.up.weight) * 0.03,
-    )
-    trained = eqx.tree_at(lambda m: m.blocks[0].attn.proj, model, trained_module)
-    merged = eqft.merge_repadapters(trained)
-    bundle = eqft.extract_adapter_delta(trained)
-    loaded = eqft.load_adapter_delta(tiny_vision_transformer, bundle)
-    plan = eqft.prepare_finetune(
-        model,
-        trainable=eqft.TrainableSpec(
-            mode="peft",
-            method_name="repadapter",
-            train_head=False,
-        ),
-    )
-
-    assert jnp.allclose(tiny_vision_transformer(x), model(x), atol=1e-6)
-    assert plan.trainable.blocks[0].attn.proj.down.weight is not None
-    assert plan.trainable.blocks[0].attn.proj.base.weight is None
-    assert jnp.allclose(trained(x), merged(x), atol=1e-6)
-    assert jnp.allclose(trained(x), loaded(x), atol=1e-6)
-
-
 def test_randlora_dense_rank_and_serialized_random_bases(tiny_vision_transformer):
     x = jnp.ones((2, 3))
     model = eqft.apply_randlora(
@@ -528,13 +549,79 @@ def test_profile_registry_declares_required_methods_and_artifacts():
 
     assert "lora_fa.zhang2026.corrected_v3" in ids
     assert "eva.initializer.reference" in ids
-    assert "loftq.initializer.reference" in ids
     assert "fourierft.gao2024.reference" in ids
     assert "boft.liu2024.butterfly_cayley" in ids
-    assert "convpass.vision.reference" in ids
-    assert "repadapter.luo2023.structural" in ids
     assert "randlora.albert2025.reference" in ids
+    assert "lora.equimo_default" in ids
+    assert "lora.hu2021.qv" in ids
+    assert "rslora.kalajdzievski2023" in ids
+    assert "dora.liu2024.paper_equation" in ids
+    assert "dora.nvlabs_reference" in ids
+    assert "dora.factored_2026.eager" in ids
+    assert "pissa.meng2024.exact_svd" in ids
+    assert "vera.kopiczko2024.shape_compatible" in ids
+    assert "adapter.houlsby2019.bottleneck" in ids
+    assert "adapterfusion.pfeiffer2021.attention" in ids
+    assert "adaptformer.chen2022.paper" in ids
+    assert "vpt.jia2022.deep" in ids
+    assert "vpt.jia2022.shallow" in ids
+    assert "soft_prompt.lester2021.input" in ids
+    assert "ptuning_v2.liu2022.deep_prompts" in ids
+    assert "prefix_tuning.li2021.attention_kv" in ids
+    assert "ia3.liu2022.activation_scaling" in ids
+    assert "ssf.lian2022.vit" in ids
 
+    houlsby = eqft.adapter_houlsby2019_profile()
+    single_site_adapter = eqft.adapter_houlsby2019_profile(
+        eqft.AdapterConfig(placement="after_mlp")
+    )
+    adapterfusion = eqft.adapterfusion_pfeiffer2021_profile()
+    unfrozen_fusion = eqft.adapterfusion_pfeiffer2021_profile(
+        eqft.AdapterFusionConfig(freeze_task_adapters=False)
+    )
+    adaptformer = eqft.adaptformer_chen2022_profile()
+    equimo_adaptformer = eqft.adaptformer_chen2022_profile(
+        eqft.AdaptFormerConfig.safe_default()
+    )
+    vpt_deep = eqft.vpt_deep_jia2022_profile()
+    vpt_wrong_insert = eqft.vpt_deep_jia2022_profile(
+        eqft.VPTDeepConfig(prepend_to="before_all")
+    )
+    vpt_shallow = eqft.vpt_shallow_jia2022_profile()
+    soft_prompt = eqft.soft_prompt_lester2021_profile()
+    deep_soft_prompt = eqft.soft_prompt_lester2021_profile(
+        eqft.SoftPromptConfig(depth="deep")
+    )
+    ptuning_v2 = eqft.ptuning_v2_liu2022_profile()
+    ptuning_shared = eqft.ptuning_v2_liu2022_profile(
+        eqft.PTuningV2Config(share_across_layers=True)
+    )
+    prefix_tuning = eqft.prefix_tuning_li2021_profile()
+    prefix_no_projection = eqft.prefix_tuning_li2021_profile(
+        eqft.PrefixConfig(prefix_projection=False)
+    )
+    ia3 = eqft.ia3_liu2022_profile()
+    ia3_missing_value = eqft.ia3_liu2022_profile(
+        eqft.IA3Config(target=eqft.TargetSpec(tags_any=("attention.k", "mlp.hidden")))
+    )
+    ssf = eqft.ssf_lian2022_vit_profile()
+    broad_ssf = eqft.ssf_lian2022_vit_profile(eqft.ScaleShiftConfig())
+    lora_default = eqft.lora_equimo_default_profile()
+    lora_qv = eqft.lora_hu2021_qv_profile()
+    rslora = eqft.rslora_kalajdzievski2023_profile()
+    ordinary_scaled_rslora = eqft.rslora_kalajdzievski2023_profile(
+        eqft.RsLoRAConfig(scaling="alpha_over_r")
+    )
+    dora_paper = eqft.dora_liu2024_profile()
+    dora_reference = eqft.dora_nvlabs_reference_profile()
+    full_gradient_reference = eqft.dora_nvlabs_reference_profile(
+        eqft.DoRAConfig(norm_gradient="full")
+    )
+    factored_dora = eqft.dora_liu2024_profile(eqft.DoRAConfig(norm_impl="factored"))
+    scaling_factored = eqft.dora_factored_2026_profile()
+    pissa = eqft.pissa_meng2024_profile()
+    vera = eqft.vera_kopiczko2024_profile()
+    unshared_vera = eqft.vera_kopiczko2024_profile(eqft.VeRAConfig(shared=False))
     lora_fa = eqft.lora_fa_zhang2026_profile()
     historical = eqft.lora_fa_zhang2026_profile(
         eqft.LoRAFAConfig(gradient_mode="frozen_A", custom_vjp=False)
@@ -548,26 +635,124 @@ def test_profile_registry_declares_required_methods_and_artifacts():
             ),
         )
     )
-    loftq = eqft.loftq_initializer_profile(
-        eqft.LoftQConfig(
-            rank=2,
-            quantizer=eqft.QuantizerSpec(id="nf4", bits=4, format="nf4"),
-        )
+    fourierft = eqft.fourierft_gao2024_profile(
+        eqft.FourierFTConfig(num_coefficients=2, frequency_selection="random", seed=7)
     )
-    convpass = eqft.convpass_profile(eqft.ConvPassConfig(patch_grid=None))
-    repadapter = eqft.repadapter_profile()
+    oft = eqft.oft_qiu2023_profile()
+    non_oft = eqft.oft_qiu2023_profile(
+        eqft.OrthogonalAdapterConfig(parameterization="butterfly_cayley", block_size=2)
+    )
+    boft = eqft.boft_liu2024_profile(
+        eqft.OrthogonalAdapterConfig(parameterization="butterfly_cayley", block_size=2)
+    )
     randlora = eqft.randlora_profile(eqft.RandLoRAConfig(seed=None))
 
+    assert lora_default.fidelity == "safe_default"
+    assert "Q/V-only" in lora_default.known_deviations[0]
+    assert lora_qv.fidelity == "reference_implementation"
+    assert lora_qv.target_spec["tags_any"] == ("attention.q", "attention.v")
+    assert lora_qv.target_spec["target_kind"] == "projection_segment"
+    assert rslora.fidelity == "reference_implementation"
+    assert rslora.config["scaling"] == "alpha_over_sqrt_r"
+    assert ordinary_scaled_rslora.fidelity == "experimental"
+    assert "alpha_over_sqrt_r" in ordinary_scaled_rslora.known_deviations[0]
+    assert dora_paper.fidelity == "paper_exact"
+    assert dora_paper.config["norm_gradient"] == "full"
+    assert dora_reference.fidelity == "reference_implementation"
+    assert dora_reference.config["norm_gradient"] == "detached"
+    assert dora_reference.config["norm_impl"] == "dense"
+    assert full_gradient_reference.fidelity == "experimental"
+    assert "stop-gradient" in full_gradient_reference.known_deviations[0]
+    assert factored_dora.fidelity == "paper_exact"
+    assert factored_dora.config["norm_impl"] == "factored"
+    assert scaling_factored.fidelity == "experimental"
+    assert scaling_factored.config["norm_impl"] == "factored"
+    assert scaling_factored.config["norm_gradient"] == "detached"
+    assert "Triton fused runtime" in scaling_factored.known_deviations[-1]
+    assert pissa.fidelity == "reference_implementation"
+    assert pissa.required_artifacts == ("principal_svd_or_product",)
+    assert vera.fidelity == "safe_default"
+    assert "shape-compatible" in vera.known_deviations[0]
+    assert unshared_vera.fidelity == "experimental"
+    assert "shared=False" in unshared_vera.known_deviations[1]
     assert lora_fa.fidelity == "reference_implementation"
     assert historical.fidelity == "experimental"
     assert historical.known_deviations
+    assert eva.reference_ids == ("paischer2024_eva", "ml_jku_eva")
     assert eva.required_artifacts == ("activation_svd",)
-    assert loftq.required_artifacts == ("quantized_base", "quantization_residual")
-    assert convpass.required_artifacts == ("patch_grid_metadata",)
-    assert repadapter.fidelity == "reference_implementation"
+    assert fourierft.fidelity == "reference_implementation"
+    assert fourierft.reference_ids == (
+        "gao2024_fourierft",
+        "chaos96_fourierft",
+        "hf_peft_fourierft",
+    )
+    assert oft.fidelity == "reference_implementation"
+    assert oft.reference_ids == ("qiu2023_oft", "zqiu24_oft", "hf_peft_oft")
+    assert non_oft.fidelity == "experimental"
+    assert "parameterization='cayley'" in non_oft.known_deviations[0]
+    assert boft.fidelity == "reference_implementation"
+    assert boft.reference_ids == ("liu2024_boft", "wy1iu_butterfly_oft", "hf_peft_boft")
     assert randlora.fidelity == "experimental"
+    assert randlora.reference_ids == ("albert2025_randlora", "paulalbert31_randlora")
     assert "explicit seed" in randlora.known_deviations[0]
     assert lora_fa.target_spec["tags_any"] == ("attention.qkv", "attention.proj")
+    assert houlsby.fidelity == "safe_default"
+    assert houlsby.config["placement"] == "both"
+    assert "truncated-normal" in houlsby.known_deviations[0]
+    assert single_site_adapter.fidelity == "experimental"
+    assert "both attention and feed-forward" in single_site_adapter.known_deviations[1]
+    assert adapterfusion.fidelity == "reference_implementation"
+    assert adapterfusion.required_artifacts == ("trained_adapter_bank",)
+    assert adapterfusion.reference_ids == (
+        "pfeiffer2021_adapterfusion",
+        "adapterhub_adapters",
+    )
+    assert unfrozen_fusion.fidelity == "experimental"
+    assert "second stage" in unfrozen_fusion.known_deviations[0]
+    assert adaptformer.fidelity == "paper_exact"
+    assert adaptformer.reference_ids == (
+        "chen2022_adaptformer",
+        "shoufachen_adaptformer",
+    )
+    assert adaptformer.config["activation"] == "relu"
+    assert adaptformer.config["scale_init"] == 0.1
+    assert adaptformer.config["scale_trainable"] is False
+    assert equimo_adaptformer.fidelity == "experimental"
+    assert "ReLU" in equimo_adaptformer.known_deviations[0]
+    assert vpt_deep.fidelity == "reference_implementation"
+    assert vpt_deep.config["depth"] == "deep"
+    assert vpt_deep.config["prepend_to"] == "after_cls"
+    assert vpt_wrong_insert.fidelity == "experimental"
+    assert "after the class token" in vpt_wrong_insert.known_deviations[0]
+    assert vpt_shallow.fidelity == "reference_implementation"
+    assert vpt_shallow.config["depth"] == "shallow"
+    assert soft_prompt.fidelity == "safe_default"
+    assert soft_prompt.config["prepend_to"] == "input"
+    assert deep_soft_prompt.fidelity == "experimental"
+    assert "model input" in deep_soft_prompt.known_deviations[0]
+    assert ptuning_v2.fidelity == "safe_default"
+    assert ptuning_v2.config["depth"] == "all"
+    assert ptuning_v2.config["reparameterizer"] == "none"
+    assert ptuning_shared.fidelity == "experimental"
+    assert "layer-specific" in ptuning_shared.known_deviations[0]
+    assert prefix_tuning.fidelity == "reference_implementation"
+    assert prefix_tuning.config["target"] == ("attention.k", "attention.v")
+    assert prefix_no_projection.fidelity == "experimental"
+    assert "projection" in prefix_no_projection.known_deviations[0]
+    assert ia3.fidelity == "reference_implementation"
+    assert ia3.config["target"]["tags_any"] == (
+        "attention.k",
+        "attention.v",
+        "mlp.hidden",
+    )
+    assert ia3_missing_value.fidelity == "experimental"
+    assert "key/value" in ia3_missing_value.known_deviations[0]
+    assert ssf.fidelity == "reference_implementation"
+    assert ssf.config["init"] == "normal"
+    assert ssf.config["init_std"] == 0.02
+    assert "attention.qkv" in ssf.target_spec["tags_any"]
+    assert broad_ssf.fidelity == "experimental"
+    assert "broad tags" in broad_ssf.known_deviations[0]
 
 
 def test_profiles_do_not_claim_exactness_for_unpinned_random_choices():
@@ -578,7 +763,7 @@ def test_profiles_do_not_claim_exactness_for_unpinned_random_choices():
         eqft.OrthogonalAdapterConfig(parameterization="cayley")
     )
 
-    assert profile.fidelity == "reference_implementation"
+    assert profile.fidelity == "experimental"
     assert "explicit seed" in profile.known_deviations[0]
     assert boft.fidelity == "experimental"
     assert boft.known_deviations

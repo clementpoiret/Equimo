@@ -10,7 +10,6 @@ from .recipes import (
     linear_probe_vit,
     lora_vit,
     partial_ft_vit_llrd,
-    surgical_ft_vit,
     vpt_vit,
 )
 
@@ -29,6 +28,5 @@ __all__ = (
     "prompts",
     "recipes",
     "selectors",
-    "surgical_ft_vit",
     "vpt_vit",
 )

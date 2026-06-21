@@ -221,8 +221,6 @@ def infer_role(tags: Iterable[str]) -> str:
         ("adalora.singular", "adalora.singular"),
         ("fourierft", "fourierft"),
         ("orthogonal", "orthogonal"),
-        ("convpass", "convpass"),
-        ("repadapter", "repadapter"),
         ("randlora.scale", "randlora.scale"),
         ("randlora", "randlora"),
         ("lora", "lora"),
@@ -334,18 +332,6 @@ def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
         tags.add("peft.metadata")
     if "skew" in parts:
         tags.update(("peft", "orthogonal"))
-    if "convpass" in parts:
-        tags.update(("peft", "convpass", "adapter"))
-    if "spatial_kernel" in parts:
-        tags.update(("peft", "convpass"))
-    is_repadapter_branch = (
-        {"down", "up", "residual_scale"}.intersection(parts)
-        and {"attn", "attention", "mlp", "ffn", "feed_forward"}.intersection(parts)
-        and "adapters" not in parts
-        and "convpass" not in parts
-    )
-    if is_repadapter_branch:
-        tags.update(("peft", "repadapter", "adapter"))
     if "basis_scales" in parts:
         tags.update(("peft", "randlora", "randlora.scale"))
     if "random_A" in parts or "random_B" in parts:
@@ -372,8 +358,6 @@ def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
         tags.add("ia3")
     if "vera_input_scale" in parts or "vera_output_scale" in parts:
         tags.add("vera")
-    if "side" in parts or "ladder" in parts:
-        tags.add("side_tuning")
     if "scale_shift" in parts:
         tags.add("scale_shift")
 

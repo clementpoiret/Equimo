@@ -168,6 +168,34 @@ def test_lora_fused_qkv_shape(tiny_vision_transformer):
     )
 
 
+def test_lora_fused_qv_projection_segments_mask_key_rows(tiny_vision_transformer):
+    lora = eqft.apply_lora(
+        tiny_vision_transformer,
+        eqft.LoRAConfig(
+            rank=2,
+            alpha=4.0,
+            target=eqft.TargetSpec(
+                tags_any=("attention.q", "attention.v"),
+                target_kind="projection_segment",
+            ),
+        ),
+        key=jr.PRNGKey(0),
+    )
+    module = eqx.tree_at(
+        lambda m: m.lora_B,
+        lora.blocks[0].attn.qkv,
+        jnp.ones_like(lora.blocks[0].attn.qkv.lora_B),
+    )
+    delta = module.delta_weight()
+    width = delta.shape[0] // 3
+
+    assert isinstance(lora.blocks[0].attn.qkv, eqft.LoRAMergedLinear)
+    assert tuple(segment.name for segment in module.projection_segments) == ("q", "v")
+    assert jnp.any(jnp.abs(delta[:width]) > 0.0)
+    assert jnp.allclose(delta[width : 2 * width], 0.0)
+    assert jnp.any(jnp.abs(delta[2 * width :]) > 0.0)
+
+
 def test_lora_accepts_external_linear_like_targets():
     model = TinyExternalLinearModel()
     lora = eqft.apply_lora(

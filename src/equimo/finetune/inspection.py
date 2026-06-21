@@ -127,7 +127,7 @@ def _is_adapter_leaf(info: ParamInfo) -> bool:
 
 def _is_mergeable_plan(infos: list[ParamInfo]) -> bool:
     mergeable_tags = {"lora", "dora", "ia3", "vera"}
-    nonmergeable_tags = {"adapter", "prompt", "prefix", "side_tuning"}
+    nonmergeable_tags = {"adapter", "prompt", "prefix"}
     has_mergeable_leaf = False
     for info in infos:
         if not info.tags.isdisjoint(nonmergeable_tags):

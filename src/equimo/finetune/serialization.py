@@ -21,14 +21,24 @@ import lz4.frame
 import numpy as np
 
 from ._typing import PyTree
-from .config import FineTuneBundle, FineTuneBundleError, ModelLineage, TargetSpec
-from .heads import MLPHead
+from .config import (
+    FineTuneBundle,
+    FineTuneBundleError,
+    ModelLineage,
+    ProjectionSegment,
+    TargetSpec,
+)
 from .paths import key_path_to_path, path_to_str, str_to_path
 from .peft.adapters import extract_adapter_delta, load_adapter_delta, strip_adapters
 from .peft.base import get_path
 from .peft.dora import DoRALinear, DoRAMergedLinear
 from .peft.ia3 import IA3Linear
-from .peft.lora import extract_lora_delta, iter_lora_modules, load_lora_delta, strip_lora
+from .peft.lora import (
+    extract_lora_delta,
+    iter_lora_modules,
+    load_lora_delta,
+    strip_lora,
+)
 from .peft.lora import architecture_hash, merge_lora
 from .peft.prefix import (
     PrefixConfig,
@@ -45,13 +55,6 @@ from .peft.prompts import (
     VPTShallowConfig,
 )
 from .peft.scale_shift import ScaleShift, ScaleShiftWrapper
-from .peft.side_tuning import (
-    LSTConfig,
-    LadderConnection,
-    SideNetwork,
-    SideTunedModel,
-    strip_side_tuning,
-)
 from .peft.vera import VeRALinear, strip_vera
 
 _FORMAT = "equimo.finetune.bundle"
@@ -105,13 +108,11 @@ def save_delta(
         bundle = _extract_ia3_delta(model)
     elif method == "vera":
         bundle = _extract_vera_delta(model)
-    elif method == "side_tuning":
-        bundle = _extract_side_tuning_delta(model)
     else:
         raise ValueError(
             "Unsupported delta method "
             f"{method!r}; currently 'lora', 'dora', 'adapter', 'prompt', "
-            "'prefix', 'scale_shift', 'ia3', 'vera', or 'side_tuning'."
+            "'prefix', 'scale_shift', 'ia3', or 'vera'."
         )
 
     bundle = _enrich_bundle(
@@ -161,8 +162,6 @@ def load_delta(
         return _load_ia3_delta(base_model, bundle)
     if bundle.method == "vera":
         return _load_vera_delta(base_model, bundle)
-    if bundle.method == "side_tuning":
-        return _load_side_tuning_delta(base_model, bundle)
     raise FineTuneBundleError(f"Unsupported delta method {bundle.method!r}.")
 
 
@@ -259,7 +258,9 @@ def _read_bundle(path: str | Path) -> FineTuneBundle:
     return bundle
 
 
-def _bundle_to_manifest(bundle: FineTuneBundle) -> tuple[dict[str, Any], dict[str, Any]]:
+def _bundle_to_manifest(
+    bundle: FineTuneBundle,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     arrays: dict[str, Any] = {}
     payload = {
         "method": bundle.method,
@@ -392,7 +393,9 @@ def _lineage_to_dict(lineage) -> dict[str, Any]:
         "model_revision": lineage.model_revision,
         "parent_bundle_ids": lineage.parent_bundle_ids,
         "identity_stability": lineage.identity_stability,
-        "parent_lineages": tuple(_lineage_to_dict(item) for item in lineage.parent_lineages),
+        "parent_lineages": tuple(
+            _lineage_to_dict(item) for item in lineage.parent_lineages
+        ),
         "notes": dict(lineage.notes),
     }
 
@@ -518,7 +521,9 @@ def _extract_scale_shift_delta(model: PyTree) -> FineTuneBundle:
                 "mergeable": wrapper.mergeable,
             }
         )
-        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, wrapper.base)
+        stripped = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), stripped, wrapper.base
+        )
     return FineTuneBundle(
         method="scale_shift",
         schema_version=1,
@@ -569,9 +574,20 @@ def _extract_ia3_delta(model: PyTree) -> FineTuneBundle:
                 "ia3": wrapper.ia3,
                 "mergeable": wrapper.mergeable,
                 "weight_shape": tuple(wrapper.base.weight.shape),
+                "projection_segments": tuple(
+                    {
+                        "name": segment.name,
+                        "axis": segment.axis,
+                        "start": segment.start,
+                        "stop": segment.stop,
+                    }
+                    for segment in wrapper.projection_segments
+                ),
             }
         )
-        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, wrapper.base)
+        stripped = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), stripped, wrapper.base
+        )
     return FineTuneBundle(
         method="ia3",
         schema_version=1,
@@ -596,9 +612,17 @@ def _load_ia3_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
                 f"IA3 delta expects path {entry['path']} with shape "
                 f"{entry['weight_shape']}, got {tuple(base.weight.shape)}."
             )
+        projection_segments = _ia3_projection_segments(entry)
+        expected_dim = _ia3_dim(base, projection_segments)
+        if tuple(entry["ia3"].shape) != (expected_dim,):
+            raise FineTuneBundleError(
+                f"IA3 delta expects path {entry['path']} with scale shape "
+                f"({expected_dim},), got {tuple(entry['ia3'].shape)}."
+            )
         wrapper = IA3Linear(
             base,
             ia3=entry["ia3"],
+            projection_segments=projection_segments,
             mergeable=bool(entry.get("mergeable", True)),
         )
         updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, wrapper)
@@ -616,6 +640,12 @@ def _extract_vera_delta(model: PyTree) -> FineTuneBundle:
                 "frozen_A_init": wrapper.frozen_A_init,
                 "frozen_B_init": wrapper.frozen_B_init,
                 "mergeable": wrapper.mergeable,
+                "basis_generation": wrapper.basis_generation,
+                "basis_key_data": wrapper.basis_key_data,
+                "basis_pool_key": wrapper.basis_pool_key,
+                "share_scope": wrapper.share_scope,
+                "input_scale_axis": "rank",
+                "output_scale_axis": "logical_output",
                 "base_weight_shape": tuple(wrapper.base.weight.shape),
                 "base_bias_shape": None
                 if wrapper.base.bias is None
@@ -669,86 +699,16 @@ def _load_vera_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
             vera_B=entry["vera_B"],
             vera_input_scale=entry["vera_input_scale"],
             vera_output_scale=entry["vera_output_scale"],
+            basis_generation=entry.get("basis_generation", "unknown_legacy"),
+            basis_key_data=tuple(entry.get("basis_key_data", ())),
+            basis_pool_key=tuple(entry.get("basis_pool_key", ())),
+            share_scope=entry.get(
+                "share_scope",
+                "shape_compatible" if bool(entry.get("shared", True)) else "per_module",
+            ),
         )
         updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, wrapper)
     return updated
-
-
-def _extract_side_tuning_delta(model: PyTree) -> FineTuneBundle:
-    entries = []
-    for path, wrapper in _iter_wrappers(model, SideTunedModel):
-        entries.append(
-            {
-                "path": path_to_str(path),
-                "side": _side_network_state(wrapper.side),
-                "gate": wrapper.ladder.gate,
-                "config": _config_to_dict(wrapper.config),
-            }
-        )
-    return FineTuneBundle(
-        method="side_tuning",
-        schema_version=1,
-        architecture_hash=architecture_hash(strip_side_tuning(model)),
-        adapter_config={"entries": entries},
-    )
-
-
-def _load_side_tuning_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
-    _check_hash(base_model, bundle, "Side-tuning")
-    updated = base_model
-    for entry in bundle.adapter_config.get("entries", ()):
-        path = str_to_path(entry["path"])
-        target = (
-            updated
-            if path == ()
-            else _bundle_get_path(updated, path, method_name="Side-tuning")
-        )
-        wrapper = SideTunedModel(
-            target,
-            _side_network_from_state(entry["side"]),
-            LadderConnection(gate_init=0.0),
-            LSTConfig(**entry["config"]),
-        )
-        wrapper = eqx.tree_at(lambda m: m.ladder.gate, wrapper, entry["gate"])
-        if path == ():
-            updated = wrapper
-        else:
-            updated = eqx.tree_at(
-                lambda tree, p=path: get_path(tree, p),
-                updated,
-                wrapper,
-            )
-    return updated
-
-
-def _side_network_state(side: SideNetwork) -> dict[str, Any]:
-    return {
-        "head": {
-            "activation": side.head.activation,
-            "dropout": side.head.dropout,
-            "layers": [_linear_state(layer) for layer in side.head.layers],
-        }
-    }
-
-
-def _side_network_from_state(state: dict[str, Any]) -> SideNetwork:
-    head_state = state["head"]
-    layers = tuple(_linear_from_state(layer) for layer in head_state["layers"])
-    head = MLPHead(
-        int(layers[0].in_features),
-        int(layers[-1].out_features),
-        key=jr.PRNGKey(0),
-        num_layers=len(layers),
-        activation=head_state["activation"],
-        dropout=float(head_state["dropout"]),
-    )
-    head = eqx.tree_at(lambda m: m.layers, head, layers)
-    return SideNetwork(
-        int(layers[0].in_features),
-        int(layers[-1].out_features),
-        key=jr.PRNGKey(0),
-        head=head,
-    )
 
 
 def _linear_state(linear: eqx.nn.Linear) -> dict[str, Any]:
@@ -797,7 +757,9 @@ def _extract_dora_delta(model: PyTree) -> FineTuneBundle:
                 "weight_shape": tuple(wrapper.base.weight.shape),
             }
         )
-        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, wrapper.base)
+        stripped = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), stripped, wrapper.base
+        )
     return FineTuneBundle(
         method="dora",
         schema_version=1,
@@ -822,7 +784,9 @@ def _load_dora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
                 f"DoRA delta expects path {entry['path']} with shape "
                 f"{entry['weight_shape']}, got {tuple(base.weight.shape)}."
             )
-        wrapper_type = DoRAMergedLinear if entry["class"] == "DoRAMergedLinear" else DoRALinear
+        wrapper_type = (
+            DoRAMergedLinear if entry["class"] == "DoRAMergedLinear" else DoRALinear
+        )
         wrapper = wrapper_type(
             base,
             rank=int(entry["rank"]),
@@ -883,6 +847,27 @@ def _scale_shift_dim(module: eqx.Module) -> int:
     )
 
 
+def _ia3_projection_segments(entry: dict[str, Any]) -> tuple[ProjectionSegment, ...]:
+    return tuple(
+        ProjectionSegment(
+            name=item["name"],
+            axis=int(item["axis"]),
+            start=int(item["start"]),
+            stop=int(item["stop"]),
+        )
+        for item in entry.get("projection_segments", ())
+    )
+
+
+def _ia3_dim(
+    base: eqx.nn.Linear,
+    projection_segments: tuple[ProjectionSegment, ...],
+) -> int:
+    if not projection_segments:
+        return int(base.out_features)
+    return sum(segment.stop - segment.start for segment in projection_segments)
+
+
 def _iter_wrappers(model: PyTree, wrapper_type: type):
     return tuple(
         (key_path_to_path(key_path), leaf)
@@ -913,7 +898,9 @@ def _resolve_save_delta_args(
     if args:
         if _is_pathlike(args[0]):
             if resolved_path is not None:
-                raise TypeError("save_delta path was provided both positionally and by keyword.")
+                raise TypeError(
+                    "save_delta path was provided both positionally and by keyword."
+                )
             resolved_path = args[0]
             if len(args) >= 2:
                 if resolved_model is not None:
@@ -935,7 +922,9 @@ def _resolve_save_delta_args(
                 resolved_spec = args[3]
         else:
             if resolved_model is not None:
-                raise TypeError("save_delta model was provided both positionally and by keyword.")
+                raise TypeError(
+                    "save_delta model was provided both positionally and by keyword."
+                )
             resolved_model = args[0]
             if len(args) >= 2:
                 if resolved_path is not None:
@@ -987,7 +976,9 @@ def _enrich_bundle(
     recalibration_required: bool | None = None,
 ) -> FineTuneBundle:
     metadata_model = (
-        base_model if base_model is not None else _metadata_base_model(model, bundle.method)
+        base_model
+        if base_model is not None
+        else _metadata_base_model(model, bundle.method)
     )
     stats = _bundle_stats(model, metadata_model, bundle)
     if spec is not None:
@@ -995,16 +986,16 @@ def _enrich_bundle(
     if user_metadata:
         stats["user_metadata"] = user_metadata
     selector_spec = (
-        bundle.selector_spec
-        or _selector_spec_from_spec(spec)
-        or _selector_spec(bundle)
+        bundle.selector_spec or _selector_spec_from_spec(spec) or _selector_spec(bundle)
     )
     base_checkpoint_id = bundle.base_checkpoint_id
     if base_checkpoint_id is None and (
         base_model is not None or _can_infer_exact_base_checkpoint(model, bundle.method)
     ):
         base_checkpoint_id = _checkpoint_hash(metadata_model)
-    base_value_hash = base_checkpoint_id if base_checkpoint_id else bundle.lineage.base_value_hash
+    base_value_hash = (
+        base_checkpoint_id if base_checkpoint_id else bundle.lineage.base_value_hash
+    )
     logical_id_hash = _logical_id_table_hash(bundle)
     quantization_fingerprint = _bundle_quantization_fingerprint(bundle)
     calibration_refs = _bundle_calibration_references(bundle)
@@ -1020,8 +1011,12 @@ def _enrich_bundle(
             )
         )
     )
-    stats.setdefault("method_profile_id", bundle.metadata.get("method_profile_id", bundle.method))
-    stats.setdefault("primary_references", bundle.metadata.get("primary_references", ()))
+    stats.setdefault(
+        "method_profile_id", bundle.metadata.get("method_profile_id", bundle.method)
+    )
+    stats.setdefault(
+        "primary_references", bundle.metadata.get("primary_references", ())
+    )
     stats.setdefault("calibration_artifact_references", calibration_refs)
     stats.setdefault("model_state_present", model_state_snapshot is not None)
     stats.setdefault("model_state_hash", model_state_hash)
@@ -1056,7 +1051,9 @@ def _enrich_bundle(
     )
 
 
-def _bundle_stats(model: PyTree, base_model: PyTree, bundle: FineTuneBundle) -> dict[str, Any]:
+def _bundle_stats(
+    model: PyTree, base_model: PyTree, bundle: FineTuneBundle
+) -> dict[str, Any]:
     total_params = _param_count(base_model)
     trainable_params = _delta_param_count(bundle)
     return {
@@ -1081,10 +1078,7 @@ def _logical_id_table_hash(bundle: FineTuneBundle) -> str:
         for entry in bundle.adapter_config.get("entries", ())
     )
     if not entries:
-        entries = tuple(
-            {"path": path}
-            for path in _target_paths(bundle)
-        )
+        entries = tuple({"path": path} for path in _target_paths(bundle))
     return _hash_json(entries)
 
 
@@ -1105,7 +1099,9 @@ def _bundle_quantization_fingerprint(bundle: FineTuneBundle) -> str | None:
     return _hash_json(records)
 
 
-def _bundle_calibration_references(bundle: FineTuneBundle) -> tuple[dict[str, str], ...]:
+def _bundle_calibration_references(
+    bundle: FineTuneBundle,
+) -> tuple[dict[str, str], ...]:
     references = []
     for entry in bundle.adapter_config.get("entries", ()):
         metadata = _entry_metadata(entry)
@@ -1118,7 +1114,9 @@ def _bundle_calibration_references(bundle: FineTuneBundle) -> tuple[dict[str, st
                 "sample_count": metadata.get("calibration_sample_count", ""),
                 "data_fingerprint": metadata.get("calibration_data_fingerprint", ""),
                 "reduction": metadata.get("calibration_reduction", ""),
-                "base_checkpoint_hash": metadata.get("calibration_base_checkpoint_hash", ""),
+                "base_checkpoint_hash": metadata.get(
+                    "calibration_base_checkpoint_hash", ""
+                ),
             }
         )
     return tuple(references)
@@ -1191,7 +1189,9 @@ def _param_count(tree: PyTree) -> int:
 
 def _checkpoint_hash(tree: PyTree) -> str:
     digest = hashlib.sha256()
-    for key_path, leaf in jtu.tree_leaves_with_path(eqx.filter(tree, eqx.is_inexact_array)):
+    for key_path, leaf in jtu.tree_leaves_with_path(
+        eqx.filter(tree, eqx.is_inexact_array)
+    ):
         if not eqx.is_inexact_array(leaf):
             continue
         array = np.asarray(leaf)
@@ -1206,7 +1206,10 @@ def _check_base_checkpoint(base_model: PyTree, bundle: FineTuneBundle) -> None:
     expected = bundle.base_checkpoint_id or bundle.lineage.base_value_hash
     if not expected or not expected.startswith("sha256:"):
         return
-    if bundle.architecture_hash and architecture_hash(base_model) != bundle.architecture_hash:
+    if (
+        bundle.architecture_hash
+        and architecture_hash(base_model) != bundle.architecture_hash
+    ):
         return
     actual = _checkpoint_hash(base_model)
     if actual != expected:
@@ -1248,8 +1251,6 @@ def _metadata_base_model(model: PyTree, method: str) -> PyTree:
         return _strip_wrappers(model, IA3Linear)
     if method == "vera":
         return strip_vera(model)
-    if method == "side_tuning":
-        return strip_side_tuning(model)
     if method == "dora":
         return _strip_wrappers(model, DoRALinear)
     return model
@@ -1258,10 +1259,7 @@ def _metadata_base_model(model: PyTree, method: str) -> PyTree:
 def _can_infer_exact_base_checkpoint(model: PyTree, method: str) -> bool:
     if method != "lora":
         return True
-    return all(
-        module.base_weight_delta is None and dict(module.metadata).get("method") != "loftq"
-        for _, module in iter_lora_modules(model)
-    )
+    return all(module.base_weight_delta is None for _, module in iter_lora_modules(model))
 
 
 def _strip_wrappers(model: PyTree, wrapper_type: type) -> PyTree:
@@ -1341,9 +1339,7 @@ def _target_spec_to_dict(target: TargetSpec) -> dict[str, Any]:
 
 def _config_to_dict(config: Any) -> dict[str, Any]:
     return {
-        key: value
-        for key, value in vars(config).items()
-        if not key.startswith("_")
+        key: value for key, value in vars(config).items() if not key.startswith("_")
     }
 
 

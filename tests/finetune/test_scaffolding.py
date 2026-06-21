@@ -57,23 +57,21 @@ def test_required_public_api_exports():
         "PartialUnfreezeConfig",
         "ParallelAdapterConfig",
         "PrefixProjection",
-        "QuantizedBaseLoRACompatibility",
         "SAMMetadata",
         "SoftPromptConfig",
         "SupervisedAfterSSLConfig",
-        "HeuristicSurgicalPreset",
         "VPTDeepRecipe",
         "VPTShallowRecipe",
         "adapter_fusion_trainable_spec",
         "adapter_norm_loss",
         "apply_adapter_fusion",
-        "apply_side_tuning",
         "audio",
         "bitfit_trainable_spec",
         "configure_adapter_bank",
         "continued_ssl_adaptation",
+        "delta_attention_aux_loss_spec",
+        "delta_attention_loss",
         "ewc_loss",
-        "iter_side_tuned_models",
         "iter_ia3_modules",
         "iter_scale_shift_wrappers",
         "language",
@@ -92,8 +90,6 @@ def test_required_public_api_exports():
         "mixout_tree",
         "partial_unfreeze",
         "recipes",
-        "strip_side_tuning",
-        "surgical",
         "tabular",
         "task_adapter_bank",
         "task_vector_norm_loss",
@@ -138,11 +134,9 @@ def test_spec_config_fields_are_public():
     assert eqft.adapter_fusion_trainable_spec().target.tags_any == ("adapter_fusion",)
     assert eqft.BitFitConfig(include_norm_bias=False).train_bias
     assert eqft.MixoutConfig(anchor="pretrained").p == 0.1
-    assert eqft.QuantizedBaseLoRACompatibility().quantization_owned_by == "external"
     assert eqft.LinearProbeConfig().cache_features is False
     assert eqft.HeadPlusNormConfig().bn_stats_policy == "frozen"
     assert eqft.PartialUnfreezeConfig().fraction == 1 / 3
-    assert eqft.HeuristicSurgicalPreset().shift == "output"
     assert eqft.LoRAPlusLabelConfig().label_A == "lora_A"
     assert eqft.LoRARecipe.hard_task().rank == 16
     assert eqft.LoRARecipe.tiny_data().rank == 4
@@ -173,8 +167,11 @@ def test_spec_config_fields_are_public():
     assert eqft.PrefixConfig(prefix_dropout=0.1, train_head=False).prefix_dropout == 0.1
     assert eqft.IA3Config(axis="feature", mergeable=True).mergeable
     assert eqft.ScaleShiftConfig(axis="channel", mergeable=True).axis == "channel"
-    assert eqft.ScaleShiftConfig.convnet().target.tags_any == ("conv", "stage.block", "norm")
-    assert eqft.LSTConfig(gate_init=0.5, train_head=False).gate_init == 0.5
+    assert eqft.ScaleShiftConfig.convnet().target.tags_any == (
+        "conv",
+        "stage.block",
+        "norm",
+    )
     vera = eqft.VeRAConfig(
         seed_required=True,
         frozen_A_init="kaiming_uniform",

@@ -52,6 +52,19 @@ def test_l2_sp_respects_default_excluded_tags(tiny_vision_transformer):
     assert included > 0.0
 
 
+def test_l2_sp_beta_penalizes_new_head_weights():
+    model = {"backbone": jnp.array([2.0]), "head": jnp.array([3.0, 4.0])}
+    reference = {"backbone": jnp.array([1.0]), "head": jnp.array([0.0, 0.0])}
+
+    loss = eqft.l2_sp_loss(
+        model,
+        reference,
+        config=eqft.L2SPConfig(alpha=0.2, beta=0.4),
+    )
+
+    assert jnp.allclose(loss, jnp.asarray(5.1))
+
+
 def test_adapter_and_task_vector_norm_penalties(tiny_vision_transformer):
     lora = eqft.apply_lora(
         tiny_vision_transformer,
@@ -249,6 +262,43 @@ def test_feature_distillation_from_taps_aggregates_selected_layers():
     )
 
     assert loss == jnp.asarray(5.0)
+
+
+def test_delta_attention_loss_matches_reference_channel_formula():
+    student = {
+        "layer": jnp.asarray([[[[1.0, 2.0], [3.0, 4.0]], [[2.0, 2.0], [2.0, 2.0]]]])
+    }
+    teacher = {"layer": jnp.zeros((1, 2, 2, 2), dtype=jnp.float32)}
+    attention = {"layer": jnp.asarray([0.25, 0.75], dtype=jnp.float32)}
+
+    loss = eqft.delta_attention_loss(
+        student,
+        teacher,
+        attention,
+        config=eqft.DELTAAttentionConfig(layers=("layer",)),
+    )
+
+    assert jnp.allclose(loss, jnp.asarray(4.875))
+
+
+def test_delta_attention_loss_stops_teacher_gradient():
+    student = jnp.ones((1, 1, 2, 2), dtype=jnp.float32)
+    teacher = jnp.zeros((1, 1, 2, 2), dtype=jnp.float32)
+    attention = jnp.ones((1,), dtype=jnp.float32)
+
+    grad_teacher = jax.grad(
+        lambda teacher_features: eqft.delta_attention_loss(
+            student,
+            teacher_features,
+            attention,
+        )
+    )(teacher)
+
+    assert jnp.array_equal(grad_teacher, jnp.zeros_like(teacher))
+    assert (
+        eqft.delta_attention_aux_loss_spec().registry_key
+        == "equimo.delta_attention_loss"
+    )
 
 
 def test_select_feature_taps_errors_are_clear():

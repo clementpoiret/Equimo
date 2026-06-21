@@ -189,6 +189,28 @@ def test_adaptformer_parallel_mlp_identity(tiny_vision_transformer):
 
     assert isinstance(adapted.blocks[0], eqft.AdaptFormerBlock)
     assert jnp.allclose(tiny_vision_transformer(x), adapted(x), atol=1e-6)
+    plan = eqft.prepare_finetune(
+        adapted,
+        trainable=eqft.TrainableSpec(mode="peft", method_name="adaptformer"),
+    )
+    assert plan.trainable.blocks[0].adapter.scale is not None
+
+
+def test_adaptformer_paper_profile_freezes_fixed_scale(tiny_vision_transformer):
+    adapted = eqft.apply_adaptformer(
+        tiny_vision_transformer,
+        eqft.AdaptFormerConfig.paper_chen2022(),
+        key=jr.PRNGKey(0),
+    )
+    plan = eqft.prepare_finetune(
+        adapted,
+        trainable=eqft.TrainableSpec(mode="peft", method_name="adaptformer"),
+    )
+
+    assert adapted.blocks[0].adapter.adapter.activation == "relu"
+    assert adapted.blocks[0].adapter.scale_trainable is False
+    assert jnp.allclose(adapted.blocks[0].adapter.scale, jnp.asarray(0.1))
+    assert plan.trainable.blocks[0].adapter.scale is None
 
 
 def test_named_adapter_bank_switches_active_adapter(tiny_vision_transformer):
@@ -266,12 +288,45 @@ def test_adapter_fusion_attaches_attention_to_named_banks(tiny_vision_transforme
         eqft.AdapterFusionConfig(fusion_dropout=0.0),
         key=jr.PRNGKey(2),
     )
-    weights = fused.blocks[0].mlp.adapter_fusion.attention_weights(jnp.ones((4,)), 2)
+    adapter_outputs = (jnp.zeros((4,)), jnp.zeros((4,)))
+    weights = fused.blocks[0].mlp.adapter_fusion.attention_weights(
+        jnp.ones((4,)),
+        adapter_outputs,
+    )
 
     assert isinstance(fused.blocks[0].mlp.adapter_fusion, eqft.AdapterFusion)
     assert fused.blocks[0].mlp.active_adapter == ("dataset_a", "dataset_b")
+    assert fused.blocks[0].mlp.adapter_fusion.query.in_features == 4
+    assert fused.blocks[0].mlp.adapter_fusion.key.in_features == 4
+    assert fused.blocks[0].mlp.adapter_fusion.value.in_features == 4
     assert jnp.allclose(weights, jnp.array([0.5, 0.5]))
     assert fused(jnp.ones((2, 3))).shape == (2,)
+
+
+def test_adapter_fusion_attention_uses_adapter_keys():
+    fusion = eqft.AdapterFusion(2, 2, key=jr.PRNGKey(0))
+    fusion = eqx.tree_at(
+        lambda module: (
+            module.query.weight,
+            module.key.weight,
+            module.value.weight,
+        ),
+        fusion,
+        (
+            jnp.eye(2, dtype=jnp.float32),
+            jnp.eye(2, dtype=jnp.float32),
+            jnp.eye(2, dtype=jnp.float32),
+        ),
+    )
+    weights = fusion.attention_weights(
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        (
+            jnp.asarray([2.0, 0.0], dtype=jnp.float32),
+            jnp.asarray([-2.0, 0.0], dtype=jnp.float32),
+        ),
+    )
+
+    assert weights[0] > weights[1]
 
 
 def test_adapter_fusion_respects_configured_placement(tiny_vision_transformer):
@@ -317,7 +372,9 @@ def test_adapter_fusion_trainable_spec_freezes_task_adapters(tiny_vision_transfo
         trainable=eqft.adapter_fusion_trainable_spec(train_head=False),
     )
 
-    assert plan.trainable.blocks[0].mlp.adapter_fusion.scorer.weight is not None
+    assert plan.trainable.blocks[0].mlp.adapter_fusion.query.weight is not None
+    assert plan.trainable.blocks[0].mlp.adapter_fusion.key.weight is not None
+    assert plan.trainable.blocks[0].mlp.adapter_fusion.value.weight is not None
     assert plan.trainable.blocks[0].mlp.adapters[0].down.weight is None
     assert plan.trainable.head.weight is None
 
@@ -336,20 +393,20 @@ def test_adapter_fusion_delta_roundtrip(tmp_path, tiny_vision_transformer):
         key=jr.PRNGKey(1),
     )
     fused = eqft.apply_adapter_fusion(model, key=jr.PRNGKey(2))
-    scorer = eqx.tree_at(
-        lambda m: m.blocks[0].mlp.adapter_fusion.scorer.weight,
+    trained = eqx.tree_at(
+        lambda m: m.blocks[0].mlp.adapter_fusion.query.weight,
         fused,
-        jnp.ones_like(fused.blocks[0].mlp.adapter_fusion.scorer.weight) * 0.1,
+        jnp.ones_like(fused.blocks[0].mlp.adapter_fusion.query.weight) * 0.1,
     )
     path = tmp_path / "adapter_fusion.eqft"
 
-    eqft.save_delta(scorer, path, method="adapter")
+    eqft.save_delta(trained, path, method="adapter")
     loaded = eqft.load_delta(tiny_vision_transformer, path)
 
     assert isinstance(loaded.blocks[0].mlp.adapter_fusion, eqft.AdapterFusion)
     assert jnp.array_equal(
-        loaded.blocks[0].mlp.adapter_fusion.scorer.weight,
-        scorer.blocks[0].mlp.adapter_fusion.scorer.weight,
+        loaded.blocks[0].mlp.adapter_fusion.query.weight,
+        trained.blocks[0].mlp.adapter_fusion.query.weight,
     )
 
 

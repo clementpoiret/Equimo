@@ -126,18 +126,6 @@ class PartialUnfreezeConfig:
 
 
 @dataclass(frozen=True)
-class HeuristicSurgicalPreset:
-    """Equimo heuristic surgical fine-tuning preset."""
-
-    shift: str = "output"
-    span_fraction: float = 0.10
-    min_blocks: int = 1
-    train_head: bool = True
-    train_norm: bool = True
-    train_embeddings_for_input_shift: bool = True
-
-
-@dataclass(frozen=True)
 class LPFTRecipe:
     """Linear-probe then fine-tune recipe metadata."""
 
@@ -155,6 +143,11 @@ class LPFTRecipe:
     def stage2_plan(self, model: PyTree) -> FineTunePlan:
         """Prepare the fine-tuning stage without replacing the trained head."""
 
+        if not self.preserve_trained_head:
+            raise ValueError(
+                "LPFTRecipe.stage2_plan currently requires preserve_trained_head=True; "
+                "reset or replace the head explicitly before building the stage-2 plan."
+            )
         return prepare_finetune(
             model,
             trainable=self.stage2,
@@ -266,48 +259,6 @@ def partial_unfreeze(
         if config.train_embeddings and "embedding.patch" in tags:
             return True
         return config.train_positional_parameters and "embedding.position" in tags
-
-    return prepare_finetune(
-        model,
-        trainable=TrainableSpec(
-            mode="surgical",
-            target=TargetSpec(predicate=predicate),
-            train_head=config.train_head,
-            train_norm=config.train_norm,
-        ),
-        labels=LLRDConfig() if labels is None else labels,
-    )
-
-
-def surgical(
-    model: PyTree,
-    config: HeuristicSurgicalPreset | None = None,
-    *,
-    labels: LLRDConfig | None = None,
-) -> FineTunePlan:
-    """Prepare a surgical fine-tuning plan from ``HeuristicSurgicalPreset``."""
-
-    config = HeuristicSurgicalPreset() if config is None else config
-    depths = sorted({info.depth for info in iter_param_infos(model) if info.depth is not None})
-    selected_depths = frozenset(
-        _surgical_depths(
-            depths,
-            shift=config.shift,
-            fraction=config.span_fraction,
-            min_blocks=config.min_blocks,
-        )
-    )
-
-    def predicate(path: Path, leaf: Any) -> bool:
-        tags = canonical_tags_for_path(path, leaf)
-        depth = _path_depth(path)
-        if depth in selected_depths:
-            return True
-        return (
-            config.shift == "input"
-            and config.train_embeddings_for_input_shift
-            and "embedding.patch" in tags
-        )
 
     return prepare_finetune(
         model,
@@ -480,31 +431,6 @@ def _last_fraction_depths(
     return tuple(depths[-count:])
 
 
-def _surgical_depths(
-    depths: list[int],
-    *,
-    shift: str,
-    fraction: float,
-    min_blocks: int,
-) -> tuple[int, ...]:
-    if not depths:
-        return ()
-    count = _span_count(len(depths), fraction, min_blocks)
-    if shift == "input" or shift == "corruption":
-        return tuple(depths[:count])
-    if shift == "output" or shift == "label_space":
-        return tuple(depths[-count:])
-    if shift == "feature" or shift == "subpopulation":
-        center = len(depths) // 2
-        start = max(0, min(center - count // 2, len(depths) - count))
-        return tuple(depths[start : start + count])
-    raise ValueError(
-        "Unsupported surgical shift "
-        f"{shift!r}; expected input, feature, output, corruption, "
-        "subpopulation, or label_space."
-    )
-
-
 def _span_count(depth_count: int, fraction: float, min_blocks: int) -> int:
     if not 0 < fraction <= 1:
         raise ValueError("span fraction must satisfy 0 < fraction <= 1.")
@@ -523,7 +449,6 @@ __all__ = (
     "LinearProbeConfig",
     "LinearProbeRecipe",
     "PartialUnfreezeConfig",
-    "HeuristicSurgicalPreset",
     "adapter_transformer",
     "adapter_transformer_strong",
     "adaptformer_transformer",
@@ -535,7 +460,6 @@ __all__ = (
     "lpft",
     "partial_ft_last_k_blocks",
     "partial_unfreeze",
-    "surgical",
     "task_adapter_bank",
     "vpt_deep",
 )

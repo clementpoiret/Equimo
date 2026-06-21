@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import jax.random as jr
+import pytest
 
 import equimo.finetune as eqft
 from equimo.finetune.vision import recipes as vision_recipes
@@ -21,6 +22,13 @@ def test_lpft_stage_transition_preserves_head(tiny_vision_transformer):
     stage2 = recipe.stage2_plan(trained_like)
 
     assert_tree_allclose(stage2.combine().head, trained_like.head)
+
+
+def test_lpft_stage2_rejects_unsupported_head_reset(tiny_vision_transformer):
+    recipe = eqft.lpft(preserve_trained_head=False)
+
+    with pytest.raises(ValueError, match="preserve_trained_head=True"):
+        recipe.stage2_plan(tiny_vision_transformer)
 
 
 def test_full_ft_llrd_recipe_freezes_patch_embed(tiny_vision_transformer):
@@ -86,24 +94,6 @@ def test_partial_unfreeze_config_controls_span_and_embeddings(tiny_vision_transf
     assert plan.trainable.blocks[1].attn.qkv.weight is not None
     assert plan.trainable.patch_embed.proj.weight is not None
     assert plan.trainable.pos_embed is not None
-
-
-def test_surgical_config_controls_shift_span_and_embedding_policy(tiny_vision_transformer):
-    plan = eqft.surgical(
-        tiny_vision_transformer,
-        eqft.HeuristicSurgicalPreset(
-            shift="input",
-            span_fraction=0.5,
-            train_head=False,
-            train_norm=False,
-            train_embeddings_for_input_shift=False,
-        ),
-    )
-
-    assert plan.trainable.patch_embed.proj.weight is None
-    assert plan.trainable.blocks[0].attn.qkv.weight is not None
-    assert plan.trainable.blocks[1].attn.qkv.weight is None
-    assert plan.trainable.head.weight is None
 
 
 def test_vision_partial_recipe_uses_last_blocks(tiny_vision_transformer):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -133,6 +134,40 @@ def test_dora_factored_norm_matches_dense_norm(tiny_vision_transformer):
         factored_module.blocks[0].attn.proj.weight(),
         atol=1e-6,
     )
+
+
+def test_dora_detached_norm_changes_low_rank_gradient(tiny_vision_transformer):
+    def make_module(norm_gradient: str):
+        model = eqft.apply_dora(
+            tiny_vision_transformer,
+            eqft.DoRAConfig(
+                rank=2,
+                alpha=4.0,
+                norm_gradient=norm_gradient,
+                target=eqft.TargetSpec(tags_any=("attention.proj",)),
+            ),
+            key=jr.PRNGKey(0),
+        )
+        module = model.blocks[0].attn.proj
+        return eqx.tree_at(
+            lambda m: m.lora_B,
+            module,
+            jnp.ones_like(module.lora_B) * 0.125,
+        )
+
+    def loss_fn(module):
+        return jnp.sum(module.weight())
+
+    full = make_module("full")
+    detached = make_module("detached")
+
+    assert jnp.allclose(full.weight(), detached.weight(), atol=1e-6)
+    full_grad = jax.grad(loss_fn)(full).lora_B
+    detached_grad = jax.grad(loss_fn)(detached).lora_B
+
+    assert jnp.all(jnp.isfinite(full_grad))
+    assert jnp.all(jnp.isfinite(detached_grad))
+    assert not jnp.allclose(full_grad, detached_grad)
 
 
 def test_dora_magnitude_init_rejects_unsupported_policy(tiny_vision_transformer):

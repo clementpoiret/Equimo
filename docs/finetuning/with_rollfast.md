@@ -78,7 +78,7 @@ step = rfft.make_sam_step(
 )
 ```
 
-For ASAM, start with `SAMConfig(rho=0.5, adaptive=True, eta=0.01)` and sweep
+For ASAM, start with `ASAMConfig(rho=0.5, eta=0.01)` and sweep
 the values for the task. Set `microbatch_axis` when the batch carries a leading
 microbatch dimension; Rollfast accumulates both SAM gradient passes before the
 single base optimizer update.
@@ -95,15 +95,16 @@ optim = rfft.adamw_from_plan(
 )
 ```
 
-AdaLoRA follows the same boundary. Equimo creates rank-masked LoRA modules and
-applies fixed-shape masks; Rollfast owns the dynamic rank-budget controller:
+AdaLoRA follows the same boundary. Equimo creates SVD-triplet AdaLoRA modules
+and applies fixed-shape rank support masks; Rollfast owns the dynamic
+rank-budget controller:
 
 ```python
 rank_groups = eqft.lora_rank_groups(lora_model)
 controller = rfft.make_adalora_controller(
     rank_groups,
     total_steps=20_000,
-    config=rfft.AdaLoRAControllerConfig(init_rank=12, target_rank=8),
+    config=rfft.AdaLoRAControllerConfig(initial_budget=12, target_budget=8),
 )
 state = controller.update(state, importance_scores, applied=True)
 rank_pattern = controller.rank_pattern(state)

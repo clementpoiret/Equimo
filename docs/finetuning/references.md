@@ -10,7 +10,6 @@ They are not a complete bibliography.
 - Meng et al. 2024, PiSSA.
 - Hayou et al. 2024, LoRA+.
 - Zhang et al. 2023, AdaLoRA.
-- Dettmers et al. 2023, QLoRA.
 - Kopiczko et al. 2023/2024, VeRA.
 - Houlsby et al. 2019, adapters.
 - Pfeiffer et al. 2020/2021, adapter variants and AdapterFusion.
@@ -21,7 +20,6 @@ They are not a complete bibliography.
 - Liu et al. 2021, P-tuning v2.
 - Liu et al. 2022, IA3.
 - Lian et al. 2022, SSF.
-- Sung et al. 2022, Ladder Side-Tuning.
 - Li et al. 2018, L2-SP.
 - Li et al. 2019, DELTA.
 - Lee et al. 2019, Mixout.
@@ -33,5 +31,4 @@ They are not a complete bibliography.
 - Davari and Belilovsky 2023/2024, Model Breadcrumbs.
 - Matena and Raffel 2021/2022, Fisher merging.
 - Jin et al. 2022/2023, RegMean.
-- Lee et al. 2022, surgical fine-tuning.
 - Foret et al. 2021, SAM, as an optimizer-side reference only.

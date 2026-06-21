@@ -96,7 +96,9 @@ def test_scale_shift_delta_roundtrip(tmp_path, tiny_vision_transformer):
     assert loaded.norm.mergeable is False
 
 
-def test_scale_shift_delta_incompatible_shape_raises_bundle_error(tmp_path, tiny_vision_transformer):
+def test_scale_shift_delta_incompatible_shape_raises_bundle_error(
+    tmp_path, tiny_vision_transformer
+):
     model = eqft.apply_scale_shift(
         tiny_vision_transformer,
         eqft.ScaleShiftConfig(target=eqft.TargetSpec(include=("*.norm",))),
@@ -131,6 +133,33 @@ def test_ia3_delta_roundtrip(tmp_path, tiny_vision_transformer):
     assert loaded.blocks[0].attn.proj.mergeable is False
 
 
+def test_ia3_segment_delta_roundtrip(tmp_path, tiny_vision_transformer):
+    model = eqft.apply_ia3(tiny_vision_transformer)
+    ia3 = jnp.arange(model.blocks[0].attn.qkv.ia3.shape[0], dtype=jnp.float32) + 1.0
+    model = eqx.tree_at(lambda m: m.blocks[0].attn.qkv.ia3, model, ia3)
+    path = tmp_path / "ia3_segments.eqft"
+
+    bundle = eqft.save_delta(model, path, method="ia3")
+    loaded = eqft.load_delta(tiny_vision_transformer, path)
+    qkv_entry = next(
+        entry
+        for entry in bundle.adapter_config["entries"]
+        if entry["path"].endswith("attn.qkv")
+    )
+
+    assert tuple(item["name"] for item in qkv_entry["projection_segments"]) == (
+        "k",
+        "v",
+    )
+    assert tuple(
+        segment.name for segment in loaded.blocks[0].attn.qkv.projection_segments
+    ) == (
+        "k",
+        "v",
+    )
+    assert jnp.array_equal(loaded.blocks[0].attn.qkv.ia3, ia3)
+
+
 def test_ia3_delta_missing_path_raises_bundle_error(tmp_path, tiny_vision_transformer):
     model = eqft.apply_ia3(
         tiny_vision_transformer,
@@ -142,7 +171,9 @@ def test_ia3_delta_missing_path_raises_bundle_error(tmp_path, tiny_vision_transf
     entries[0]["path"] = "blocks.99.attn.proj"
     bad_bundle = replace(bundle, adapter_config={"entries": entries})
 
-    with pytest.raises(eqft.FineTuneBundleError, match="logical-ID table mismatch|no matching leaf"):
+    with pytest.raises(
+        eqft.FineTuneBundleError, match="logical-ID table mismatch|no matching leaf"
+    ):
         eqft.load_delta(tiny_vision_transformer, bad_bundle)
 
 
@@ -164,42 +195,31 @@ def test_vera_delta_roundtrip(tmp_path, tiny_vision_transformer):
     path = tmp_path / "vera.eqft"
 
     bundle = eqft.save_delta(model, path, method="vera")
+    entry = bundle.adapter_config["entries"][0]
     loaded = eqft.load_delta(tiny_vision_transformer, path)
 
     assert bundle.method == "vera"
     assert bundle.metadata["trainable_params"] == 14
-    assert jnp.array_equal(loaded.blocks[0].attn.proj.vera_A, model.blocks[0].attn.proj.vera_A)
-    assert jnp.array_equal(loaded.blocks[0].attn.proj.vera_B, model.blocks[0].attn.proj.vera_B)
+    assert entry["basis_generation"] == "jax.random.PRNGKey_split"
+    assert entry["basis_key_data"]
+    assert entry["basis_pool_key"]
+    assert entry["share_scope"] == "shape_compatible"
+    assert entry["input_scale_axis"] == "rank"
+    assert entry["output_scale_axis"] == "logical_output"
+    assert jnp.array_equal(
+        loaded.blocks[0].attn.proj.vera_A, model.blocks[0].attn.proj.vera_A
+    )
+    assert jnp.array_equal(
+        loaded.blocks[0].attn.proj.vera_B, model.blocks[0].attn.proj.vera_B
+    )
     assert jnp.array_equal(loaded.blocks[0].attn.proj.vera_output_scale, output_scale)
+    assert loaded.blocks[0].attn.proj.basis_key_data == entry["basis_key_data"]
+    assert loaded.blocks[0].attn.proj.basis_pool_key == entry["basis_pool_key"]
     assert jnp.allclose(
         loaded(jnp.ones((2, 3))),
         model(jnp.ones((2, 3))),
         atol=1e-6,
     )
-
-
-def test_side_tuning_delta_roundtrip(tmp_path, tiny_linear_mlp):
-    model = eqft.apply_side_tuning(
-        tiny_linear_mlp,
-        in_features=3,
-        key=jr.PRNGKey(0),
-        config=eqft.LSTConfig(
-            tap_layers=("50%", "100%"),
-            side_width_multiplier=0.5,
-            gate_init=0.5,
-        ),
-    )
-    path = tmp_path / "side_tuning.eqft"
-    x = jnp.ones((4,))
-
-    bundle = eqft.save_delta(model, path, method="side_tuning")
-    loaded = eqft.load_delta(tiny_linear_mlp, path)
-
-    assert bundle.method == "side_tuning"
-    assert isinstance(loaded, eqft.SideTunedModel)
-    assert loaded.config.tap_layers == ("50%", "100%")
-    assert jnp.array_equal(loaded.ladder.gate, model.ladder.gate)
-    assert jnp.allclose(loaded(x), model(x), atol=1e-6)
 
 
 def test_dora_delta_incompatible_architecture_raises(tmp_path):
@@ -217,5 +237,7 @@ def test_dora_delta_incompatible_architecture_raises(tmp_path):
     path = tmp_path / "dora.eqft"
     eqft.save_delta(dora, path, method="dora")
 
-    with pytest.raises(eqft.FineTuneBundleError, match="DoRA delta architecture hash mismatch"):
+    with pytest.raises(
+        eqft.FineTuneBundleError, match="DoRA delta architecture hash mismatch"
+    ):
         eqft.load_delta(incompatible, path)

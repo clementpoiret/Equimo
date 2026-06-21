@@ -5,6 +5,7 @@ from __future__ import annotations
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 import equimo.finetune as eqft
 from equimo.vision.models.vit import VisionTransformer
@@ -162,6 +163,17 @@ def test_deep_prompt_config_can_share_across_layers():
 
     assert len(prompted.prompts) == 1
     assert features.shape == (5, model.dim)
+
+
+def test_ptuning_v2_rejects_unimplemented_mlp_reparameterizer(
+    tiny_text_encoder,
+):
+    with pytest.raises(ValueError, match="reparameterizer"):
+        eqft.apply_prompts(
+            tiny_text_encoder,
+            eqft.PTuningV2Config(reparameterizer="mlp"),
+            key=jr.PRNGKey(0),
+        )
 
 
 def test_prompts_receive_gradients_when_blocks_mix_tokens(tiny_vision_transformer):

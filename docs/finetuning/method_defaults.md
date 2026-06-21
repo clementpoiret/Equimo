@@ -24,7 +24,6 @@
 | Prefix tuning | 16 prefix tokens, deep, projected K/V prefix state |
 | Scale/shift | scale 1, shift 0 |
 | IA3 | scaling vector 1 |
-| Ladder side-tuning | 25/50/75/100 percent taps, width multiplier 0.25 |
 | Continued SSL | LoRA r8/a16 plus last-block unfreeze metadata |
 | L2-SP | unscaled mean penalty by default |
 | Feature distillation | MSE over 50/100 percent layers |

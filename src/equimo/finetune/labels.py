@@ -126,10 +126,6 @@ def _label_base(info: ParamInfo, config: LLRDConfig) -> str:
         return "fourierft"
     if "orthogonal" in info.tags:
         return "orthogonal"
-    if "convpass" in info.tags:
-        return "convpass"
-    if "repadapter" in info.tags:
-        return "repadapter"
     if "randlora.scale" in info.tags:
         return "randlora_scale"
     if "randlora" in info.tags:
@@ -152,8 +148,6 @@ def _label_base(info: ParamInfo, config: LLRDConfig) -> str:
         return "ia3"
     if "vera" in info.tags:
         return "vera"
-    if "side_tuning" in info.tags:
-        return "side_tuning"
     if "head" in info.tags:
         return config.head_label
     if info.depth is not None:

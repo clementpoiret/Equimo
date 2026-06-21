@@ -10,14 +10,12 @@ from ..feature_extraction import LinearProbe
 from ..peft.lora import LoRAConfig, apply_lora
 from ..peft.prompts import PromptedModel, VPTDeepConfig, VPTShallowConfig, apply_prompts
 from ..recipes import (
-    HeuristicSurgicalPreset,
     adapter_transformer,
     adaptformer_transformer,
     full_ft_llrd,
     head_plus_norm,
     linear_probe,
     partial_ft_last_k_blocks,
-    surgical as surgical_recipe,
 )
 
 
@@ -73,25 +71,6 @@ def partial_ft_vit_llrd(
         model,
         k=last_k_blocks,
         decay=decay,
-    )
-
-
-def surgical_ft_vit(
-    model: PyTree,
-    *,
-    shift: str = "output",
-    train_head: bool = True,
-    train_norm: bool = True,
-) -> FineTunePlan:
-    """Prepare a surgical ViT fine-tuning plan."""
-
-    return surgical_recipe(
-        model,
-        HeuristicSurgicalPreset(
-            shift=shift,
-            train_head=train_head,
-            train_norm=train_norm,
-        ),
     )
 
 
@@ -169,6 +148,5 @@ __all__ = (
     "linear_probe_vit",
     "lora_vit",
     "partial_ft_vit_llrd",
-    "surgical_ft_vit",
     "vpt_vit",
 )

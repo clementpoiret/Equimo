@@ -23,6 +23,7 @@ class PrefixConfig:
     depth: str = "deep"
     target: tuple[str, ...] = ("attention.k", "attention.v")
     prefix_projection: bool = True
+    direct_kv: bool = False
     projection_hidden_dim: int | str = "model_dim"
     init_std: float = 0.02
     prefix_dropout: float = 0.0
@@ -499,6 +500,11 @@ def _validate_prefix_config(config: PrefixConfig) -> None:
     if frozenset(config.target) != frozenset(("attention.k", "attention.v")):
         raise ValueError(
             "PrefixConfig.target currently supports only attention.k and attention.v."
+        )
+    if config.direct_kv:
+        raise ValueError(
+            "PrefixConfig.direct_kv=True is declared but not implemented; "
+            "use projected prefix tokens instead."
         )
 
 

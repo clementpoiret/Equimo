@@ -52,6 +52,15 @@ def test_prefix_projection_can_be_disabled(tiny_vision_transformer):
     assert prefixed.prefix_projections[0] is None
 
 
+def test_prefix_direct_kv_is_explicitly_unsupported(tiny_vision_transformer):
+    with pytest.raises(ValueError, match="direct_kv"):
+        eqft.apply_prefixes(
+            tiny_vision_transformer,
+            eqft.PrefixConfig(num_prefix_tokens=2, direct_kv=True),
+            key=jr.PRNGKey(0),
+        )
+
+
 def test_prefix_target_rejects_unsupported_target(tiny_vision_transformer):
     with pytest.raises(ValueError, match="target"):
         eqft.apply_prefixes(
@@ -73,6 +82,22 @@ def test_prefix_dropout_requires_key_when_training(tiny_vision_transformer):
     with pytest.raises(ValueError, match="prefix dropout"):
         attention(jnp.ones((2, 4)), inference=False)
     attention(jnp.ones((2, 4)), key=jr.PRNGKey(1), inference=False)
+
+
+def test_prefix_attention_extends_key_value_mask(tiny_vision_transformer):
+    prefixed = eqft.apply_prefixes(
+        tiny_vision_transformer,
+        eqft.PrefixConfig(num_prefix_tokens=2),
+        key=jr.PRNGKey(0),
+    )
+    attention = prefixed.base.blocks[0].attn
+    x = jnp.ones((2, 4), dtype=jnp.float32)
+    mask = jnp.ones((1, 2, 2), dtype=jnp.int32)
+
+    y = attention(x, mask=mask, inference=True)
+
+    assert attention.state.shape[2] == 2
+    assert y.shape == x.shape
 
 
 def test_prefixes_receive_gradients(tiny_vision_transformer):

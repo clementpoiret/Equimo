@@ -25,4 +25,4 @@ Use `save_finetune_bundle` and `load_finetune_bundle` when you already have a
 target paths, a base checkpoint hash, mergeability, and optional user metadata.
 
 Supported delta methods: `lora`, `dora`, `adapter`, `prompt`, `prefix`,
-`scale_shift`, `ia3`, `vera`, and `side_tuning`.
+`scale_shift`, `ia3`, and `vera`.

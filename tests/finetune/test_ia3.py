@@ -19,9 +19,15 @@ def test_ia3_identity(tiny_vision_transformer):
     assert jnp.allclose(tiny_vision_transformer(x), tuned(x), atol=1e-6)
 
 
-def test_ia3_default_targets_mlp_hidden(tiny_vision_transformer):
+def test_ia3_default_targets_fused_key_value_and_mlp_hidden(tiny_vision_transformer):
     tuned = eqft.apply_ia3(tiny_vision_transformer)
+    qkv = tuned.blocks[0].attn.qkv
+    width = qkv.base.out_features // 3
 
+    assert isinstance(qkv, eqft.IA3Linear)
+    assert tuple(segment.name for segment in qkv.projection_segments) == ("k", "v")
+    assert qkv.ia3.shape == (2 * width,)
+    assert jnp.array_equal(qkv.scale_vector()[:width], jnp.ones((width,)))
     assert isinstance(tuned.blocks[0].mlp.fc1, eqft.IA3Linear)
     assert not isinstance(tuned.blocks[0].attn.proj, eqft.IA3Linear)
 
@@ -41,6 +47,32 @@ def test_merge_ia3_preserves_outputs_and_removes_wrapper(tiny_vision_transformer
     merged = eqft.merge_ia3(tuned)
 
     assert not isinstance(merged.blocks[0].attn.proj, eqft.IA3Linear)
+    assert jnp.allclose(tuned(x), merged(x), atol=1e-6)
+
+
+def test_merge_ia3_fused_qkv_preserves_query_rows(tiny_vision_transformer):
+    x = jnp.ones((2, 3))
+    tuned = eqft.apply_ia3(tiny_vision_transformer)
+    qkv = tuned.blocks[0].attn.qkv
+    width = qkv.base.out_features // 3
+    ia3 = jnp.concatenate(
+        [
+            jnp.full((width,), 2.0),
+            jnp.full((width,), 3.0),
+        ]
+    )
+    tuned = eqx.tree_at(lambda model: model.blocks[0].attn.qkv.ia3, tuned, ia3)
+
+    merged = eqft.merge_ia3(tuned)
+    original_weight = tiny_vision_transformer.blocks[0].attn.qkv.weight
+    merged_weight = merged.blocks[0].attn.qkv.weight
+
+    assert not isinstance(merged.blocks[0].attn.qkv, eqft.IA3Linear)
+    assert jnp.array_equal(merged_weight[:width], original_weight[:width])
+    assert jnp.allclose(
+        merged_weight[width : 2 * width], original_weight[width : 2 * width] * 2.0
+    )
+    assert jnp.allclose(merged_weight[2 * width :], original_weight[2 * width :] * 3.0)
     assert jnp.allclose(tuned(x), merged(x), atol=1e-6)
 
 

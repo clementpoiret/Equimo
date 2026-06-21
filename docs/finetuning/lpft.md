@@ -16,3 +16,7 @@ stage2_plan = recipe.stage2_plan(model_with_trained_head)
 
 Equimo preserves the trained head because it only changes trainability and
 labels. Optimizers and schedules are external.
+
+`LPFTRecipe.stage2_plan()` currently supports the paper-style preserved-head
+transition. To intentionally reset or replace the head, do that on the model
+before building the stage-2 plan.

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-import hashlib
 from typing import Any, Literal
 
 import equinox as eqx
@@ -160,14 +159,6 @@ class StaticRankMaskedLoRAConfig(LoRAConfig):
 
 
 @dataclass(frozen=True)
-class QuantizedBaseLoRACompatibility:
-    """Metadata for applying LoRA around externally quantized linears."""
-
-    allow_lora_on_quantized_linear: bool = True
-    quantization_owned_by: Literal["external"] = "external"
-
-
-@dataclass(frozen=True)
 class AdaLoRAMetadata:
     """Static metadata for an AdaLoRA SVD-triplet adapter."""
 
@@ -234,27 +225,6 @@ class EVAInitializerConfig:
     activation_centering: bool = False
     svd: Literal["randomized", "full"] = "randomized"
     calibration: CalibrationSpec | None = None
-
-
-@dataclass(frozen=True)
-class QuantizerSpec:
-    """External quantizer descriptor for LoftQ initialization."""
-
-    id: str
-    bits: int
-    format: str
-    compute_dtype: str | None = None
-
-
-@dataclass(frozen=True)
-class LoftQConfig:
-    """LoftQ initialization contract."""
-
-    rank: int
-    quantizer: QuantizerSpec
-    iterations: int = 1
-    scaling: float = 1.0
-    residual_svd: Literal["truncated", "full"] = "truncated"
 
 
 @dataclass(frozen=True)
@@ -760,6 +730,10 @@ class FourierFTLinear(eqx.Module):
     weight_shape: tuple[int, int] = eqx.field(static=True)
     scale: float = eqx.field(static=True)
     reconstruction: Literal["conjugate_symmetric", "real_projection"] = eqx.field(static=True)
+    frequency_selection: Literal["random", "low_frequency", "explicit"] = eqx.field(static=True)
+    seed: int | None = eqx.field(static=True)
+    transform_normalization: str = eqx.field(static=True)
+    reshape_convention: str = eqx.field(static=True)
     train_base: bool = eqx.field(static=True)
     mergeable: bool = eqx.field(static=True)
     merged: bool = eqx.field(static=True)
@@ -771,6 +745,8 @@ class FourierFTLinear(eqx.Module):
         frequency_indices: jax.Array,
         coefficient_dtype: str,
         reconstruction: Literal["conjugate_symmetric", "real_projection"],
+        frequency_selection: Literal["random", "low_frequency", "explicit"],
+        seed: int | None,
         scale: float,
         train_base: bool,
         mergeable: bool,
@@ -785,6 +761,10 @@ class FourierFTLinear(eqx.Module):
         self.weight_shape = tuple(weight.shape)
         self.scale = scale
         self.reconstruction = reconstruction
+        self.frequency_selection = frequency_selection
+        self.seed = seed
+        self.transform_normalization = "jax.numpy.fft.ifft default 1/n inverse scaling"
+        self.reshape_convention = "row_major_flatten_out_in"
         self.train_base = train_base
         self.mergeable = mergeable
         self.merged = merged
@@ -858,6 +838,8 @@ class FourierFTLinear(eqx.Module):
             frequency_indices=self.frequency_indices,
             coefficient_dtype=str(self.coefficients_real.dtype),
             reconstruction=self.reconstruction,
+            frequency_selection=self.frequency_selection,
+            seed=self.seed,
             scale=self.scale,
             train_base=self.train_base,
             mergeable=self.mergeable,
@@ -964,9 +946,10 @@ def apply_lora(
         wrapper_type = LoRAMergedLinear if _is_fused_qkv_path(module_path) else LoRALinear
         lora_A = lora_B = None
         base_weight_delta = None
+        metadata: tuple[tuple[str, str], ...] = ()
         rank = config.rank
         if config.init == "pissa":
-            module, lora_A, lora_B, base_weight_delta = _pissa_prepare(
+            module, lora_A, lora_B, base_weight_delta, metadata = _pissa_prepare(
                 module,
                 config,
             )
@@ -991,6 +974,7 @@ def apply_lora(
             rank_mask=rank_mask,
             base_weight_delta=base_weight_delta,
             projection_segments=_projection_segments_for_target(module, config.target),
+            metadata=metadata,
         )
         updated = eqx.tree_at(
             lambda tree, path=module_path: get_path(tree, path),
@@ -1204,146 +1188,6 @@ def apply_eva_lora(
     return updated
 
 
-def apply_loftq_lora(
-    model: PyTree,
-    config: LoftQConfig,
-    *,
-    quantized_weights: Mapping[str, jax.Array],
-    key: jax.Array,
-    target: TargetSpec | None = None,
-    tagger: Tagger = canonical_tags_for_path,
-) -> PyTree:
-    """Apply LoftQ initialization around externally quantized base weights."""
-
-    del key
-    target = LoRAConfig().target if target is None else target
-    module_paths = _target_linear_module_paths(model, target, tagger=tagger)
-    updated = model
-    for module_path in module_paths:
-        path_name = path_to_str(module_path)
-        module = get_path(updated, module_path)
-        if isinstance(module, LoRALinear):
-            continue
-        if not _is_linear_like(module):
-            raise TypeError(
-                f"LoftQ target {path_name!r} is {type(module).__name__}, "
-                "expected a linear-like module."
-            )
-        weight = _linear_weight(module)
-        q_weight = quantized_weights.get(path_name)
-        if q_weight is None:
-            raise ValueError(f"Missing quantized weight for LoftQ target {path_name!r}.")
-        if tuple(q_weight.shape) != tuple(weight.shape):
-            raise ValueError(
-                f"LoftQ quantized weight for {path_name!r} has shape "
-                f"{tuple(q_weight.shape)}, expected {tuple(weight.shape)}."
-            )
-        fingerprint = loftq_quantization_fingerprint(path_name, q_weight, config)
-        residual = (weight - q_weight.astype(weight.dtype)).astype(jnp.float32)
-        lora_A, lora_B = _svd_lora_from_residual(
-            residual,
-            rank=config.rank,
-            scaling=config.scaling,
-            dtype=weight.dtype,
-        )
-        quantized_base = eqx.tree_at(
-            lambda linear: linear.weight,
-            module,
-            q_weight.astype(weight.dtype),
-        )
-        updated = eqx.tree_at(
-            lambda tree, path=module_path: get_path(tree, path),
-            updated,
-            LoRALinear(
-                quantized_base,
-                rank=int(lora_A.shape[0]),
-                alpha=float(config.scaling * lora_A.shape[0]),
-                scaling="alpha_over_r",
-                dropout=0.0,
-                train_base=False,
-                mergeable=True,
-                key=jr.PRNGKey(0),
-                lora_A=lora_A,
-                lora_B=lora_B,
-                metadata=(
-                    ("method", "loftq"),
-                    ("quantizer_id", config.quantizer.id),
-                    ("quantizer_bits", str(config.quantizer.bits)),
-                    ("quantizer_format", config.quantizer.format),
-                    ("iterations", str(config.iterations)),
-                    ("quantization_fingerprint", fingerprint),
-                ),
-            ),
-        )
-    return updated
-
-
-def validate_loftq_lora(
-    model: PyTree,
-    config: LoftQConfig,
-    *,
-    quantized_weights: Mapping[str, jax.Array],
-    target: TargetSpec | None = None,
-    tagger: Tagger = canonical_tags_for_path,
-) -> None:
-    """Validate that LoftQ adapters match the supplied quantized base payload."""
-
-    target = LoRAConfig().target if target is None else target
-    module_paths = _target_linear_module_paths(model, target, tagger=tagger)
-    seen: set[str] = set()
-    for module_path in module_paths:
-        module_path, module = _nearest_lora_owner(model, module_path)
-        path_name = path_to_str(module_path)
-        if path_name in seen:
-            continue
-        seen.add(path_name)
-        if not isinstance(module, LoRALinear):
-            raise ValueError(f"LoftQ target {path_name!r} is not a LoRA module.")
-        q_weight = quantized_weights.get(path_name)
-        if q_weight is None:
-            raise ValueError(f"Missing quantized weight for LoftQ target {path_name!r}.")
-        expected = loftq_quantization_fingerprint(path_name, q_weight, config)
-        metadata = dict(module.metadata)
-        actual = metadata.get("quantization_fingerprint")
-        if actual != expected:
-            raise ValueError(
-                f"LoftQ quantization fingerprint mismatch for {path_name!r}: "
-                f"expected {expected}, got {actual}."
-            )
-
-
-def _nearest_lora_owner(model: PyTree, path: Path) -> tuple[Path, Any]:
-    for end in range(len(path), 0, -1):
-        candidate_path = path[:end]
-        candidate = get_path(model, candidate_path)
-        if isinstance(candidate, LoRALinear):
-            return candidate_path, candidate
-    return path, get_path(model, path)
-
-
-def loftq_quantization_fingerprint(
-    logical_id: str,
-    quantized_weight: jax.Array,
-    config: LoftQConfig,
-) -> str:
-    """Return the lineage fingerprint for a LoftQ quantized base payload."""
-
-    array = jax.device_get(jnp.asarray(quantized_weight))
-    digest = hashlib.sha256()
-    digest.update(str(logical_id).encode())
-    digest.update(str(tuple(array.shape)).encode())
-    digest.update(str(array.dtype).encode())
-    digest.update(array.tobytes())
-    digest.update(config.quantizer.id.encode())
-    digest.update(str(config.quantizer.bits).encode())
-    digest.update(config.quantizer.format.encode())
-    digest.update(str(config.quantizer.compute_dtype).encode())
-    digest.update(str(config.iterations).encode())
-    digest.update(str(config.scaling).encode())
-    digest.update(config.residual_svd.encode())
-    return digest.hexdigest()
-
-
 def apply_fourierft(
     model: PyTree,
     config: FourierFTConfig,
@@ -1383,6 +1227,8 @@ def apply_fourierft(
                 frequency_indices=indices,
                 coefficient_dtype=config.coefficient_dtype,
                 reconstruction=config.reconstruction,
+                frequency_selection=config.frequency_selection,
+                seed=config.seed,
                 scale=config.scale,
                 train_base=False,
                 mergeable=True,
@@ -1450,10 +1296,7 @@ def extract_lora_delta(
 
     entries = []
     for path, module in iter_lora_modules(model):
-        metadata = dict(module.metadata)
         base_weight_delta = module.base_weight_delta
-        if metadata.get("method") == "loftq" and base_weight_delta is None:
-            base_weight_delta = -module.delta_weight().astype(_linear_weight(module.base).dtype)
         entries.append(
             {
                 "path": path_to_str(path),
@@ -1617,7 +1460,6 @@ def load_lora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
             )
 
         entry_metadata = _entry_metadata(entry)
-        _validate_quantized_entry_metadata(entry["path"], entry_metadata)
         wrapper_type = LoRAMergedLinear if entry["class"] == "LoRAMergedLinear" else LoRALinear
         lora_module = wrapper_type(
             module,
@@ -1678,6 +1520,19 @@ def iter_lora_modules(model: PyTree) -> tuple[tuple[Path, LoRALinear], ...]:
     )
 
 
+def iter_adalora_modules(model: PyTree) -> tuple[tuple[Path, AdaLoRAModule], ...]:
+    """Return path/module pairs for AdaLoRA wrappers in ``model``."""
+
+    return tuple(
+        (key_path_to_path(key_path), leaf)
+        for key_path, leaf in jtu.tree_leaves_with_path(
+            model,
+            is_leaf=lambda x: isinstance(x, AdaLoRAModule),
+        )
+        if isinstance(leaf, AdaLoRAModule)
+    )
+
+
 def iter_lora_fa_modules(model: PyTree) -> tuple[tuple[Path, LoRAFALinear], ...]:
     """Return path/module pairs for LoRA-FA wrappers in ``model``."""
 
@@ -1718,12 +1573,19 @@ def iter_randlora_modules(model: PyTree) -> tuple[tuple[Path, RandLoRALinear], .
 
 
 def lora_rank_groups(model: PyTree) -> dict[str, int]:
-    """Return canonical LoRA path strings and their static maximum ranks."""
+    """Return canonical LoRA/AdaLoRA path strings and static maximum ranks."""
 
-    return {
+    groups = {
         path_to_str(path): module.rank
         for path, module in iter_lora_modules(model)
     }
+    groups.update(
+        {
+            path_to_str(path): int(module.singular.shape[0])
+            for path, module in iter_adalora_modules(model)
+        }
+    )
+    return groups
 
 
 def apply_lora_rank_pattern(
@@ -1731,18 +1593,30 @@ def apply_lora_rank_pattern(
     rank_pattern: Mapping[str, Any],
     *,
     strict: bool = True,
+    final: bool = False,
 ) -> PyTree:
-    """Apply fixed-shape rank masks to LoRA modules by canonical path string."""
+    """Apply fixed-shape rank masks by canonical path string.
+
+    Static LoRA wrappers receive a persistent ``rank_mask``. AdaLoRA wrappers
+    zero non-selected singular values during allocation while leaving gradients
+    unmasked; pass ``final=True`` to install the final persistent support mask.
+    """
 
     modules = {
-        path_to_str(path): (path, module)
+        path_to_str(path): (path, module, "lora")
         for path, module in iter_lora_modules(model)
     }
+    modules.update(
+        {
+            path_to_str(path): (path, module, "adalora")
+            for path, module in iter_adalora_modules(model)
+        }
+    )
     if strict:
         unknown = sorted(set(rank_pattern) - set(modules))
         if unknown:
             raise ValueError(
-                "Rank pattern contains unknown LoRA module paths: "
+                "Rank pattern contains unknown LoRA/AdaLoRA module paths: "
                 f"{', '.join(unknown)}."
             )
 
@@ -1750,22 +1624,28 @@ def apply_lora_rank_pattern(
     for name, value in rank_pattern.items():
         if name not in modules:
             continue
-        path, module = modules[name]
-        if module.merged:
+        path, module, kind = modules[name]
+        if kind == "lora" and module.merged:
             raise ValueError(
                 f"Cannot apply rank mask for merged LoRA module {name!r}; "
                 "unmerge the module before changing rank masks."
             )
         mask = jnp.asarray(value, dtype=jnp.bool_)
-        if mask.shape != (module.rank,):
+        rank = module.rank if kind == "lora" else module.singular.shape[0]
+        if mask.shape != (rank,):
             raise ValueError(
-                f"Rank mask for {name!r} must have shape ({module.rank},), "
+                f"Rank mask for {name!r} must have shape ({rank},), "
                 f"got {mask.shape}."
             )
+        replacement = (
+            _replace_lora_rank_mask(module, mask)
+            if kind == "lora"
+            else _replace_adalora_support(module, mask, final=final)
+        )
         updated = eqx.tree_at(
             lambda tree, p=path: get_path(tree, p),
             updated,
-            _replace_lora_rank_mask(module, mask),
+            replacement,
         )
 
     return updated
@@ -1833,15 +1713,6 @@ def _entry_metadata(entry: Mapping[str, Any]) -> dict[str, str]:
     if isinstance(metadata, Mapping):
         return {str(key): str(value) for key, value in metadata.items()}
     return {str(key): str(value) for key, value in tuple(metadata)}
-
-
-def _validate_quantized_entry_metadata(path: str, metadata: Mapping[str, str]) -> None:
-    if metadata.get("method") != "loftq":
-        return
-    if not metadata.get("quantization_fingerprint"):
-        raise FineTuneBundleError(
-            f"LoftQ delta entry {path!r} is missing quantization_fingerprint."
-        )
 
 
 def _linear_module_path(path: Path) -> Path:
@@ -1933,17 +1804,21 @@ def _init_lora(
 def _pissa_prepare(
     base: eqx.Module,
     config: LoRAConfig,
-) -> tuple[eqx.Module, jax.Array, jax.Array, jax.Array | None]:
+) -> tuple[eqx.Module, jax.Array, jax.Array, jax.Array | None, tuple[tuple[str, str], ...]]:
     if not isinstance(config, PiSSAConfig):
-        lora_A, lora_B = _pissa_init(
-            base,
-            config.rank,
-            scaling=_scaling(config.scaling, config.alpha, config.rank),
+        config = PiSSAConfig(
+            rank=config.rank,
+            alpha=config.alpha,
+            scaling=config.scaling,
+            dropout=config.dropout,
+            target=config.target,
+            train_base=config.train_base,
+            mergeable=config.mergeable,
             fan_in_fan_out=config.fan_in_fan_out,
+            weight_layout=config.weight_layout,
         )
-        return base, lora_A, lora_B, None
-    if config.svd not in {"truncated", "exact"}:
-        raise ValueError("PiSSAConfig.svd must be 'truncated' or 'exact'.")
+    if config.svd not in {"truncated", "exact", "full"}:
+        raise ValueError("PiSSAConfig.svd must be 'truncated', 'exact', or 'full'.")
     if config.niter < 0:
         raise ValueError("PiSSAConfig.niter must be non-negative.")
     if config.residual_handling not in {"freeze_residual", "none"}:
@@ -1966,9 +1841,19 @@ def _pissa_prepare(
             jr.PRNGKey(0),
             fan_in_fan_out=config.fan_in_fan_out,
         )
-        return base, lora_A, lora_B, None
+        metadata = _pissa_metadata(
+            config,
+            effective_rank=int(lora_A.shape[0]),
+            fallback=True,
+        )
+        return base, lora_A, lora_B, None, metadata
+    metadata = _pissa_metadata(
+        config,
+        effective_rank=int(lora_A.shape[0]),
+        fallback=False,
+    )
     if config.residual_handling == "none":
-        return base, lora_A, lora_B, None
+        return base, lora_A, lora_B, None, metadata
 
     rank = int(lora_A.shape[0])
     delta = (lora_B @ lora_A) * _scaling(config.scaling, config.alpha, rank)
@@ -1981,7 +1866,25 @@ def _pissa_prepare(
         base,
         weight + base_weight_delta,
     )
-    return residual_base, lora_A, lora_B, base_weight_delta
+    return residual_base, lora_A, lora_B, base_weight_delta, metadata
+
+
+def _pissa_metadata(
+    config: PiSSAConfig,
+    *,
+    effective_rank: int,
+    fallback: bool,
+) -> tuple[tuple[str, str], ...]:
+    return (
+        ("method", "pissa_fallback" if fallback else "pissa"),
+        ("svd", config.svd),
+        ("svd_effective", "exact_dense_top_rank"),
+        ("niter", str(config.niter)),
+        ("rank", str(effective_rank)),
+        ("residual_handling", config.residual_handling),
+        ("fallback_init", config.fallback_init if fallback else "none"),
+        ("principal_product", "base_weight_delta = -scaling * B0 @ A0"),
+    )
 
 
 def _pissa_init(
@@ -2188,7 +2091,7 @@ def _fourier_frequency_indices(
     else:
         raise ValueError(f"Unsupported FourierFT frequency_selection {selection!r}.")
     canonical = jnp.minimum(indices, (-indices) % size)
-    _, unique_positions = jnp.unique(canonical, size=canonical.shape[0], return_index=True)
+    _, unique_positions = jnp.unique(canonical, return_index=True)
     unique_positions = jnp.sort(unique_positions)
     return indices[unique_positions]
 
@@ -2387,25 +2290,6 @@ def _eva_lora_A(
         return _init_lora_fa_A(rank, int(matrix.shape[-1]), fallback_key, dtype, "orthonormal_rows")
 
 
-def _svd_lora_from_residual(
-    residual: jax.Array,
-    *,
-    rank: int,
-    scaling: float,
-    dtype,
-) -> tuple[jax.Array, jax.Array]:
-    if rank < 1:
-        raise ValueError("LoftQ rank must be >= 1.")
-    if scaling == 0.0:
-        raise ValueError("LoftQ scaling must be non-zero.")
-    u, s, vh = jnp.linalg.svd(residual.astype(jnp.float32), full_matrices=False)
-    rank = min(rank, int(s.shape[0]))
-    sqrt_s = jnp.sqrt(s[:rank] / scaling).astype(dtype)
-    lora_B = u[:, :rank].astype(dtype) * sqrt_s[None, :]
-    lora_A = sqrt_s[:, None] * vh[:rank].astype(dtype)
-    return lora_A, lora_B
-
-
 def _map_lora_modules(model: PyTree, fn) -> PyTree:
     updated = model
     for path, module in iter_lora_modules(updated):
@@ -2457,6 +2341,28 @@ def _replace_lora_rank_mask(
     )
 
 
+def _replace_adalora_support(
+    module: AdaLoRAModule,
+    rank_mask: jax.Array,
+    *,
+    final: bool,
+) -> AdaLoRAModule:
+    singular = jnp.where(rank_mask, module.singular, jnp.zeros_like(module.singular))
+    return AdaLoRAModule(
+        module.base,
+        rank=int(module.singular.shape[0]),
+        alpha=float(module.scaling * module.singular.shape[0]),
+        train_base=module.train_base,
+        mergeable=module.mergeable,
+        key=jr.PRNGKey(0),
+        P=module.P,
+        singular=singular,
+        Q=module.Q,
+        final_mask=rank_mask if final else None,
+        metadata=module.metadata,
+    )
+
+
 def lora_config_to_dict(config: LoRAConfig) -> dict[str, Any]:
     """Serialize a LoRA config without callable selector fields."""
 
@@ -2485,7 +2391,6 @@ __all__ = (
     "LoRAPlusLabelConfig",
     "LoRARecipe",
     "PiSSAConfig",
-    "QuantizedBaseLoRACompatibility",
     "StaticRankMaskedLoRAConfig",
     "RsLoRAConfig",
     "AdaLoRAConfig",
@@ -2495,28 +2400,25 @@ __all__ = (
     "EVAInitializerConfig",
     "FourierFTConfig",
     "FourierFTLinear",
-    "LoftQConfig",
     "LoRAFAConfig",
     "LoRAFALinear",
-    "QuantizerSpec",
     "RandLoRAConfig",
     "RandLoRALinear",
     "apply_adalora",
     "apply_eva_lora",
     "apply_fourierft",
-    "apply_loftq_lora",
     "apply_lora_fa",
     "apply_lora_rank_pattern",
     "apply_randlora",
     "apply_lora",
     "architecture_hash",
     "extract_lora_delta",
+    "iter_adalora_modules",
     "iter_fourierft_modules",
     "iter_lora_fa_modules",
     "iter_lora_modules",
     "iter_randlora_modules",
     "load_lora_delta",
-    "loftq_quantization_fingerprint",
     "lora_config_to_dict",
     "lora_rank_groups",
     "merge_fourierft",
@@ -2528,5 +2430,4 @@ __all__ = (
     "unmerge_lora",
     "unmerge_lora_fa",
     "unmerge_randlora",
-    "validate_loftq_lora",
 )
