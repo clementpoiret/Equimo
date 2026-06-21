@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
-from typing import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import equinox as eqx
 import jax
@@ -13,6 +13,7 @@ import jax.tree_util as jtu
 import numpy as np
 
 from ._typing import PyTree
+from .config import FineTuneBundle, ModelLineage
 from .paths import key_path_to_path, path_to_str
 
 
@@ -67,6 +68,31 @@ class TaskVector:
     include_head: bool = False
     base_architecture_hash: str = ""
     base_checkpoint_hash: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MergePlan:
+    """Prepared modern merge operation."""
+
+    method: str
+    task_vectors: tuple[TaskVector, ...]
+    method_config: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+class MergeMethod(Protocol):
+    """Common interface for data-aware or subspace-aware model mergers."""
+
+    def prepare(
+        self,
+        models: Sequence[PyTree | TaskVector],
+        artifacts: Mapping[str, Any] | None = None,
+    ) -> MergePlan:
+        """Prepare a merge plan from models or precomputed task vectors."""
+
+    def merge(self, plan: MergePlan) -> FineTuneBundle:
+        """Merge a prepared plan into a portable fine-tuning bundle."""
 
 
 @dataclass(frozen=True)
@@ -123,6 +149,46 @@ class RegMeanConfig:
     non_matrix_policy: str = "mean"
     require_input_covariances: bool = True
     require_same_architecture_hash: bool = True
+
+
+@dataclass(frozen=True)
+class AdaMergingConfig:
+    """AdaMerging coefficient metadata.
+
+    Coefficient learning is intentionally external to this utility. When
+    learned coefficients are supplied, this config records the unlabeled-data
+    fingerprint that produced them.
+    """
+
+    coefficients: tuple[float, ...] = ()
+    layer_coefficients: Mapping[str, tuple[float, ...]] = field(default_factory=dict)
+    data_fingerprint: str | None = None
+    coefficient_source: str = "equal_fallback"
+    normalize_coefficients: bool = True
+    require_same_base_hash: bool = True
+
+
+@dataclass(frozen=True)
+class KnOTSConfig:
+    """KnOTS shared-left-basis merge metadata."""
+
+    rank: int | None = None
+    orientation: str = "out_in"
+    basis_policy: str = "shared_left_svd"
+    non_matrix_policy: str = "mean"
+    require_same_base_hash: bool = True
+
+
+@dataclass(frozen=True)
+class TSVConfig:
+    """Task Singular Vectors merge metadata."""
+
+    rank: int | None = None
+    orientation: str = "out_in"
+    truncation_policy: str = "per_task_svd_rank"
+    orthogonalization_policy: str = "shared_right_svd_orthogonal_basis"
+    non_matrix_policy: str = "mean"
+    require_same_base_hash: bool = True
 
 
 def interpolate_models(
@@ -473,6 +539,613 @@ def regmean_merge(
     )
 
 
+def adamerging_task_vector(
+    vectors: Sequence[TaskVector],
+    *,
+    config: AdaMergingConfig | None = None,
+) -> TaskVector:
+    """Merge task vectors using serialized AdaMerging coefficients."""
+
+    if not vectors:
+        raise ValueError("adamerging_task_vector requires at least one task vector.")
+    config = AdaMergingConfig() if config is None else config
+    if config.coefficient_source == "learned" and not config.data_fingerprint:
+        raise ValueError("learned AdaMerging coefficients require a data_fingerprint.")
+    _check_vector_compatibility(
+        vectors,
+        require_same_base_hash=config.require_same_base_hash,
+    )
+    default_weights = _resolve_merge_weights(
+        len(vectors),
+        config.coefficients,
+        normalize=config.normalize_coefficients,
+    )
+    layer_coefficients = {
+        str(path): tuple(float(weight) for weight in weights)
+        for path, weights in config.layer_coefficients.items()
+    }
+    merged = _merge_deltas_with_path(
+        [vector.delta for vector in vectors],
+        lambda path, leaves: _weighted_leaf(
+            leaves,
+            _resolve_merge_weights(
+                len(vectors),
+                layer_coefficients.get(path_to_str(path), default_weights),
+                normalize=config.normalize_coefficients,
+            ),
+        ),
+    )
+    return _merged_task_vector(
+        vectors,
+        merged,
+        metadata=_adamerging_metadata(config, default_weights),
+    )
+
+
+def learn_adamerging_coefficients(
+    loss_fn: Callable[[jax.Array, Any], jax.Array],
+    unlabeled_batches: Sequence[Any],
+    *,
+    task_count: int,
+    data_fingerprint: str,
+    steps: int = 100,
+    learning_rate: float = 0.1,
+    init_coefficients: Sequence[float] | None = None,
+    normalize_coefficients: bool = True,
+) -> AdaMergingConfig:
+    """Learn global AdaMerging task coefficients from unlabeled batches."""
+
+    if task_count <= 0:
+        raise ValueError("task_count must be positive.")
+    if not unlabeled_batches:
+        raise ValueError("unlabeled_batches must not be empty.")
+    if not data_fingerprint:
+        raise ValueError("data_fingerprint is required for learned coefficients.")
+    if steps < 0:
+        raise ValueError("steps must be non-negative.")
+    if learning_rate <= 0.0:
+        raise ValueError("learning_rate must be positive.")
+    if init_coefficients is None:
+        params = jnp.zeros((task_count,), dtype=jnp.float32)
+    else:
+        if len(init_coefficients) != task_count:
+            raise ValueError("init_coefficients length must match task_count.")
+        if normalize_coefficients:
+            init = jnp.asarray(
+                _resolve_merge_weights(
+                    task_count,
+                    init_coefficients,
+                    normalize=True,
+                ),
+                dtype=jnp.float32,
+            )
+            params = jnp.log(jnp.maximum(init, 1e-8))
+        else:
+            params = jnp.asarray(init_coefficients, dtype=jnp.float32)
+
+    def coefficients(raw_params):
+        return jax.nn.softmax(raw_params) if normalize_coefficients else raw_params
+
+    def objective(raw_params):
+        weights = coefficients(raw_params)
+        total = jnp.asarray(0.0, dtype=jnp.float32)
+        for batch in unlabeled_batches:
+            total = total + jnp.asarray(loss_fn(weights, batch), dtype=jnp.float32)
+        return total / len(unlabeled_batches)
+
+    grad_fn = jax.grad(objective)
+    for _ in range(steps):
+        params = params - learning_rate * grad_fn(params)
+
+    learned = tuple(float(value) for value in np.asarray(coefficients(params)))
+    return AdaMergingConfig(
+        coefficients=learned,
+        data_fingerprint=data_fingerprint,
+        coefficient_source="learned",
+        normalize_coefficients=normalize_coefficients,
+    )
+
+
+def knots_task_vector(
+    vectors: Sequence[TaskVector],
+    *,
+    config: KnOTSConfig | None = None,
+) -> TaskVector:
+    """Merge task vectors with a KnOTS-style shared left singular basis."""
+
+    if not vectors:
+        raise ValueError("knots_task_vector requires at least one task vector.")
+    config = KnOTSConfig() if config is None else config
+    if config.rank is not None and config.rank <= 0:
+        raise ValueError("KnOTS rank must be positive when provided.")
+    if config.basis_policy != "shared_left_svd":
+        raise ValueError("KnOTSConfig.basis_policy currently supports 'shared_left_svd'.")
+    _check_vector_compatibility(
+        vectors,
+        require_same_base_hash=config.require_same_base_hash,
+    )
+    merged = _merge_deltas(
+        [vector.delta for vector in vectors],
+        lambda leaves: _knots_leaf(leaves, config=config),
+    )
+    return _merged_task_vector(vectors, merged, metadata=_knots_metadata(config))
+
+
+def tsv_task_vector(
+    vectors: Sequence[TaskVector],
+    *,
+    config: TSVConfig | None = None,
+) -> TaskVector:
+    """Merge task vectors with a Task Singular Vectors-style basis."""
+
+    if not vectors:
+        raise ValueError("tsv_task_vector requires at least one task vector.")
+    config = TSVConfig() if config is None else config
+    if config.rank is not None and config.rank <= 0:
+        raise ValueError("TSV rank must be positive when provided.")
+    if config.truncation_policy != "per_task_svd_rank":
+        raise ValueError(
+            "TSVConfig.truncation_policy currently supports 'per_task_svd_rank'."
+        )
+    if config.orthogonalization_policy != "shared_right_svd_orthogonal_basis":
+        raise ValueError(
+            "TSVConfig.orthogonalization_policy currently supports "
+            "'shared_right_svd_orthogonal_basis'."
+        )
+    _check_vector_compatibility(
+        vectors,
+        require_same_base_hash=config.require_same_base_hash,
+    )
+    merged = _merge_deltas(
+        [vector.delta for vector in vectors],
+        lambda leaves: _tsv_leaf(leaves, config=config),
+    )
+    return _merged_task_vector(vectors, merged, metadata=_tsv_metadata(config))
+
+
+def task_vector_bundle(
+    vector: TaskVector,
+    *,
+    method: str,
+    metadata: Mapping[str, Any] | None = None,
+    adapter_config: Mapping[str, Any] | None = None,
+) -> FineTuneBundle:
+    """Package a merged task vector as a portable fine-tuning bundle."""
+
+    merged_metadata = dict(vector.metadata)
+    if metadata:
+        merged_metadata.update(metadata)
+    method_config = dict(adapter_config or {})
+    method_config.setdefault("method", method)
+    method_config.setdefault("include_head", vector.include_head)
+    method_config.setdefault("metadata", merged_metadata)
+    return FineTuneBundle(
+        method=method,
+        schema_version=1,
+        architecture_hash=vector.base_architecture_hash,
+        adapter_config=method_config,
+        delta_tree=vector.delta,
+        lineage=ModelLineage(
+            architecture_hash=vector.base_architecture_hash or None,
+            base_checkpoint_hash=vector.base_checkpoint_hash or None,
+            notes={"merge": merged_metadata},
+        ),
+        metadata=merged_metadata,
+    )
+
+
+@dataclass(frozen=True)
+class AdaMerging:
+    """AdaMerging method wrapper for the common merge interface."""
+
+    config: AdaMergingConfig = field(default_factory=AdaMergingConfig)
+
+    def prepare(
+        self,
+        models: Sequence[PyTree | TaskVector],
+        artifacts: Mapping[str, Any] | None = None,
+    ) -> MergePlan:
+        vectors = _task_vectors_from_inputs(models, artifacts)
+        config = _adamerging_config_from_artifacts(self.config, artifacts)
+        method_config = _adamerging_config_dict(config)
+        return MergePlan(
+            method="adamerging",
+            task_vectors=vectors,
+            method_config=method_config,
+            metadata=_adamerging_metadata(
+                config,
+                _resolve_merge_weights(
+                    len(vectors),
+                    config.coefficients,
+                    normalize=config.normalize_coefficients,
+                ),
+            ),
+        )
+
+    def merge(self, plan: MergePlan) -> FineTuneBundle:
+        config = _adamerging_config_from_mapping(plan.method_config)
+        vector = adamerging_task_vector(plan.task_vectors, config=config)
+        return task_vector_bundle(
+            vector,
+            method=plan.method,
+            metadata=plan.metadata,
+            adapter_config={"method_config": plan.method_config},
+        )
+
+
+@dataclass(frozen=True)
+class KnOTSMerging:
+    """KnOTS method wrapper for the common merge interface."""
+
+    config: KnOTSConfig = field(default_factory=KnOTSConfig)
+
+    def prepare(
+        self,
+        models: Sequence[PyTree | TaskVector],
+        artifacts: Mapping[str, Any] | None = None,
+    ) -> MergePlan:
+        vectors = _task_vectors_from_inputs(models, artifacts)
+        method_config = _knots_config_dict(self.config)
+        return MergePlan(
+            method="knots",
+            task_vectors=vectors,
+            method_config=method_config,
+            metadata=_knots_metadata(self.config),
+        )
+
+    def merge(self, plan: MergePlan) -> FineTuneBundle:
+        config = _knots_config_from_mapping(plan.method_config)
+        vector = knots_task_vector(plan.task_vectors, config=config)
+        return task_vector_bundle(
+            vector,
+            method=plan.method,
+            metadata=plan.metadata,
+            adapter_config={"method_config": plan.method_config},
+        )
+
+
+@dataclass(frozen=True)
+class TSVMerging:
+    """TSV method wrapper for the common merge interface."""
+
+    config: TSVConfig = field(default_factory=TSVConfig)
+
+    def prepare(
+        self,
+        models: Sequence[PyTree | TaskVector],
+        artifacts: Mapping[str, Any] | None = None,
+    ) -> MergePlan:
+        vectors = _task_vectors_from_inputs(models, artifacts)
+        method_config = _tsv_config_dict(self.config)
+        return MergePlan(
+            method="tsv",
+            task_vectors=vectors,
+            method_config=method_config,
+            metadata=_tsv_metadata(self.config),
+        )
+
+    def merge(self, plan: MergePlan) -> FineTuneBundle:
+        config = _tsv_config_from_mapping(plan.method_config)
+        vector = tsv_task_vector(plan.task_vectors, config=config)
+        return task_vector_bundle(
+            vector,
+            method=plan.method,
+            metadata=plan.metadata,
+            adapter_config={"method_config": plan.method_config},
+        )
+
+
+def _task_vectors_from_inputs(
+    models: Sequence[PyTree | TaskVector],
+    artifacts: Mapping[str, Any] | None,
+) -> tuple[TaskVector, ...]:
+    artifacts = {} if artifacts is None else artifacts
+    artifact_vectors = artifacts.get("task_vectors")
+    if artifact_vectors is not None:
+        return _task_vector_tuple(artifact_vectors)
+    if all(isinstance(model, TaskVector) for model in models):
+        return _task_vector_tuple(models)
+    base_model = artifacts.get("base_model")
+    if base_model is not None:
+        include_head = bool(artifacts.get("include_head", False))
+        return tuple(
+            task_vector(base_model, model, include_head=include_head)
+            for model in models
+        )
+    raise ValueError(
+        "Modern merge preparation requires TaskVector inputs, "
+        "artifacts['task_vectors'], or artifacts['base_model']."
+    )
+
+
+def _task_vector_tuple(vectors: Sequence[Any]) -> tuple[TaskVector, ...]:
+    resolved = tuple(vectors)
+    if not resolved:
+        raise ValueError("Modern merge preparation requires at least one task vector.")
+    if not all(isinstance(vector, TaskVector) for vector in resolved):
+        raise TypeError("task_vectors must contain only TaskVector instances.")
+    return resolved
+
+
+def _merged_task_vector(
+    vectors: Sequence[TaskVector],
+    merged: PyTree,
+    *,
+    metadata: Mapping[str, Any],
+) -> TaskVector:
+    first = vectors[0]
+    return TaskVector(
+        merged,
+        include_head=all(vector.include_head for vector in vectors),
+        base_architecture_hash=first.base_architecture_hash,
+        base_checkpoint_hash=first.base_checkpoint_hash,
+        metadata=dict(metadata),
+    )
+
+
+def _merge_deltas_with_path(deltas: Sequence[PyTree], leaf_fn) -> PyTree:
+    first, *rest = deltas
+    return jtu.tree_map_with_path(
+        lambda path, leaf, *others: leaf_fn(key_path_to_path(path), (leaf, *others)),
+        first,
+        *rest,
+    )
+
+
+def _resolve_merge_weights(
+    count: int,
+    weights: Sequence[float] | tuple[float, ...],
+    *,
+    normalize: bool,
+) -> tuple[float, ...]:
+    if not weights:
+        return (1.0 / count,) * count
+    if len(weights) != count:
+        raise ValueError("merge coefficient count must match task-vector count.")
+    resolved = tuple(float(weight) for weight in weights)
+    if not normalize:
+        return resolved
+    total = float(sum(resolved))
+    if total == 0.0:
+        raise ValueError("merge coefficients must not sum to zero.")
+    return tuple(weight / total for weight in resolved)
+
+
+def _weighted_leaf(leaves, weights: Sequence[float]):
+    first = leaves[0]
+    if not eqx.is_inexact_array(first):
+        return first
+    _check_leaf_shapes(leaves)
+    total = jnp.zeros_like(first)
+    for leaf, weight in zip(leaves, weights, strict=True):
+        total = total + leaf * weight
+    return total
+
+
+def _knots_leaf(leaves, *, config: KnOTSConfig):
+    first = leaves[0]
+    if not eqx.is_inexact_array(first):
+        return first
+    _check_leaf_shapes(leaves)
+    if first.ndim != 2:
+        return _non_matrix_leaf(leaves, config.non_matrix_policy)
+    concatenated = jnp.concatenate(tuple(jnp.asarray(leaf) for leaf in leaves), axis=1)
+    left_basis, _, _ = jnp.linalg.svd(concatenated, full_matrices=False)
+    rank = _resolve_svd_rank(config.rank, left_basis.shape[1])
+    if rank == 0:
+        return jnp.zeros_like(first)
+    basis = left_basis[:, :rank]
+    coordinate_sum = jnp.zeros((rank, first.shape[1]), dtype=first.dtype)
+    for leaf in leaves:
+        coordinate_sum = coordinate_sum + basis.T @ leaf
+    return basis @ (coordinate_sum / len(leaves))
+
+
+def _tsv_leaf(leaves, *, config: TSVConfig):
+    first = leaves[0]
+    if not eqx.is_inexact_array(first):
+        return first
+    _check_leaf_shapes(leaves)
+    if first.ndim != 2:
+        return _non_matrix_leaf(leaves, config.non_matrix_policy)
+    per_task = []
+    right_rows = []
+    for leaf in leaves:
+        left, singular_values, right = jnp.linalg.svd(leaf, full_matrices=False)
+        rank = _resolve_svd_rank(config.rank, singular_values.shape[0])
+        if rank == 0:
+            continue
+        truncated = (left[:, :rank] * singular_values[:rank]) @ right[:rank]
+        per_task.append(truncated)
+        right_rows.append(right[:rank])
+    if not right_rows:
+        return jnp.zeros_like(first)
+    right_stack = jnp.concatenate(tuple(right_rows), axis=0)
+    _, _, shared_right = jnp.linalg.svd(right_stack, full_matrices=False)
+    basis_rank = min(shared_right.shape[0], right_stack.shape[0], first.shape[1])
+    if basis_rank == 0:
+        return jnp.zeros_like(first)
+    right_basis = shared_right[:basis_rank]
+    projection = right_basis.T @ right_basis
+    total = jnp.zeros_like(first)
+    for truncated in per_task:
+        total = total + truncated @ projection
+    return total / len(per_task)
+
+
+def _non_matrix_leaf(leaves, policy: str):
+    if policy == "mean":
+        return _weighted_leaf(leaves, (1.0 / len(leaves),) * len(leaves))
+    if policy == "base":
+        first = leaves[0]
+        return jnp.zeros_like(first) if eqx.is_inexact_array(first) else first
+    if policy == "error":
+        raise ValueError("Modern merge encountered a non-matrix leaf.")
+    raise ValueError("non_matrix_policy must be 'mean', 'base', or 'error'.")
+
+
+def _check_leaf_shapes(leaves) -> None:
+    first = leaves[0]
+    for leaf in leaves:
+        if not eqx.is_inexact_array(leaf) or leaf.shape != first.shape:
+            raise ValueError("Modern merge encountered incompatible leaves.")
+
+
+def _resolve_svd_rank(rank: int | None, max_rank: int) -> int:
+    if max_rank <= 0:
+        return 0
+    if rank is None:
+        return int(max_rank)
+    return min(int(rank), int(max_rank))
+
+
+def _adamerging_metadata(
+    config: AdaMergingConfig,
+    coefficients: Sequence[float],
+) -> dict[str, Any]:
+    return {
+        "method": "adamerging",
+        "profile_fidelity": "experimental",
+        "coefficients": tuple(float(weight) for weight in coefficients),
+        "layer_coefficients": {
+            str(path): tuple(float(weight) for weight in weights)
+            for path, weights in config.layer_coefficients.items()
+        },
+        "data_fingerprint": config.data_fingerprint,
+        "coefficient_source": config.coefficient_source,
+        "normalize_coefficients": config.normalize_coefficients,
+    }
+
+
+def _knots_metadata(config: KnOTSConfig) -> dict[str, Any]:
+    return {
+        "method": "knots",
+        "profile_fidelity": "experimental",
+        "rank": config.rank,
+        "basis_policy": config.basis_policy,
+        "orientation": config.orientation,
+        "non_matrix_policy": config.non_matrix_policy,
+    }
+
+
+def _tsv_metadata(config: TSVConfig) -> dict[str, Any]:
+    return {
+        "method": "tsv",
+        "profile_fidelity": "experimental",
+        "rank": config.rank,
+        "truncation_policy": config.truncation_policy,
+        "orthogonalization_policy": config.orthogonalization_policy,
+        "orientation": config.orientation,
+        "non_matrix_policy": config.non_matrix_policy,
+    }
+
+
+def _adamerging_config_dict(config: AdaMergingConfig) -> dict[str, Any]:
+    return {
+        "coefficients": tuple(float(weight) for weight in config.coefficients),
+        "layer_coefficients": {
+            str(path): tuple(float(weight) for weight in weights)
+            for path, weights in config.layer_coefficients.items()
+        },
+        "data_fingerprint": config.data_fingerprint,
+        "coefficient_source": config.coefficient_source,
+        "normalize_coefficients": config.normalize_coefficients,
+        "require_same_base_hash": config.require_same_base_hash,
+    }
+
+
+def _adamerging_config_from_mapping(config: Mapping[str, Any]) -> AdaMergingConfig:
+    return AdaMergingConfig(
+        coefficients=tuple(float(weight) for weight in config.get("coefficients", ())),
+        layer_coefficients={
+            str(path): tuple(float(weight) for weight in weights)
+            for path, weights in config.get("layer_coefficients", {}).items()
+        },
+        data_fingerprint=config.get("data_fingerprint"),
+        coefficient_source=str(config.get("coefficient_source", "equal_fallback")),
+        normalize_coefficients=bool(config.get("normalize_coefficients", True)),
+        require_same_base_hash=bool(config.get("require_same_base_hash", True)),
+    )
+
+
+def _adamerging_config_from_artifacts(
+    config: AdaMergingConfig,
+    artifacts: Mapping[str, Any] | None,
+) -> AdaMergingConfig:
+    if artifacts is None:
+        return config
+    return AdaMergingConfig(
+        coefficients=tuple(
+            float(weight)
+            for weight in artifacts.get("coefficients", config.coefficients)
+        ),
+        layer_coefficients={
+            str(path): tuple(float(weight) for weight in weights)
+            for path, weights in artifacts.get(
+                "layer_coefficients",
+                config.layer_coefficients,
+            ).items()
+        },
+        data_fingerprint=artifacts.get("data_fingerprint", config.data_fingerprint),
+        coefficient_source=str(
+            artifacts.get("coefficient_source", config.coefficient_source)
+        ),
+        normalize_coefficients=bool(
+            artifacts.get("normalize_coefficients", config.normalize_coefficients)
+        ),
+        require_same_base_hash=bool(
+            artifacts.get("require_same_base_hash", config.require_same_base_hash)
+        ),
+    )
+
+
+def _knots_config_dict(config: KnOTSConfig) -> dict[str, Any]:
+    return {
+        "rank": config.rank,
+        "orientation": config.orientation,
+        "basis_policy": config.basis_policy,
+        "non_matrix_policy": config.non_matrix_policy,
+        "require_same_base_hash": config.require_same_base_hash,
+    }
+
+
+def _knots_config_from_mapping(config: Mapping[str, Any]) -> KnOTSConfig:
+    return KnOTSConfig(
+        rank=config.get("rank"),
+        orientation=str(config.get("orientation", "out_in")),
+        basis_policy=str(config.get("basis_policy", "shared_left_svd")),
+        non_matrix_policy=str(config.get("non_matrix_policy", "mean")),
+        require_same_base_hash=bool(config.get("require_same_base_hash", True)),
+    )
+
+
+def _tsv_config_dict(config: TSVConfig) -> dict[str, Any]:
+    return {
+        "rank": config.rank,
+        "orientation": config.orientation,
+        "truncation_policy": config.truncation_policy,
+        "orthogonalization_policy": config.orthogonalization_policy,
+        "non_matrix_policy": config.non_matrix_policy,
+        "require_same_base_hash": config.require_same_base_hash,
+    }
+
+
+def _tsv_config_from_mapping(config: Mapping[str, Any]) -> TSVConfig:
+    return TSVConfig(
+        rank=config.get("rank"),
+        orientation=str(config.get("orientation", "out_in")),
+        truncation_policy=str(config.get("truncation_policy", "per_task_svd_rank")),
+        orthogonalization_policy=str(
+            config.get(
+                "orthogonalization_policy",
+                "shared_right_svd_orthogonal_basis",
+            )
+        ),
+        non_matrix_policy=str(config.get("non_matrix_policy", "mean")),
+        require_same_base_hash=bool(config.get("require_same_base_hash", True)),
+    )
+
+
 def _greedy_soup_from_best(
     models: Sequence[PyTree],
     score_fn: Callable[[PyTree], float],
@@ -805,8 +1478,16 @@ def _base_hash_metadata(model: PyTree) -> str | None:
 
 
 __all__ = (
+    "AdaMerging",
+    "AdaMergingConfig",
     "TaskVector",
     "TaskVectorConfig",
+    "KnOTSConfig",
+    "KnOTSMerging",
+    "MergeMethod",
+    "MergePlan",
+    "TSVConfig",
+    "TSVMerging",
     "TIESConfig",
     "UniformSoupConfig",
     "WiSEFTConfig",
@@ -815,14 +1496,19 @@ __all__ = (
     "FisherMergeConfig",
     "GreedySoupConfig",
     "RegMeanConfig",
+    "adamerging_task_vector",
     "apply_task_vector",
     "breadcrumbs_task_vector",
     "dare_task_vector",
     "fisher_merge",
     "greedy_soup",
     "interpolate_models",
+    "knots_task_vector",
+    "learn_adamerging_coefficients",
     "regmean_merge",
+    "task_vector_bundle",
     "task_vector",
     "ties_merge",
+    "tsv_task_vector",
     "uniform_soup",
 )

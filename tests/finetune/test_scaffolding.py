@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import equinox as eqx
+import jax.numpy as jnp
+
 import equimo.finetune as eqft
 
 from fixtures import (
@@ -205,6 +208,24 @@ def test_tiny_fixture_paths_are_predictable(tiny_vision_transformer, tiny_text_e
     assert "head.bias" in vit_paths
     assert "token_embed.weight" in text_paths
     assert "blocks.0.attn.proj.weight" in text_paths
+
+
+class _TiedLeaves(eqx.Module):
+    left: jnp.ndarray
+    right: jnp.ndarray
+
+
+def test_param_identities_mark_tied_alias_groups():
+    shared = jnp.ones((2,), dtype=jnp.float32)
+    model = _TiedLeaves(shared, shared)
+
+    plan = eqft.prepare_finetune(
+        model,
+        trainable=eqft.TrainableSpec(mode="full"),
+    )
+
+    assert plan.identities.left.alias_group is not None
+    assert plan.identities.left.alias_group == plan.identities.right.alias_group
 
 
 def test_finetune_core_does_not_import_optimizer_libraries():

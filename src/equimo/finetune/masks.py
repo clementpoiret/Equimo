@@ -82,6 +82,8 @@ def _base_trainable_paths(
             "lora",
             "dora",
             "adapter",
+            "repadapter",
+            "randlora",
             "prompt",
             "prefix",
             "ia3",

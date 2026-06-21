@@ -217,7 +217,14 @@ def infer_role(tags: Iterable[str]) -> str:
     for tag, role in (
         ("lora.factor_A", "lora.factor_A"),
         ("lora.factor_B", "lora.factor_B"),
+        ("lora_fa.factor_B", "lora_fa.factor_B"),
         ("adalora.singular", "adalora.singular"),
+        ("fourierft", "fourierft"),
+        ("orthogonal", "orthogonal"),
+        ("convpass", "convpass"),
+        ("repadapter", "repadapter"),
+        ("randlora.scale", "randlora.scale"),
+        ("randlora", "randlora"),
         ("lora", "lora"),
         ("head", "head"),
         ("attention.qkv", "attention.qkv"),
@@ -313,10 +320,36 @@ def _add_conv_stage_tags(parts: tuple[str, ...], tags: set[str]) -> None:
 
 
 def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
+    if "frozen_A" in parts:
+        tags.update(("lora_fa", "peft.metadata"))
+    if "lora_fa_B" in parts:
+        tags.update(("peft", "lora_fa", "lora_fa.factor_B"))
     if "lora_A" in parts:
         tags.update(("lora", "lora.factor_A"))
     if "lora_B" in parts:
         tags.update(("lora", "lora.factor_B"))
+    if "coefficients_real" in parts or "coefficients_imag" in parts:
+        tags.update(("peft", "fourierft"))
+    if "frequency_indices" in parts:
+        tags.add("peft.metadata")
+    if "skew" in parts:
+        tags.update(("peft", "orthogonal"))
+    if "convpass" in parts:
+        tags.update(("peft", "convpass", "adapter"))
+    if "spatial_kernel" in parts:
+        tags.update(("peft", "convpass"))
+    is_repadapter_branch = (
+        {"down", "up", "residual_scale"}.intersection(parts)
+        and {"attn", "attention", "mlp", "ffn", "feed_forward"}.intersection(parts)
+        and "adapters" not in parts
+        and "convpass" not in parts
+    )
+    if is_repadapter_branch:
+        tags.update(("peft", "repadapter", "adapter"))
+    if "basis_scales" in parts:
+        tags.update(("peft", "randlora", "randlora.scale"))
+    if "random_A" in parts or "random_B" in parts:
+        tags.update(("randlora", "peft.metadata"))
     if "singular" in parts and "adalora" in parts:
         tags.update(("adalora", "adalora.singular"))
     if "rank_mask" in parts:

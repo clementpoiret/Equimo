@@ -142,7 +142,7 @@ def test_ia3_delta_missing_path_raises_bundle_error(tmp_path, tiny_vision_transf
     entries[0]["path"] = "blocks.99.attn.proj"
     bad_bundle = replace(bundle, adapter_config={"entries": entries})
 
-    with pytest.raises(eqft.FineTuneBundleError, match="no matching leaf"):
+    with pytest.raises(eqft.FineTuneBundleError, match="logical-ID table mismatch|no matching leaf"):
         eqft.load_delta(tiny_vision_transformer, bad_bundle)
 
 

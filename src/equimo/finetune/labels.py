@@ -118,8 +118,22 @@ def _label_base(info: ParamInfo, config: LLRDConfig) -> str:
         return "lora_A"
     if "lora.factor_B" in info.tags:
         return "lora_B"
+    if "lora_fa.factor_B" in info.tags:
+        return "lora_fa_B"
     if "adalora.singular" in info.tags:
         return "adalora_singular"
+    if "fourierft" in info.tags:
+        return "fourierft"
+    if "orthogonal" in info.tags:
+        return "orthogonal"
+    if "convpass" in info.tags:
+        return "convpass"
+    if "repadapter" in info.tags:
+        return "repadapter"
+    if "randlora.scale" in info.tags:
+        return "randlora_scale"
+    if "randlora" in info.tags:
+        return "randlora"
     if "lora" in info.tags:
         return "lora"
     if "dora.magnitude" in info.tags:

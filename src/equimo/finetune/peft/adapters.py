@@ -109,8 +109,37 @@ class AdaptFormerConfig:
     dropout: float = 0.0
     up_init: str = "zeros"
     scale_init: float = 1.0
+    scale_trainable: bool = True
     train_head: bool = True
     target: TargetSpec = TargetSpec(tags_any=("block",))
+
+    @classmethod
+    def safe_default(
+        cls,
+        *,
+        bottleneck: int = 64,
+        target: TargetSpec = TargetSpec(tags_any=("block",)),
+    ) -> "AdaptFormerConfig":
+        """Return Equimo's identity-preserving AdaptFormer recipe."""
+
+        return cls(bottleneck=bottleneck, target=target)
+
+    @classmethod
+    def paper_chen2022(
+        cls,
+        *,
+        bottleneck: int = 64,
+        target: TargetSpec = TargetSpec(tags_any=("block",)),
+    ) -> "AdaptFormerConfig":
+        """Return the Chen et al. AdaptFormer paper profile."""
+
+        return cls(
+            bottleneck=bottleneck,
+            activation="relu",
+            scale_init=0.1,
+            scale_trainable=False,
+            target=target,
+        )
 
 
 @dataclass(frozen=True)
@@ -141,6 +170,13 @@ class OrthogonalAdapterConfig:
     block_size: int | None = None
     num_factors: int = 1
     eps: float = 1e-6
+    train_base: bool = False
+    mergeable: bool = True
+    target: TargetSpec = TargetSpec(tags_any=("attention.qkv", "attention.proj", "mlp.fc1", "mlp.fc2"))
+
+    def __post_init__(self) -> None:
+        if self.num_factors < 1:
+            raise ValueError("OrthogonalAdapterConfig.num_factors must be positive.")
 
 
 @dataclass(frozen=True)
@@ -148,12 +184,31 @@ class ConvPassConfig:
     """Vision-native ConvPass adapter configuration."""
 
     bottleneck: int = 8
-    kernel_size: int = 3
-    placement: Literal["parallel_mlp", "parallel_block"] = "parallel_mlp"
+    placement: tuple[Literal["attention", "mlp"], ...] = ("attention", "mlp")
+    spatial_kernel: int = 3
     activation: ActivationName = "gelu"
     dropout: float = 0.0
     up_init: str = "zeros"
+    class_token_policy: Literal["separate", "bypass", "exclude"] = "separate"
+    patch_grid: tuple[int, int] | None = None
+    train_base: bool = False
     target: TargetSpec = TargetSpec(tags_any=("block",))
+
+
+@dataclass(frozen=True)
+class RepAdapterConfig:
+    """Structurally reparameterizable linear adapter configuration."""
+
+    bottleneck: int = 8
+    residual_scale_init: float = 1.0
+    down_init: str = "kaiming_uniform"
+    up_init: str = "zeros"
+    branch_bias: bool = False
+    train_base: bool = False
+    mergeable: bool = True
+    target: TargetSpec = TargetSpec(
+        tags_any=("attention.proj", "mlp.fc1", "mlp.fc2")
+    )
 
 
 class AdapterFusion(eqx.Module):
@@ -414,6 +469,425 @@ class AdaptFormerBlock(eqx.Module):
         key_base, key_adapter = _split_pair(key)
         y = _call_base(self.base, x, *args, key=key_base, inference=inference, **kwargs)
         return y + self.adapter(x, key=key_adapter, inference=inference)
+
+
+class OrthogonalLinear(eqx.Module):
+    """OFT/BOFT-style orthogonal wrapper for a linear-like module."""
+
+    base: eqx.Module
+    skew: jax.Array
+    side: Literal["input", "output"] = eqx.field(static=True)
+    parameterization: Literal["cayley", "butterfly_cayley"] = eqx.field(static=True)
+    block_size: int | None = eqx.field(static=True)
+    num_factors: int = eqx.field(static=True)
+    eps: float = eqx.field(static=True)
+    train_base: bool = eqx.field(static=True)
+    mergeable: bool = eqx.field(static=True)
+    merged: bool = eqx.field(static=True)
+
+    def __init__(
+        self,
+        base: eqx.Module,
+        *,
+        side: Literal["input", "output"],
+        parameterization: Literal["cayley", "butterfly_cayley"],
+        block_size: int | None,
+        num_factors: int,
+        eps: float,
+        train_base: bool,
+        mergeable: bool,
+        skew: jax.Array | None = None,
+        merged: bool = False,
+    ):
+        weight = _linear_weight(base)
+        dim = weight.shape[1] if side == "input" else weight.shape[0]
+        if parameterization == "butterfly_cayley" and block_size is None:
+            raise ValueError("BOFT butterfly_cayley requires an explicit block_size.")
+        if block_size is not None and dim % block_size != 0:
+            raise ValueError("OrthogonalAdapterConfig.block_size must divide the adapted dimension.")
+        self.base = base
+        self.skew = (
+            jnp.zeros(
+                _orthogonal_skew_shape(
+                    dim,
+                    block_size,
+                    num_factors=(
+                        num_factors
+                        if parameterization == "butterfly_cayley"
+                        else 1
+                    ),
+                ),
+                dtype=weight.dtype,
+            )
+            if skew is None
+            else skew
+        )
+        self.side = side
+        self.parameterization = parameterization
+        self.block_size = block_size
+        self.num_factors = num_factors
+        self.eps = eps
+        self.train_base = train_base
+        self.mergeable = mergeable
+        self.merged = merged
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        if self.merged:
+            return self.base(x)
+        if self.parameterization == "butterfly_cayley":
+            if self.side == "input":
+                return self.base(_apply_boft_to_last_axis(x, self.skew, eps=self.eps))
+            y = _linear_call(_linear_weight(self.base), None, x)
+            y = _apply_boft_to_last_axis(y, self.skew, eps=self.eps)
+            bias = _linear_bias(self.base)
+            return y if bias is None else y + bias
+        return _linear_call(self.effective_weight(), _linear_bias(self.base), x)
+
+    def orthogonal_matrix(self) -> jax.Array:
+        """Return the current orthogonal transform."""
+
+        return _orthogonal_from_skew(self.skew, eps=self.eps, block_size=self.block_size)
+
+    def effective_weight(self) -> jax.Array:
+        """Return the dense effective weight."""
+
+        weight = _linear_weight(self.base)
+        R = self.orthogonal_matrix().astype(weight.dtype)
+        if self.side == "input":
+            return weight @ R
+        return R @ weight
+
+    def delta_weight(self) -> jax.Array:
+        """Return the dense delta implied by the orthogonal transform."""
+
+        return self.effective_weight() - _linear_weight(self.base)
+
+    def orthogonality_error(self) -> jax.Array:
+        """Return ``||R^T R - I||_F^2`` in fp32."""
+
+        R = self.orthogonal_matrix().astype(jnp.float32)
+        eye = jnp.eye(R.shape[0], dtype=jnp.float32)
+        return jnp.sum((R.T @ R - eye) ** 2)
+
+    def merge(self):
+        """Return a module with the orthogonal transform folded into weight."""
+
+        if not self.mergeable:
+            raise ValueError("This orthogonal adapter is not mergeable.")
+        if self.merged:
+            raise ValueError("Orthogonal adapter is already merged.")
+        base = eqx.tree_at(
+            lambda linear: linear.weight,
+            self.base,
+            self.effective_weight().astype(_linear_weight(self.base).dtype),
+        )
+        return self._replace(base=base, merged=True)
+
+    def unmerge(self):
+        """Return a module with the orthogonal transform removed from weight."""
+
+        if not self.merged:
+            return self
+        R = self.orthogonal_matrix().astype(_linear_weight(self.base).dtype)
+        unmerged_weight = (
+            _linear_weight(self.base) @ R.T
+            if self.side == "input"
+            else R.T @ _linear_weight(self.base)
+        )
+        base = eqx.tree_at(
+            lambda linear: linear.weight,
+            self.base,
+            unmerged_weight,
+        )
+        return self._replace(base=base, merged=False)
+
+    def _replace(self, *, base: eqx.Module, merged: bool):
+        return OrthogonalLinear(
+            base,
+            side=self.side,
+            parameterization=self.parameterization,
+            block_size=self.block_size,
+            num_factors=self.num_factors,
+            eps=self.eps,
+            train_base=self.train_base,
+            mergeable=self.mergeable,
+            skew=self.skew,
+            merged=merged,
+        )
+
+
+class RepAdapterLinear(eqx.Module):
+    """Linear RepAdapter branch that can be exactly folded into the host weight."""
+
+    base: eqx.Module
+    down: eqx.nn.Linear
+    up: eqx.nn.Linear
+    residual_scale: jax.Array
+    train_base: bool = eqx.field(static=True)
+    mergeable: bool = eqx.field(static=True)
+    merged: bool = eqx.field(static=True)
+
+    def __init__(
+        self,
+        base: eqx.Module,
+        *,
+        bottleneck: int,
+        residual_scale_init: float,
+        down_init: str,
+        up_init: str,
+        branch_bias: bool,
+        train_base: bool,
+        mergeable: bool,
+        key: jax.Array,
+        down: eqx.nn.Linear | None = None,
+        up: eqx.nn.Linear | None = None,
+        residual_scale: jax.Array | None = None,
+        merged: bool = False,
+    ):
+        if bottleneck < 1:
+            raise ValueError("RepAdapter bottleneck must be >= 1.")
+        weight = _linear_weight(base)
+        out_features, in_features = weight.shape
+        key_down, key_up = jr.split(key, 2)
+        self.base = base
+        self.down = (
+            _init_linear(
+                eqx.nn.Linear(
+                    in_features,
+                    bottleneck,
+                    use_bias=branch_bias,
+                    key=key_down,
+                ),
+                key_down,
+                down_init,
+            )
+            if down is None
+            else down
+        )
+        self.up = (
+            _init_linear(
+                eqx.nn.Linear(
+                    bottleneck,
+                    out_features,
+                    use_bias=branch_bias,
+                    key=key_up,
+                ),
+                key_up,
+                up_init,
+            )
+            if up is None
+            else up
+        )
+        self.residual_scale = (
+            jnp.asarray(residual_scale_init, dtype=weight.dtype)
+            if residual_scale is None
+            else residual_scale
+        )
+        self.train_base = train_base
+        self.mergeable = mergeable
+        self.merged = merged
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        y = self.base(x)
+        if self.merged:
+            return y
+        return y + _apply_last_axis(self.up, _apply_last_axis(self.down, x)) * self.residual_scale
+
+    def delta_weight(self) -> jax.Array:
+        """Return the dense linear branch update."""
+
+        return (self.up.weight @ self.down.weight) * self.residual_scale
+
+    def delta_bias(self) -> jax.Array | None:
+        """Return the bias contribution of the reparameterized branch."""
+
+        down_bias = self.down.bias
+        up_bias = self.up.bias
+        if down_bias is None and up_bias is None:
+            return None
+        dtype = self.up.weight.dtype
+        bias = jnp.zeros((self.up.out_features,), dtype=dtype)
+        if down_bias is not None:
+            bias = bias + self.up.weight @ down_bias
+        if up_bias is not None:
+            bias = bias + up_bias
+        return bias * self.residual_scale
+
+    def merge(self):
+        """Return a module with the RepAdapter branch folded into ``base``."""
+
+        if not self.mergeable:
+            raise ValueError("This RepAdapter module is not mergeable.")
+        if self.merged:
+            raise ValueError("RepAdapter module is already merged.")
+        base = eqx.tree_at(
+            lambda linear: linear.weight,
+            self.base,
+            _linear_weight(self.base) + self.delta_weight().astype(_linear_weight(self.base).dtype),
+        )
+        delta_bias = self.delta_bias()
+        if delta_bias is not None:
+            base_bias = _linear_bias(base)
+            if base_bias is None:
+                raise ValueError("Cannot merge a biased RepAdapter into a biasless base.")
+            base = eqx.tree_at(
+                lambda linear: linear.bias,
+                base,
+                base_bias + delta_bias.astype(base_bias.dtype),
+            )
+        return self._replace(base=base, merged=True)
+
+    def unmerge(self):
+        """Return a module with the RepAdapter branch removed from ``base``."""
+
+        if not self.merged:
+            return self
+        base = eqx.tree_at(
+            lambda linear: linear.weight,
+            self.base,
+            _linear_weight(self.base) - self.delta_weight().astype(_linear_weight(self.base).dtype),
+        )
+        delta_bias = self.delta_bias()
+        if delta_bias is not None:
+            base_bias = _linear_bias(base)
+            if base_bias is None:
+                raise ValueError("Cannot unmerge a biased RepAdapter from a biasless base.")
+            base = eqx.tree_at(
+                lambda linear: linear.bias,
+                base,
+                base_bias - delta_bias.astype(base_bias.dtype),
+            )
+        return self._replace(base=base, merged=False)
+
+    def _replace(self, *, base: eqx.Module, merged: bool):
+        return RepAdapterLinear(
+            base,
+            bottleneck=int(self.down.out_features),
+            residual_scale_init=float(self.residual_scale),
+            down_init="kaiming_uniform",
+            up_init="zeros",
+            branch_bias=self.down.bias is not None or self.up.bias is not None,
+            train_base=self.train_base,
+            mergeable=self.mergeable,
+            key=jr.PRNGKey(0),
+            down=self.down,
+            up=self.up,
+            residual_scale=self.residual_scale,
+            merged=merged,
+        )
+
+
+class ConvPassAdapter(eqx.Module):
+    """Vision-native ConvPass branch for token grids."""
+
+    down: eqx.nn.Linear
+    up: eqx.nn.Linear
+    spatial_kernel: jax.Array
+    patch_grid: tuple[int, int] = eqx.field(static=True)
+    activation: ActivationName = eqx.field(static=True)
+    dropout: float = eqx.field(static=True)
+    class_token_policy: Literal["separate", "bypass", "exclude"] = eqx.field(static=True)
+
+    def __init__(
+        self,
+        dim: int,
+        bottleneck: int,
+        *,
+        patch_grid: tuple[int, int],
+        key: jax.Array,
+        spatial_kernel: int = 3,
+        activation: ActivationName = "gelu",
+        dropout: float = 0.0,
+        up_init: str = "zeros",
+        class_token_policy: Literal["separate", "bypass", "exclude"] = "separate",
+        down: eqx.nn.Linear | None = None,
+        up: eqx.nn.Linear | None = None,
+        kernel: jax.Array | None = None,
+    ):
+        if spatial_kernel < 1 or spatial_kernel % 2 == 0:
+            raise ValueError("ConvPass spatial_kernel must be a positive odd integer.")
+        key_down, key_up, key_conv = jr.split(key, 3)
+        self.down = (
+            _init_linear(eqx.nn.Linear(dim, bottleneck, key=key_down), key_down, "kaiming_uniform")
+            if down is None
+            else down
+        )
+        self.up = (
+            _init_linear(eqx.nn.Linear(bottleneck, dim, key=key_up), key_up, up_init)
+            if up is None
+            else up
+        )
+        fan = spatial_kernel * spatial_kernel
+        self.spatial_kernel = (
+            jr.normal(
+                key_conv,
+                (bottleneck, spatial_kernel, spatial_kernel),
+                dtype=self.down.weight.dtype,
+            )
+            / jnp.sqrt(fan)
+            if kernel is None
+            else kernel
+        )
+        self.patch_grid = patch_grid
+        self.activation = activation
+        self.dropout = dropout
+        self.class_token_policy = class_token_policy
+
+    def __call__(
+        self,
+        x: jax.Array,
+        *,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+    ) -> jax.Array:
+        if x.ndim == 3:
+            keys = _split_optional_key(key, x.shape[0])
+            return jnp.stack(
+                [
+                    self(tokens, key=token_key, inference=inference)
+                    for tokens, token_key in zip(x, keys, strict=True)
+                ]
+            )
+        if x.ndim != 2:
+            raise ValueError("ConvPassAdapter expects token arrays with shape (tokens, dim).")
+        height, width = self.patch_grid
+        patch_count = height * width
+        if x.shape[0] < patch_count:
+            raise ValueError("ConvPass patch_grid is larger than the token sequence.")
+        prefix_count = x.shape[0] - patch_count
+        prefix = x[:prefix_count]
+        patches = x[prefix_count:]
+        z = _apply_last_axis(self.down, patches)
+        z = z.reshape(height, width, z.shape[-1])
+        z = _depthwise_conv2d(z, self.spatial_kernel)
+        z = _activation(self.activation)(z)
+        if self.dropout > 0.0 and not inference:
+            if key is None:
+                raise ValueError("A PRNG key is required when ConvPass dropout is active.")
+            z = _dropout(z, self.dropout, key)
+        patch_delta = _apply_last_axis(self.up, z.reshape(patch_count, z.shape[-1]))
+        if prefix_count == 0:
+            return patch_delta
+        prefix_delta = jnp.zeros_like(prefix)
+        if self.class_token_policy == "exclude":
+            return jnp.concatenate([prefix_delta, patch_delta], axis=0)
+        if self.class_token_policy in {"separate", "bypass"}:
+            return jnp.concatenate([prefix_delta, patch_delta], axis=0)
+        raise ValueError(f"Unsupported ConvPass class_token_policy {self.class_token_policy!r}.")
+
+
+class ConvPassBlock(eqx.Module):
+    """Wrap a ViT block with one or more ConvPass residual branches."""
+
+    base: eqx.Module
+    convpass: ConvPassAdapter
+    placements: tuple[Literal["attention", "mlp"], ...] = eqx.field(static=True)
+    train_base: bool = eqx.field(static=True, default=False)
+
+    def __call__(self, x: jax.Array, *args, key: jax.Array | None = None, inference: bool | None = None, **kwargs):
+        key_base, key_adapter = _split_pair(key)
+        y = _call_base(self.base, x, *args, key=key_base, inference=inference, **kwargs)
+        return y + self.convpass(x, key=key_adapter, inference=inference)
 
 
 def apply_adapters(
@@ -679,12 +1153,172 @@ def apply_adaptformer(
     return updated
 
 
+def apply_orthogonal_adapters(
+    model: PyTree,
+    config: OrthogonalAdapterConfig | None = None,
+    *,
+    tagger: Tagger = canonical_tags_for_path,
+) -> PyTree:
+    """Apply OFT/BOFT-style orthogonal wrappers to selected linears."""
+
+    config = OrthogonalAdapterConfig() if config is None else config
+    module_paths = _target_linear_module_paths(model, config.target, tagger=tagger)
+    updated = model
+    for module_path in module_paths:
+        module = get_path(updated, module_path)
+        if isinstance(module, OrthogonalLinear):
+            continue
+        if not _is_linear_like(module):
+            raise TypeError(
+                f"Orthogonal adapter target {path_to_str(module_path)!r} is "
+                f"{type(module).__name__}, expected a linear-like module."
+            )
+        updated = eqx.tree_at(
+            lambda tree, p=module_path: get_path(tree, p),
+            updated,
+            OrthogonalLinear(
+                module,
+                side=config.side,
+                parameterization=config.parameterization,
+                block_size=config.block_size,
+                num_factors=config.num_factors,
+                eps=config.eps,
+                train_base=config.train_base,
+                mergeable=config.mergeable,
+            ),
+        )
+    return updated
+
+
+def apply_repadapter(
+    model: PyTree,
+    config: RepAdapterConfig | None = None,
+    *,
+    key: jax.Array,
+    tagger: Tagger = canonical_tags_for_path,
+) -> PyTree:
+    """Apply structurally mergeable RepAdapter branches to selected linears."""
+
+    config = RepAdapterConfig() if config is None else config
+    module_paths = _target_linear_module_paths(model, config.target, tagger=tagger)
+    keys = jr.split(key, len(module_paths))
+    updated = model
+    for module_path, subkey in zip(module_paths, keys, strict=True):
+        module = get_path(updated, module_path)
+        if isinstance(module, RepAdapterLinear):
+            continue
+        if not _is_linear_like(module):
+            raise TypeError(
+                f"RepAdapter target {path_to_str(module_path)!r} is "
+                f"{type(module).__name__}, expected a linear-like module."
+            )
+        updated = eqx.tree_at(
+            lambda tree, p=module_path: get_path(tree, p),
+            updated,
+            RepAdapterLinear(
+                module,
+                bottleneck=config.bottleneck,
+                residual_scale_init=config.residual_scale_init,
+                down_init=config.down_init,
+                up_init=config.up_init,
+                branch_bias=config.branch_bias,
+                train_base=config.train_base,
+                mergeable=config.mergeable,
+                key=subkey,
+            ),
+        )
+    return updated
+
+
+def apply_convpass(
+    model: PyTree,
+    config: ConvPassConfig | None = None,
+    *,
+    key: jax.Array,
+    tagger: Tagger = canonical_tags_for_path,
+) -> PyTree:
+    """Insert ConvPass branches into selected vision transformer blocks."""
+
+    config = ConvPassConfig() if config is None else config
+    patch_grid = _resolve_patch_grid(model, config.patch_grid)
+    block_paths = _target_block_paths(model, config.target, tagger=tagger)
+    keys = jr.split(key, len(block_paths))
+    updated = model
+    for block_path, subkey in zip(block_paths, keys, strict=True):
+        block = get_path(updated, block_path)
+        if isinstance(block, ConvPassBlock):
+            continue
+        dim = _infer_dim(block)
+        updated = eqx.tree_at(
+            lambda tree, p=block_path: get_path(tree, p),
+            updated,
+            ConvPassBlock(
+                block,
+                ConvPassAdapter(
+                    dim,
+                    config.bottleneck,
+                    patch_grid=patch_grid,
+                    key=subkey,
+                    spatial_kernel=config.spatial_kernel,
+                    activation=config.activation,
+                    dropout=config.dropout,
+                    up_init=config.up_init,
+                    class_token_policy=config.class_token_policy,
+                ),
+                config.placement,
+                train_base=config.train_base,
+            ),
+        )
+    return updated
+
+
+def merge_orthogonal_adapters(model: PyTree) -> PyTree:
+    """Merge every orthogonal adapter in ``model``."""
+
+    updated = model
+    for path, module in iter_orthogonal_adapters(updated):
+        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, module.merge())
+    return updated
+
+
+def merge_repadapters(model: PyTree) -> PyTree:
+    """Merge every RepAdapter module in ``model``."""
+
+    updated = model
+    for path, module in iter_repadapters(updated):
+        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, module.merge())
+    return updated
+
+
+def unmerge_orthogonal_adapters(model: PyTree) -> PyTree:
+    """Unmerge every orthogonal adapter in ``model``."""
+
+    updated = model
+    for path, module in iter_orthogonal_adapters(updated):
+        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, module.unmerge())
+    return updated
+
+
+def unmerge_repadapters(model: PyTree) -> PyTree:
+    """Unmerge every merged RepAdapter module in ``model``."""
+
+    updated = model
+    for path, module in iter_repadapters(updated):
+        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, module.unmerge())
+    return updated
+
+
 def extract_adapter_delta(model: PyTree) -> FineTuneBundle:
     """Extract adapter wrapper state into a delta bundle."""
 
     entries = []
     for path, wrapper in iter_adapter_wrappers(model):
         entries.append(_adapter_entry(path, wrapper))
+    for path, wrapper in iter_orthogonal_adapters(model):
+        entries.append(_orthogonal_entry(path, wrapper))
+    for path, wrapper in iter_repadapters(model):
+        entries.append(_repadapter_entry(path, wrapper))
+    entries.sort(key=lambda entry: entry["path"])
 
     return FineTuneBundle(
         method="adapter",
@@ -723,6 +1357,11 @@ def strip_adapters(model: PyTree) -> PyTree:
     stripped = model
     for path, wrapper in iter_adapter_wrappers(stripped):
         stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, wrapper.base)
+    for path, wrapper in iter_orthogonal_adapters(stripped):
+        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, wrapper.base)
+    for path, wrapper in iter_repadapters(stripped):
+        base = wrapper.unmerge().base
+        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, base)
     return stripped
 
 
@@ -731,7 +1370,7 @@ def iter_adapter_wrappers(
 ) -> tuple[
     tuple[
         Path,
-        SerialAdapterBlock | OutputAdapterModule | ParallelAdapterBlock | AdaptFormerBlock,
+        SerialAdapterBlock | OutputAdapterModule | ParallelAdapterBlock | AdaptFormerBlock | ConvPassBlock,
     ],
     ...,
 ]:
@@ -742,6 +1381,7 @@ def iter_adapter_wrappers(
         OutputAdapterModule,
         ParallelAdapterBlock,
         AdaptFormerBlock,
+        ConvPassBlock,
     )
     return tuple(
         (key_path_to_path(key_path), leaf)
@@ -753,9 +1393,35 @@ def iter_adapter_wrappers(
     )
 
 
+def iter_orthogonal_adapters(model: PyTree) -> tuple[tuple[Path, OrthogonalLinear], ...]:
+    """Return path/module pairs for orthogonal linear wrappers in ``model``."""
+
+    return tuple(
+        (key_path_to_path(key_path), leaf)
+        for key_path, leaf in jtu.tree_leaves_with_path(
+            model,
+            is_leaf=lambda x: isinstance(x, OrthogonalLinear),
+        )
+        if isinstance(leaf, OrthogonalLinear)
+    )
+
+
+def iter_repadapters(model: PyTree) -> tuple[tuple[Path, RepAdapterLinear], ...]:
+    """Return path/module pairs for RepAdapter wrappers in ``model``."""
+
+    return tuple(
+        (key_path_to_path(key_path), leaf)
+        for key_path, leaf in jtu.tree_leaves_with_path(
+            model,
+            is_leaf=lambda x: isinstance(x, RepAdapterLinear),
+        )
+        if isinstance(leaf, RepAdapterLinear)
+    )
+
+
 def _adapter_entry(
     path: Path,
-    wrapper: SerialAdapterBlock | OutputAdapterModule | ParallelAdapterBlock | AdaptFormerBlock,
+    wrapper: SerialAdapterBlock | OutputAdapterModule | ParallelAdapterBlock | AdaptFormerBlock | ConvPassBlock,
 ) -> dict[str, Any]:
     if isinstance(wrapper, (SerialAdapterBlock, OutputAdapterModule)):
         return {
@@ -776,10 +1442,35 @@ def _adapter_entry(
             "adapter": _bottleneck_state(wrapper.adapter),
             "train_base": wrapper.train_base,
         }
+    if isinstance(wrapper, ConvPassBlock):
+        return {
+            "path": path_to_str(path),
+            "class": "ConvPassBlock",
+            "convpass": _convpass_state(wrapper.convpass),
+            "placements": wrapper.placements,
+            "train_base": wrapper.train_base,
+        }
     return {
         "path": path_to_str(path),
         "class": "AdaptFormerBlock",
         "adapter": _adaptformer_state(wrapper.adapter),
+    }
+
+
+def _orthogonal_entry(path: Path, wrapper: OrthogonalLinear) -> dict[str, Any]:
+    return {
+        "path": path_to_str(path),
+        "class": "OrthogonalLinear",
+        "orthogonal": _orthogonal_state(wrapper),
+        "metadata": _orthogonal_serialization_metadata(wrapper),
+    }
+
+
+def _repadapter_entry(path: Path, wrapper: RepAdapterLinear) -> dict[str, Any]:
+    return {
+        "path": path_to_str(path),
+        "class": "RepAdapterLinear",
+        "repadapter": _repadapter_state(wrapper),
     }
 
 
@@ -814,6 +1505,17 @@ def _wrapper_from_entry(block: eqx.Module, entry: dict[str, Any]):
         )
     if entry["class"] == "AdaptFormerBlock":
         return AdaptFormerBlock(block, _adaptformer_from_state(entry["adapter"]))
+    if entry["class"] == "ConvPassBlock":
+        return ConvPassBlock(
+            block,
+            _convpass_from_state(entry["convpass"]),
+            tuple(entry.get("placements", ("attention", "mlp"))),
+            train_base=bool(entry.get("train_base", False)),
+        )
+    if entry["class"] == "OrthogonalLinear":
+        return _orthogonal_from_state(block, entry["orthogonal"])
+    if entry["class"] == "RepAdapterLinear":
+        return _repadapter_from_state(block, entry["repadapter"])
     raise FineTuneBundleError(f"Unknown adapter wrapper class {entry['class']!r}.")
 
 
@@ -844,6 +1546,77 @@ def _adaptformer_state(adapter: AdaptFormerAdapter) -> dict[str, Any]:
     state = _bottleneck_state(adapter.adapter)
     state["scale"] = adapter.scale
     return state
+
+
+def _convpass_state(adapter: ConvPassAdapter) -> dict[str, Any]:
+    return {
+        "dim": adapter.down.in_features,
+        "bottleneck": adapter.down.out_features,
+        "patch_grid": adapter.patch_grid,
+        "activation": adapter.activation,
+        "dropout": adapter.dropout,
+        "class_token_policy": adapter.class_token_policy,
+        "down": _linear_state(adapter.down),
+        "up": _linear_state(adapter.up),
+        "spatial_kernel": adapter.spatial_kernel,
+    }
+
+
+def _orthogonal_state(adapter: OrthogonalLinear) -> dict[str, Any]:
+    return {
+        "side": adapter.side,
+        "parameterization": adapter.parameterization,
+        "block_size": adapter.block_size,
+        "num_factors": adapter.num_factors,
+        "eps": adapter.eps,
+        "train_base": adapter.train_base,
+        "mergeable": adapter.mergeable,
+        "merged": adapter.merged,
+        "skew": adapter.skew,
+        "serialization": _orthogonal_serialization_metadata(adapter),
+    }
+
+
+def _repadapter_state(adapter: RepAdapterLinear) -> dict[str, Any]:
+    return {
+        "bottleneck": adapter.down.out_features,
+        "residual_scale": adapter.residual_scale,
+        "branch_bias": adapter.down.bias is not None or adapter.up.bias is not None,
+        "train_base": adapter.train_base,
+        "mergeable": adapter.mergeable,
+        "merged": adapter.merged,
+        "down": _linear_state(adapter.down),
+        "up": _linear_state(adapter.up),
+        "serialization": {
+            "layout": "linear_branch",
+            "merge_rule": "W <- W + scale * W_up @ W_down",
+            "bias_rule": "b <- b + scale * (W_up @ b_down + b_up)",
+        },
+    }
+
+
+def _orthogonal_serialization_metadata(adapter: OrthogonalLinear) -> dict[str, Any]:
+    dim = _linear_weight(adapter.base).shape[1] if adapter.side == "input" else _linear_weight(adapter.base).shape[0]
+    block_size = adapter.block_size
+    num_blocks = 1 if block_size is None else dim // block_size
+    factor_order = tuple(range(adapter.num_factors))
+    factor_permutations = (
+        (tuple(range(dim)),)
+        if block_size is None
+        else tuple(
+            _boft_factor_permutation(dim, block_size, factor_index)
+            for factor_index in factor_order
+        )
+    )
+    return {
+        "parameterization": adapter.parameterization,
+        "layout": "dense_cayley" if block_size is None else "sparse_butterfly_cayley",
+        "adapted_dimension": dim,
+        "block_size": block_size,
+        "block_order": tuple(range(num_blocks)),
+        "factor_order": factor_order,
+        "butterfly_permutation": factor_permutations,
+    }
 
 
 def _adapter_fusion_state(fusion: AdapterFusion) -> dict[str, Any]:
@@ -887,6 +1660,58 @@ def _adaptformer_from_state(state: dict[str, Any]) -> AdaptFormerAdapter:
     )
 
 
+def _convpass_from_state(state: dict[str, Any]) -> ConvPassAdapter:
+    return ConvPassAdapter(
+        int(state["dim"]),
+        int(state["bottleneck"]),
+        patch_grid=tuple(state["patch_grid"]),
+        key=jr.PRNGKey(0),
+        spatial_kernel=int(state["spatial_kernel"].shape[-1]),
+        activation=state["activation"],
+        dropout=float(state["dropout"]),
+        class_token_policy=state["class_token_policy"],
+        down=_linear_from_state(state["down"]),
+        up=_linear_from_state(state["up"]),
+        kernel=state["spatial_kernel"],
+    )
+
+
+def _orthogonal_from_state(base: eqx.Module, state: dict[str, Any]) -> OrthogonalLinear:
+    return OrthogonalLinear(
+        base,
+        side=state.get("side", "input"),
+        parameterization=state.get("parameterization", "cayley"),
+        block_size=state.get("block_size"),
+        num_factors=int(state.get("num_factors", 1)),
+        eps=float(state.get("eps", 1e-6)),
+        train_base=bool(state.get("train_base", False)),
+        mergeable=bool(state.get("mergeable", True)),
+        skew=state["skew"],
+        merged=bool(state.get("merged", False)),
+    )
+
+
+def _repadapter_from_state(base: eqx.Module, state: dict[str, Any]) -> RepAdapterLinear:
+    adapter = RepAdapterLinear(
+        base,
+        bottleneck=int(state["bottleneck"]),
+        residual_scale_init=1.0,
+        down_init="kaiming_uniform",
+        up_init="zeros",
+        branch_bias=bool(state.get("branch_bias", False)),
+        train_base=bool(state.get("train_base", False)),
+        mergeable=bool(state.get("mergeable", True)),
+        key=jr.PRNGKey(0),
+        down=_linear_from_state(state["down"]),
+        up=_linear_from_state(state["up"]),
+        residual_scale=state["residual_scale"],
+        merged=False,
+    )
+    if state.get("merged", False):
+        adapter = adapter.merge()
+    return adapter
+
+
 def _adapter_fusion_from_state(state: dict[str, Any]) -> AdapterFusion:
     return AdapterFusion(
         int(state["dim"]),
@@ -910,6 +1735,210 @@ def _adapter_fusion_matches_placement(path: Path, placements: tuple[str, ...]) -
         ):
             return True
     return False
+
+
+def _target_linear_module_paths(
+    model: PyTree,
+    target: TargetSpec,
+    *,
+    tagger: Tagger,
+) -> tuple[Path, ...]:
+    paths = {_linear_module_path(info.path) for info in resolve_target(model, target, tagger=tagger)}
+    if not paths and not target.allow_empty:
+        raise ValueError("TargetSpec resolved no linear modules.")
+    return tuple(sorted(paths, key=path_to_str))
+
+
+def _linear_module_path(path: Path) -> Path:
+    if path[-1:] in (("weight",), ("bias",)):
+        return path[:-1]
+    return path
+
+
+def _is_linear_like(module: Any) -> bool:
+    weight = getattr(module, "weight", None)
+    return callable(module) and eqx.is_inexact_array(weight) and weight.ndim == 2
+
+
+def _linear_weight(module: Any) -> jax.Array:
+    weight = getattr(module, "weight", None)
+    if not eqx.is_inexact_array(weight) or weight.ndim != 2:
+        raise TypeError(f"{type(module).__name__} is not a linear-like module.")
+    return weight
+
+
+def _linear_bias(module: Any) -> jax.Array | None:
+    bias = getattr(module, "bias", None)
+    if bias is None:
+        return None
+    if not eqx.is_inexact_array(bias):
+        raise TypeError(f"{type(module).__name__}.bias is not an inexact array.")
+    return bias
+
+
+def _linear_call(weight: jax.Array, bias: jax.Array | None, x: jax.Array) -> jax.Array:
+    if x.ndim == 1:
+        y = weight @ x
+        return y if bias is None else y + bias
+    y = x @ weight.T
+    return y if bias is None else y + bias
+
+
+def _orthogonal_skew_shape(
+    dim: int,
+    block_size: int | None,
+    *,
+    num_factors: int = 1,
+) -> tuple[int, ...]:
+    if block_size is None:
+        return (dim, dim)
+    block_shape = (dim // block_size, block_size, block_size)
+    return block_shape if num_factors == 1 else (num_factors, *block_shape)
+
+
+def _orthogonal_from_skew(
+    skew_param: jax.Array,
+    *,
+    eps: float,
+    block_size: int | None,
+) -> jax.Array:
+    if block_size is None:
+        return _cayley(skew_param, eps=eps)
+    dim = _boft_adapted_dim(skew_param)
+    basis_rows = _apply_boft_to_last_axis(
+        jnp.eye(dim, dtype=skew_param.dtype),
+        skew_param,
+        eps=eps,
+    )
+    return basis_rows.T
+
+
+def _boft_factor_skews(skew_param: jax.Array) -> jax.Array:
+    if skew_param.ndim == 3:
+        return skew_param[None, ...]
+    if skew_param.ndim == 4:
+        return skew_param
+    raise ValueError("BOFT skew state must have shape (blocks, b, b) or (factors, blocks, b, b).")
+
+
+def _boft_adapted_dim(skew_param: jax.Array) -> int:
+    factors = _boft_factor_skews(skew_param)
+    return int(factors.shape[-3] * factors.shape[-1])
+
+
+def _boft_factor_permutation(
+    dim: int,
+    block_size: int,
+    factor_index: int,
+) -> tuple[int, ...]:
+    strides: list[int] = []
+    stride = 1
+    while stride * block_size <= dim:
+        if dim % (stride * block_size) == 0:
+            strides.append(stride)
+        stride *= block_size
+    if not strides:
+        strides = [1]
+    stride = strides[factor_index % len(strides)]
+    permutation: list[int] = []
+    span = stride * block_size
+    for window_start in range(0, dim, span):
+        for offset in range(stride):
+            permutation.extend(window_start + offset + step * stride for step in range(block_size))
+    return tuple(permutation)
+
+
+def _apply_boft_to_last_axis(
+    x: jax.Array,
+    skew_param: jax.Array,
+    *,
+    eps: float,
+) -> jax.Array:
+    factors = _boft_factor_skews(skew_param)
+    y = x
+    for factor_index in range(factors.shape[0]):
+        y = _apply_boft_factor_to_last_axis(
+            y,
+            factors[factor_index],
+            factor_index=factor_index,
+            eps=eps,
+        )
+    return y
+
+
+def _apply_boft_factor_to_last_axis(
+    x: jax.Array,
+    skew_param: jax.Array,
+    *,
+    factor_index: int,
+    eps: float,
+) -> jax.Array:
+    blocks = jax.vmap(lambda block: _cayley(block, eps=eps))(skew_param)
+    block_size = blocks.shape[-1]
+    leading = x.shape[:-1]
+    if x.shape[-1] % block_size != 0:
+        raise ValueError("BOFT block_size must divide the feature axis.")
+    permutation = jnp.asarray(
+        _boft_factor_permutation(int(x.shape[-1]), int(block_size), factor_index),
+        dtype=jnp.int32,
+    )
+    inverse = jnp.argsort(permutation)
+    x_perm = jnp.take(x, permutation, axis=-1)
+    x_blocks = x_perm.reshape((*leading, x.shape[-1] // block_size, block_size))
+    y_blocks = jnp.einsum("...nb,nab->...na", x_blocks, blocks)
+    y_perm = y_blocks.reshape(x.shape)
+    return jnp.take(y_perm, inverse, axis=-1)
+
+
+def _apply_orthogonal_blocks_to_last_axis(
+    x: jax.Array,
+    skew_param: jax.Array,
+    *,
+    eps: float,
+) -> jax.Array:
+    blocks = jax.vmap(lambda block: _cayley(block, eps=eps))(skew_param)
+    block_size = blocks.shape[-1]
+    leading = x.shape[:-1]
+    if x.shape[-1] % block_size != 0:
+        raise ValueError("BOFT block_size must divide the feature axis.")
+    x_blocks = x.reshape((*leading, x.shape[-1] // block_size, block_size))
+    y_blocks = jnp.einsum("...nb,nab->...na", x_blocks, blocks)
+    return y_blocks.reshape(x.shape)
+
+
+def _cayley(skew_param: jax.Array, *, eps: float) -> jax.Array:
+    del eps
+    skew = skew_param - skew_param.T
+    dim = skew.shape[0]
+    eye = jnp.eye(dim, dtype=skew.dtype)
+    return jnp.linalg.solve(eye + skew, eye - skew)
+
+
+def _depthwise_conv2d(tokens_hwc: jax.Array, kernel: jax.Array) -> jax.Array:
+    channels, kernel_h, kernel_w = kernel.shape
+    if tokens_hwc.shape[-1] != channels:
+        raise ValueError("ConvPass kernel channel count does not match token features.")
+    padding = ((kernel_h // 2, kernel_h // 2), (kernel_w // 2, kernel_w // 2))
+    x = jnp.moveaxis(tokens_hwc, -1, 0)[None, :, :, :]
+    w = kernel[:, None, :, :]
+    y = jax.lax.conv_general_dilated(
+        x,
+        w,
+        window_strides=(1, 1),
+        padding=padding,
+        dimension_numbers=("NCHW", "OIHW", "NCHW"),
+        feature_group_count=channels,
+    )
+    return jnp.moveaxis(y[0], 0, -1)
+
+
+def _resolve_patch_grid(model: PyTree, patch_grid: tuple[int, int] | None) -> tuple[int, int]:
+    if patch_grid is not None:
+        return patch_grid
+    model_grid = getattr(model, "patch_grid", None)
+    if model_grid is not None:
+        return tuple(model_grid)
+    raise ValueError("ConvPass requires explicit patch_grid metadata.")
 
 
 def _layer_norm_state(norm: eqx.nn.LayerNorm) -> dict[str, Any]:
@@ -1241,21 +2270,35 @@ __all__ = (
     "AdapterFusionConfig",
     "AdapterRecipe",
     "BottleneckAdapter",
+    "ConvPassAdapter",
+    "ConvPassBlock",
     "ConvPassConfig",
+    "OrthogonalLinear",
     "OutputAdapterModule",
     "OrthogonalAdapterConfig",
     "ParallelAdapterConfig",
     "ParallelAdapterBlock",
+    "RepAdapterConfig",
+    "RepAdapterLinear",
     "SerialAdapterBlock",
     "add_adapter",
     "adapter_fusion_trainable_spec",
     "apply_adapters",
     "apply_adaptformer",
     "apply_adapter_fusion",
+    "apply_convpass",
+    "apply_orthogonal_adapters",
+    "apply_repadapter",
     "configure_adapter_bank",
     "extract_adapter_delta",
     "iter_adapter_wrappers",
+    "iter_orthogonal_adapters",
+    "iter_repadapters",
     "load_adapter_delta",
+    "merge_orthogonal_adapters",
+    "merge_repadapters",
     "set_active_adapter",
     "strip_adapters",
+    "unmerge_orthogonal_adapters",
+    "unmerge_repadapters",
 )

@@ -90,6 +90,51 @@ def test_dora_magnitude_init_base_weight_norm(tiny_vision_transformer):
     )
 
 
+def test_dora_factored_norm_matches_dense_norm(tiny_vision_transformer):
+    x = jnp.ones((4,), dtype=jnp.float32)
+    dense = eqft.apply_dora(
+        tiny_vision_transformer,
+        eqft.DoRAConfig(
+            rank=2,
+            alpha=4.0,
+            norm_impl="dense",
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
+        ),
+        key=jr.PRNGKey(0),
+    )
+    factored = eqft.apply_dora(
+        tiny_vision_transformer,
+        eqft.DoRAConfig(
+            rank=2,
+            alpha=4.0,
+            norm_impl="factored",
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
+        ),
+        key=jr.PRNGKey(0),
+    )
+    dense_module = eqx.tree_at(
+        lambda model: model.blocks[0].attn.proj.lora_B,
+        dense,
+        jnp.ones_like(dense.blocks[0].attn.proj.lora_B) * 0.125,
+    )
+    factored_module = eqx.tree_at(
+        lambda model: model.blocks[0].attn.proj.lora_B,
+        factored,
+        jnp.ones_like(factored.blocks[0].attn.proj.lora_B) * 0.125,
+    )
+
+    assert jnp.allclose(
+        dense_module.blocks[0].attn.proj(x),
+        factored_module.blocks[0].attn.proj(x),
+        atol=1e-6,
+    )
+    assert jnp.allclose(
+        dense_module.blocks[0].attn.proj.weight(),
+        factored_module.blocks[0].attn.proj.weight(),
+        atol=1e-6,
+    )
+
+
 def test_dora_magnitude_init_rejects_unsupported_policy(tiny_vision_transformer):
     with pytest.raises(ValueError, match="magnitude_init"):
         eqft.apply_dora(

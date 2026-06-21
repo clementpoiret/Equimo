@@ -110,6 +110,8 @@ class DoRALinear(eqx.Module):
         self.mergeable = mergeable
         self.norm_gradient = norm_gradient
         self.norm_impl = norm_impl
+        if self.norm_impl not in {"dense", "factored"}:
+            raise ValueError("DoRA norm_impl must be 'dense' or 'factored'.")
         if lora_A is None or lora_B is None:
             lora_A, lora_B = _init_lora(base, rank, key)
         self.lora_A = lora_A
@@ -130,9 +132,7 @@ class DoRALinear(eqx.Module):
 
     def weight(self) -> jax.Array:
         direction = self.base.weight + self._delta_weight()
-        direction_norm = jnp.linalg.norm(direction, axis=1, keepdims=True)
-        if self.norm_gradient == "detached":
-            direction_norm = jax.lax.stop_gradient(direction_norm)
+        direction_norm = self._direction_norm()[:, None]
         direction = direction / jnp.maximum(direction_norm, self.eps)
         return direction * self.magnitude[:, None]
 
@@ -148,7 +148,9 @@ class DoRALinear(eqx.Module):
                 raise ValueError("A PRNG key is required when DoRA dropout is active.")
             y = self._dropout_weight_projection(x, key)
         else:
-            y = self.weight() @ x
+            direction_norm = self._direction_norm()
+            projected = self.base.weight @ x + self._lora_projection(x)
+            y = projected * self.magnitude / jnp.maximum(direction_norm, self.eps)
         if self.base.bias is not None:
             y = y + self.base.bias
         return y
@@ -156,11 +158,36 @@ class DoRALinear(eqx.Module):
     def _delta_weight(self) -> jax.Array:
         return (self.lora_B @ self.lora_A) * self.scaling
 
-    def _dropout_weight_projection(self, x: jax.Array, key: jax.Array) -> jax.Array:
-        dense_direction = self.base.weight + self._delta_weight()
-        direction_norm = jnp.linalg.norm(dense_direction, axis=1)
+    def _lora_projection(self, x: jax.Array) -> jax.Array:
+        return (self.lora_B @ (self.lora_A @ x)) * self.scaling
+
+    def _direction_norm(self) -> jax.Array:
+        if self.norm_impl == "dense":
+            direction_norm = jnp.linalg.norm(
+                self.base.weight + self._delta_weight(),
+                axis=1,
+            )
+        else:
+            direction_norm = self._factored_direction_norm()
         if self.norm_gradient == "detached":
             direction_norm = jax.lax.stop_gradient(direction_norm)
+        return direction_norm
+
+    def _factored_direction_norm(self) -> jax.Array:
+        base_sq = jnp.sum(jnp.square(self.base.weight), axis=1)
+        base_cross = self.base.weight @ self.lora_A.T
+        gram = self.lora_A @ self.lora_A.T
+        cross = 2.0 * self.scaling * jnp.sum(self.lora_B * base_cross, axis=1)
+        delta_sq = (self.scaling**2) * jnp.einsum(
+            "or,rs,os->o",
+            self.lora_B,
+            gram,
+            self.lora_B,
+        )
+        return jnp.sqrt(jnp.maximum(base_sq + cross + delta_sq, 0.0))
+
+    def _dropout_weight_projection(self, x: jax.Array, key: jax.Array) -> jax.Array:
+        direction_norm = self._direction_norm()
         x_drop = _dropout(x, self.dropout, key)
         projected = (
             self.base.weight @ x

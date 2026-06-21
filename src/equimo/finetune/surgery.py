@@ -60,7 +60,7 @@ def prepare_finetune(
         tagger=tagger,
     )
     label_tree = _labels_from_param_info(param_info)
-    identities = _identities_from_param_info(param_info)
+    identities = _identities_from_param_info(param_info, model)
     report = make_trainable_report(model, param_info)
 
     return FineTunePlan(
@@ -297,11 +297,13 @@ def _labels_from_param_info(param_info: PyTree) -> PyTree:
     )
 
 
-def _identities_from_param_info(param_info: PyTree) -> PyTree:
+def _identities_from_param_info(param_info: PyTree, model: PyTree) -> PyTree:
     import jax.tree_util as jtu
 
     from .config import ParamIdentity, ParamInfo
-    from .paths import path_to_str
+    from .paths import iter_param_leaves, path_to_str
+
+    alias_by_path = _alias_groups_by_path(model, iter_param_leaves, path_to_str)
 
     def identity(info):
         if not isinstance(info, ParamInfo) or not info.is_inexact_array:
@@ -315,12 +317,28 @@ def _identities_from_param_info(param_info: PyTree) -> PyTree:
             physical_path=info.path,
             tags=info.tags,
             depth=info.depth,
-            alias_group=None,
+            alias_group=alias_by_path.get(info.path),
             layout=info.layout,
             segment=info.segment,
         )
 
     return jtu.tree_map(identity, param_info)
+
+
+def _alias_groups_by_path(model: PyTree, iter_param_leaves, path_to_str) -> dict[tuple[str | int, ...], str]:
+    by_object: dict[int, list[tuple[str | int, ...]]] = {}
+    for path, leaf in iter_param_leaves(model):
+        if eqx.is_inexact_array(leaf):
+            by_object.setdefault(id(leaf), []).append(path)
+    aliases: dict[tuple[str | int, ...], str] = {}
+    for paths in by_object.values():
+        if len(paths) < 2:
+            continue
+        canonical = tuple(sorted(path_to_str(path) for path in paths))
+        alias_group = "alias:" + "|".join(canonical)
+        for path in paths:
+            aliases[path] = alias_group
+    return aliases
 
 
 __all__ = (

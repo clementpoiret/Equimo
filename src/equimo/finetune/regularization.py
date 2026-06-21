@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 
 from ._typing import Path, PyTree
+from .config import AuxLossSpec
 from .paths import key_path_to_path, path_to_str
 from .tags import canonical_tags_for_path
 
@@ -147,6 +148,41 @@ def adapter_norm_loss(
     sums, counts = zip(*pairs, strict=True)
     penalty = _reduce_terms(sums, counts, reduction)
     return penalty if coefficient is None else penalty * coefficient
+
+
+def adalora_orthogonality_loss(
+    model: PyTree,
+    *,
+    coefficient: float | None = None,
+) -> jax.Array:
+    """Return AdaLoRA triplet orthogonality loss over all adapters."""
+
+    from .peft.lora import AdaLoRAModule
+
+    losses = tuple(
+        leaf.orthogonality_loss()
+        for leaf in jtu.tree_leaves(model, is_leaf=lambda x: isinstance(x, AdaLoRAModule))
+        if isinstance(leaf, AdaLoRAModule)
+    )
+    if not losses:
+        return jnp.asarray(0.0)
+    loss = sum(losses, jnp.asarray(0.0, dtype=jnp.float32))
+    return loss if coefficient is None else loss * coefficient
+
+
+def adalora_orthogonality_aux_loss_spec(
+    *,
+    coefficient_hint: float = 0.5,
+) -> AuxLossSpec:
+    """Return the explicit AuxLossSpec for AdaLoRA orthogonality regularization."""
+
+    return AuxLossSpec(
+        name="adalora_orthogonality",
+        registry_key="equimo.adalora_orthogonality_loss",
+        coefficient_hint=coefficient_hint,
+        reduction="sum",
+        normalizer="none",
+    )
 
 
 def task_vector_norm_loss(
@@ -546,6 +582,8 @@ __all__ = (
     "FeatureDistillationConfig",
     "L2SPConfig",
     "MixoutConfig",
+    "adalora_orthogonality_aux_loss_spec",
+    "adalora_orthogonality_loss",
     "adapter_norm_loss",
     "ewc_loss",
     "feature_distillation_loss",

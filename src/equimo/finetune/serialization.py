@@ -21,7 +21,7 @@ import lz4.frame
 import numpy as np
 
 from ._typing import PyTree
-from .config import FineTuneBundle, FineTuneBundleError, TargetSpec
+from .config import FineTuneBundle, FineTuneBundleError, ModelLineage, TargetSpec
 from .heads import MLPHead
 from .paths import key_path_to_path, path_to_str, str_to_path
 from .peft.adapters import extract_adapter_delta, load_adapter_delta, strip_adapters
@@ -64,6 +64,8 @@ def save_delta(
     *args,
     method: str = "lora",
     metadata: dict[str, Any] | None = None,
+    model_state: Any | None = None,
+    recalibration_required: bool | None = None,
     model: PyTree | None = None,
     path: str | Path | None = None,
     base_model: PyTree | None = None,
@@ -74,7 +76,9 @@ def save_delta(
     ``save_delta(model, path, ...)``, ``save_delta(path, model, base_model, spec)``,
     and the spec-style ``save_delta(path, model=..., base_model=..., spec=...)``
     call orders are accepted. ``base_model`` and ``spec`` are metadata inputs;
-    optimizers remain external.
+    optimizers remain external. ``model_state`` must be a bundle-serializable
+    snapshot when supplied; otherwise use ``recalibration_required=True`` for
+    exports whose state must be recalibrated before evaluation.
     """
 
     model, path, resolved_base_model, resolved_spec = _resolve_save_delta_args(
@@ -116,6 +120,8 @@ def save_delta(
         base_model=resolved_base_model,
         spec=resolved_spec,
         user_metadata=metadata,
+        model_state=model_state,
+        recalibration_required=recalibration_required,
     )
     save_finetune_bundle(path, bundle)
     return bundle
@@ -138,6 +144,7 @@ def load_delta(
     )
     _check_schema(bundle)
     _check_base_checkpoint(base_model, bundle)
+    _check_bundle_lineage_consistency(bundle)
     if bundle.method == "lora":
         return load_lora_delta(base_model, bundle)
     if bundle.method == "adapter":
@@ -200,16 +207,39 @@ def merge_and_save(
     *,
     method: str = "lora",
     metadata: dict[str, Any] | None = None,
+    model_state: Any | None = None,
+    recalibration_required: bool | None = None,
 ) -> FineTuneBundle:
     """Merge mergeable method weights where safe, then save a delta bundle."""
 
     if method == "lora":
-        return save_delta(merge_lora(model), path, method=method, metadata=metadata)
+        return save_delta(
+            merge_lora(model),
+            path,
+            method=method,
+            metadata=metadata,
+            model_state=model_state,
+            recalibration_required=recalibration_required,
+        )
     if method == "dora":
         # A merged DoRA model no longer contains DoRA state to serialize as a delta.
         # Save the reversible delta and leave dense export to model serialization.
-        return save_delta(model, path, method=method, metadata=metadata)
-    return save_delta(model, path, method=method, metadata=metadata)
+        return save_delta(
+            model,
+            path,
+            method=method,
+            metadata=metadata,
+            model_state=model_state,
+            recalibration_required=recalibration_required,
+        )
+    return save_delta(
+        model,
+        path,
+        method=method,
+        metadata=metadata,
+        model_state=model_state,
+        recalibration_required=recalibration_required,
+    )
 
 
 def _read_bundle(path: str | Path) -> FineTuneBundle:
@@ -243,6 +273,7 @@ def _bundle_to_manifest(bundle: FineTuneBundle) -> tuple[dict[str, Any], dict[st
         "selector_spec": bundle.selector_spec,
         "trainable_labels": _labels_to_metadata(bundle.trainable_labels),
         "delta_tree": bundle.delta_tree,
+        "model_state": bundle.model_state,
         "lineage": _lineage_to_dict(bundle.lineage),
         "metadata": bundle.metadata,
     }
@@ -349,9 +380,17 @@ def _labels_to_metadata(labels: Any) -> dict[str, str]:
 def _lineage_to_dict(lineage) -> dict[str, Any]:
     return {
         "base_model_name": lineage.base_model_name,
+        "architecture_hash": lineage.architecture_hash,
         "base_checkpoint_id": lineage.base_checkpoint_id,
         "base_checkpoint_hash": lineage.base_checkpoint_hash,
+        "base_value_hash": lineage.base_value_hash,
+        "preprocessing_fingerprint": lineage.preprocessing_fingerprint,
+        "model_state_hash": lineage.model_state_hash,
+        "logical_id_table_hash": lineage.logical_id_table_hash,
+        "quantization_fingerprint": lineage.quantization_fingerprint,
+        "sharding_fingerprint": lineage.sharding_fingerprint,
         "model_revision": lineage.model_revision,
+        "parent_bundle_ids": lineage.parent_bundle_ids,
         "identity_stability": lineage.identity_stability,
         "parent_lineages": tuple(_lineage_to_dict(item) for item in lineage.parent_lineages),
         "notes": dict(lineage.notes),
@@ -367,9 +406,17 @@ def _lineage_from_dict(data: dict[str, Any]):
     )
     return ModelLineage(
         base_model_name=data.get("base_model_name"),
+        architecture_hash=data.get("architecture_hash"),
         base_checkpoint_id=data.get("base_checkpoint_id"),
         base_checkpoint_hash=data.get("base_checkpoint_hash"),
+        base_value_hash=data.get("base_value_hash"),
+        preprocessing_fingerprint=data.get("preprocessing_fingerprint"),
+        model_state_hash=data.get("model_state_hash"),
+        logical_id_table_hash=data.get("logical_id_table_hash"),
+        quantization_fingerprint=data.get("quantization_fingerprint"),
+        sharding_fingerprint=data.get("sharding_fingerprint"),
         model_revision=data.get("model_revision"),
+        parent_bundle_ids=tuple(data.get("parent_bundle_ids", ())),
         identity_stability=data.get("identity_stability", "path_derived"),
         parent_lineages=parents,
         notes=data.get("notes", {}),
@@ -936,6 +983,8 @@ def _enrich_bundle(
     base_model: PyTree | None,
     spec: Any | None,
     user_metadata: dict[str, Any] | None,
+    model_state: Any | None = None,
+    recalibration_required: bool | None = None,
 ) -> FineTuneBundle:
     metadata_model = (
         base_model if base_model is not None else _metadata_base_model(model, bundle.method)
@@ -955,6 +1004,42 @@ def _enrich_bundle(
         base_model is not None or _can_infer_exact_base_checkpoint(model, bundle.method)
     ):
         base_checkpoint_id = _checkpoint_hash(metadata_model)
+    base_value_hash = base_checkpoint_id if base_checkpoint_id else bundle.lineage.base_value_hash
+    logical_id_hash = _logical_id_table_hash(bundle)
+    quantization_fingerprint = _bundle_quantization_fingerprint(bundle)
+    calibration_refs = _bundle_calibration_references(bundle)
+    model_state_snapshot = bundle.model_state if model_state is None else model_state
+    model_state_hash = _model_state_hash(model_state_snapshot)
+    recalibration_marker = (
+        bool(recalibration_required)
+        if recalibration_required is not None
+        else bool(
+            bundle.metadata.get(
+                "recalibration_required",
+                False if model_state_snapshot is not None else False,
+            )
+        )
+    )
+    stats.setdefault("method_profile_id", bundle.metadata.get("method_profile_id", bundle.method))
+    stats.setdefault("primary_references", bundle.metadata.get("primary_references", ()))
+    stats.setdefault("calibration_artifact_references", calibration_refs)
+    stats.setdefault("model_state_present", model_state_snapshot is not None)
+    stats.setdefault("model_state_hash", model_state_hash)
+    stats.setdefault("recalibration_required", recalibration_marker)
+    stats.setdefault("quantization_fingerprint", quantization_fingerprint)
+    stats.setdefault("equimo_source_revision", _equimo_version() or "unknown")
+    lineage = replace(
+        bundle.lineage if isinstance(bundle.lineage, ModelLineage) else ModelLineage(),
+        base_model_name=bundle.lineage.base_model_name or _model_name(metadata_model),
+        architecture_hash=bundle.lineage.architecture_hash or bundle.architecture_hash,
+        base_checkpoint_id=bundle.lineage.base_checkpoint_id or base_checkpoint_id,
+        base_checkpoint_hash=bundle.lineage.base_checkpoint_hash or base_value_hash,
+        base_value_hash=base_value_hash,
+        model_state_hash=bundle.lineage.model_state_hash or model_state_hash,
+        logical_id_table_hash=logical_id_hash,
+        quantization_fingerprint=quantization_fingerprint,
+        model_revision=bundle.lineage.model_revision or _equimo_version() or None,
+    )
     return replace(
         bundle,
         base_checkpoint_id=base_checkpoint_id,
@@ -962,9 +1047,11 @@ def _enrich_bundle(
         base_model_config=bundle.base_model_config or _model_config(metadata_model),
         equimo_version=bundle.equimo_version or _equimo_version(),
         selector_spec=selector_spec,
+        lineage=lineage,
         trainable_labels=bundle.trainable_labels
         if bundle.trainable_labels is not None
         else _trainable_labels(model, bundle.method),
+        model_state=model_state_snapshot,
         metadata={**stats, **dict(bundle.metadata)},
     )
 
@@ -981,6 +1068,115 @@ def _bundle_stats(model: PyTree, base_model: PyTree, bundle: FineTuneBundle) -> 
         "mergeable": _is_mergeable(bundle),
         "merged": _is_merged(bundle),
     }
+
+
+def _logical_id_table_hash(bundle: FineTuneBundle) -> str:
+    entries = tuple(
+        {
+            "path": str(entry.get("path", "")),
+            "class": str(entry.get("class", "")),
+            "projection_segments": entry.get("projection_segments", ()),
+            "factor_convention": entry.get("factor_convention"),
+        }
+        for entry in bundle.adapter_config.get("entries", ())
+    )
+    if not entries:
+        entries = tuple(
+            {"path": path}
+            for path in _target_paths(bundle)
+        )
+    return _hash_json(entries)
+
+
+def _bundle_quantization_fingerprint(bundle: FineTuneBundle) -> str | None:
+    records = []
+    for entry in bundle.adapter_config.get("entries", ()):
+        metadata = _entry_metadata(entry)
+        fingerprint = metadata.get("quantization_fingerprint")
+        if fingerprint:
+            records.append(
+                {
+                    "path": str(entry.get("path", "")),
+                    "fingerprint": fingerprint,
+                }
+            )
+    if not records:
+        return None
+    return _hash_json(records)
+
+
+def _bundle_calibration_references(bundle: FineTuneBundle) -> tuple[dict[str, str], ...]:
+    references = []
+    for entry in bundle.adapter_config.get("entries", ()):
+        metadata = _entry_metadata(entry)
+        if not any(key.startswith("calibration_") for key in metadata):
+            continue
+        references.append(
+            {
+                "path": str(entry.get("path", "")),
+                "kind": metadata.get("calibration_kind", ""),
+                "sample_count": metadata.get("calibration_sample_count", ""),
+                "data_fingerprint": metadata.get("calibration_data_fingerprint", ""),
+                "reduction": metadata.get("calibration_reduction", ""),
+                "base_checkpoint_hash": metadata.get("calibration_base_checkpoint_hash", ""),
+            }
+        )
+    return tuple(references)
+
+
+def _entry_metadata(entry: dict[str, Any]) -> dict[str, str]:
+    metadata = entry.get("metadata", ())
+    if isinstance(metadata, dict):
+        return {str(key): str(value) for key, value in metadata.items()}
+    return {str(key): str(value) for key, value in tuple(metadata)}
+
+
+def _model_state_hash(model_state: Any | None) -> str | None:
+    if model_state is None:
+        return None
+    digest = hashlib.sha256()
+
+    def update(value: Any) -> None:
+        if eqx.is_array(value):
+            array = np.asarray(value)
+            digest.update(b"array")
+            digest.update(str(array.shape).encode())
+            digest.update(str(array.dtype).encode())
+            digest.update(array.tobytes())
+            return
+        if value is None or isinstance(value, (bool, int, float, str)):
+            digest.update(json.dumps(value, sort_keys=True).encode())
+            return
+        if isinstance(value, tuple):
+            digest.update(b"tuple")
+            for item in value:
+                update(item)
+            return
+        if isinstance(value, list):
+            digest.update(b"list")
+            for item in value:
+                update(item)
+            return
+        if isinstance(value, dict):
+            digest.update(b"dict")
+            for key in sorted(value):
+                if not isinstance(key, str):
+                    raise TypeError("model_state dictionary keys must be strings.")
+                digest.update(key.encode())
+                update(value[key])
+            return
+        raise TypeError(
+            "model_state must be bundle-serializable: arrays, scalars, "
+            f"tuples, lists, and string-keyed dicts; got {type(value).__name__}."
+        )
+
+    update(model_state)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _hash_json(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _param_count(tree: PyTree) -> int:
@@ -1007,15 +1203,33 @@ def _checkpoint_hash(tree: PyTree) -> str:
 
 
 def _check_base_checkpoint(base_model: PyTree, bundle: FineTuneBundle) -> None:
-    if not bundle.base_checkpoint_id or not bundle.base_checkpoint_id.startswith("sha256:"):
+    expected = bundle.base_checkpoint_id or bundle.lineage.base_value_hash
+    if not expected or not expected.startswith("sha256:"):
         return
     if bundle.architecture_hash and architecture_hash(base_model) != bundle.architecture_hash:
         return
     actual = _checkpoint_hash(base_model)
-    if actual != bundle.base_checkpoint_id:
+    if actual != expected:
         raise FineTuneBundleError(
             f"{bundle.method} delta base checkpoint mismatch: "
-            f"expected {bundle.base_checkpoint_id}, got {actual}."
+            f"expected {expected}, got {actual}."
+        )
+
+
+def _check_bundle_lineage_consistency(bundle: FineTuneBundle) -> None:
+    expected_logical = bundle.lineage.logical_id_table_hash
+    actual_logical = _logical_id_table_hash(bundle)
+    if expected_logical and expected_logical != actual_logical:
+        raise FineTuneBundleError(
+            f"{bundle.method} delta logical-ID table mismatch: "
+            f"expected {expected_logical}, got {actual_logical}."
+        )
+    expected_quantization = bundle.lineage.quantization_fingerprint
+    actual_quantization = _bundle_quantization_fingerprint(bundle)
+    if expected_quantization != actual_quantization:
+        raise FineTuneBundleError(
+            f"{bundle.method} delta quantization fingerprint mismatch: "
+            f"expected {expected_quantization}, got {actual_quantization}."
         )
 
 
@@ -1044,7 +1258,10 @@ def _metadata_base_model(model: PyTree, method: str) -> PyTree:
 def _can_infer_exact_base_checkpoint(model: PyTree, method: str) -> bool:
     if method != "lora":
         return True
-    return all(module.base_weight_delta is None for _, module in iter_lora_modules(model))
+    return all(
+        module.base_weight_delta is None and dict(module.metadata).get("method") != "loftq"
+        for _, module in iter_lora_modules(model)
+    )
 
 
 def _strip_wrappers(model: PyTree, wrapper_type: type) -> PyTree:

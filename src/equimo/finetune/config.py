@@ -189,9 +189,17 @@ class ModelLineage:
     """Lineage binding for plans, deltas, merges, and checkpoints."""
 
     base_model_name: str | None = None
+    architecture_hash: str | None = None
     base_checkpoint_id: str | None = None
     base_checkpoint_hash: str | None = None
+    base_value_hash: str | None = None
+    preprocessing_fingerprint: str | None = None
+    model_state_hash: str | None = None
+    logical_id_table_hash: str | None = None
+    quantization_fingerprint: str | None = None
+    sharding_fingerprint: str | None = None
     model_revision: str | None = None
+    parent_bundle_ids: tuple[str, ...] = ()
     identity_stability: IdentityStability = "path_derived"
     parent_lineages: tuple["ModelLineage", ...] = ()
     notes: Mapping[str, Any] = field(default_factory=dict)
@@ -376,6 +384,7 @@ class FineTuneBundle:
     selector_spec: Mapping[str, Any] = field(default_factory=dict)
     trainable_labels: Any = None
     delta_tree: Any = None
+    model_state: Any = None
     lineage: ModelLineage = field(default_factory=ModelLineage)
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
