@@ -16,7 +16,7 @@ def test_llrd_multipliers_12_blocks():
         model,
         trainable=eqft.TrainableSpec(
             mode="full",
-            freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+            freeze=eqft.TargetSpec(tags_any=("embedding.patch",)),
         ),
         labels=eqft.LLRDConfig(decay=0.75),
     )
@@ -37,7 +37,7 @@ def test_partial_llrd_keeps_original_depth_indices():
             mode="partial",
             depth_range=(8, 12),
             train_head=True,
-            freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+            freeze=eqft.TargetSpec(tags_any=("embedding.patch",)),
         ),
         labels=eqft.LLRDConfig(decay=0.75, rebase_selected_depth=False),
     )

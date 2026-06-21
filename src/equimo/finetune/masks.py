@@ -101,7 +101,7 @@ def _base_trainable_paths(
     if mode == "surgical":
         if spec.target is not None:
             return _target_paths(model, spec.target, tagger=tagger)
-        return _surgical_paths(infos, spec.shift)
+        return _surgical_paths(infos, spec.method_name)
     if mode == "full":
         selected = {info.path for info in infos}
         if not spec.train_head:

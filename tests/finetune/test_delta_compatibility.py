@@ -116,7 +116,7 @@ def test_ia3_delta_roundtrip(tmp_path, tiny_vision_transformer):
     model = eqft.apply_ia3(
         tiny_vision_transformer,
         eqft.IA3Config(
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
             mergeable=False,
         ),
     )
@@ -134,7 +134,7 @@ def test_ia3_delta_roundtrip(tmp_path, tiny_vision_transformer):
 def test_ia3_delta_missing_path_raises_bundle_error(tmp_path, tiny_vision_transformer):
     model = eqft.apply_ia3(
         tiny_vision_transformer,
-        eqft.IA3Config(target=eqft.TargetSpec(tags=("attention.proj",))),
+        eqft.IA3Config(target=eqft.TargetSpec(tags_any=("attention.proj",))),
     )
     path = tmp_path / "ia3.eqft"
     bundle = eqft.save_delta(model, path, method="ia3")
@@ -151,7 +151,7 @@ def test_vera_delta_roundtrip(tmp_path, tiny_vision_transformer):
         tiny_vision_transformer,
         eqft.VeRAConfig(
             rank=3,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -209,7 +209,7 @@ def test_dora_delta_incompatible_architecture_raises(tmp_path):
         eqft.DoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

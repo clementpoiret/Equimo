@@ -14,7 +14,7 @@ def test_rslora_scaling(tiny_vision_transformer):
         eqft.RsLoRAConfig(
             rank=4,
             alpha=16.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

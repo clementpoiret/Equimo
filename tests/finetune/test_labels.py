@@ -34,7 +34,7 @@ def test_labels_match_trainable_tree(tiny_vision_transformer):
         tiny_vision_transformer,
         trainable=eqft.TrainableSpec(
             mode="full",
-            freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+            freeze=eqft.TargetSpec(tags_any=("embedding.patch",)),
         ),
         labels=eqft.LLRDConfig(decay=0.75),
     )

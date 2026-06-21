@@ -31,7 +31,7 @@ class VeRAConfig:
     trainable_output_scale_init: float = 0.0
     mergeable: bool = True
     target: TargetSpec = field(
-        default_factory=lambda: TargetSpec(tags=("attention.qkv", "attention.proj"))
+        default_factory=lambda: TargetSpec(tags_any=("attention.qkv", "attention.proj"))
     )
 
 

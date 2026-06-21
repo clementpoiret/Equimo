@@ -12,7 +12,7 @@ import equimo.finetune as eqft
 def test_vera_reproducible_frozen_random_bases(tiny_vision_transformer):
     config = eqft.VeRAConfig(
         rank=3,
-        target=eqft.TargetSpec(tags=("attention.proj",)),
+        target=eqft.TargetSpec(tags_any=("attention.proj",)),
     )
     first = eqft.apply_vera(tiny_vision_transformer, config, key=jr.PRNGKey(0))
     second = eqft.apply_vera(tiny_vision_transformer, config, key=jr.PRNGKey(0))
@@ -27,7 +27,7 @@ def test_vera_shared_reuses_compatible_random_bases(tiny_vision_transformer):
         eqft.VeRAConfig(
             rank=3,
             shared=True,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -36,7 +36,7 @@ def test_vera_shared_reuses_compatible_random_bases(tiny_vision_transformer):
         eqft.VeRAConfig(
             rank=3,
             shared=False,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -59,7 +59,7 @@ def test_vera_zero_output_scale_identity(tiny_vision_transformer):
     x = jnp.ones((2, 3))
     model = eqft.apply_vera(
         tiny_vision_transformer,
-        eqft.VeRAConfig(rank=3, target=eqft.TargetSpec(tags=("attention.proj",))),
+        eqft.VeRAConfig(rank=3, target=eqft.TargetSpec(tags_any=("attention.proj",))),
         key=jr.PRNGKey(0),
     )
 
@@ -70,7 +70,7 @@ def test_merge_vera_preserves_outputs_and_removes_wrapper(tiny_vision_transforme
     x = jnp.ones((2, 3))
     model = eqft.apply_vera(
         tiny_vision_transformer,
-        eqft.VeRAConfig(rank=3, target=eqft.TargetSpec(tags=("attention.proj",))),
+        eqft.VeRAConfig(rank=3, target=eqft.TargetSpec(tags_any=("attention.proj",))),
         key=jr.PRNGKey(0),
     )
     model = eqx.tree_at(

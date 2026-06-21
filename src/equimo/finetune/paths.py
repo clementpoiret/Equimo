@@ -105,6 +105,7 @@ def make_param_info_tree(
 def _param_info_from_leaf(key_path: tuple[Any, ...], leaf: Any) -> ParamInfo:
     return ParamInfo(
         path=key_path_to_path(key_path),
+        logical_id=path_to_str(key_path_to_path(key_path)),
         is_array=eqx.is_array(leaf),
         is_inexact_array=eqx.is_inexact_array(leaf),
     )

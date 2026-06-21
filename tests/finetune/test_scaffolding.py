@@ -19,7 +19,7 @@ from fixtures import (
 
 
 def test_import_equimo_finetune():
-    assert eqft.TargetSpec(tags=("attention.qkv",)).tags == ("attention.qkv",)
+    assert eqft.TargetSpec(tags_any=("attention.qkv",)).tags_any == ("attention.qkv",)
     assert eqft.TrainableSpec(mode="head").mode == "head"
     assert eqft.LLRDConfig().decay == 0.75
 
@@ -33,7 +33,7 @@ def test_required_public_api_exports():
         "BitFitConfig",
         "ContinuedSSLAdaptationConfig",
         "ContinuedSSLPlan",
-        "DeepPromptConfig",
+        "PTuningV2Config",
         "DenseFeatureAdapter",
         "DoRARecipe",
         "EWCConfig",
@@ -54,11 +54,11 @@ def test_required_public_api_exports():
         "PartialUnfreezeConfig",
         "ParallelAdapterConfig",
         "PrefixProjection",
-        "QuantizedLinearCompatibilityConfig",
+        "QuantizedBaseLoRACompatibility",
         "SAMMetadata",
         "SoftPromptConfig",
         "SupervisedAfterSSLConfig",
-        "SurgicalFineTuneConfig",
+        "HeuristicSurgicalPreset",
         "VPTDeepRecipe",
         "VPTShallowRecipe",
         "adapter_fusion_trainable_spec",
@@ -132,18 +132,18 @@ def test_spec_config_fields_are_public():
     assert eqft.ParallelAdapterConfig(branch="mlp").placement == "parallel"
     assert eqft.AdapterBankConfig(active="task").missing_adapter_policy == "error"
     assert eqft.AdapterFusionConfig(fusion_dropout=0.1).freeze_task_adapters
-    assert eqft.adapter_fusion_trainable_spec().target.tags == ("adapter_fusion",)
+    assert eqft.adapter_fusion_trainable_spec().target.tags_any == ("adapter_fusion",)
     assert eqft.BitFitConfig(include_norm_bias=False).train_bias
     assert eqft.MixoutConfig(anchor="pretrained").p == 0.1
-    assert eqft.QuantizedLinearCompatibilityConfig().quantization_owned_by == "external"
+    assert eqft.QuantizedBaseLoRACompatibility().quantization_owned_by == "external"
     assert eqft.LinearProbeConfig().cache_features is False
     assert eqft.HeadPlusNormConfig().bn_stats_policy == "frozen"
     assert eqft.PartialUnfreezeConfig().fraction == 1 / 3
-    assert eqft.SurgicalFineTuneConfig().shift == "output"
+    assert eqft.HeuristicSurgicalPreset().shift == "output"
     assert eqft.LoRAPlusLabelConfig().label_A == "lora_A"
     assert eqft.LoRARecipe.hard_task().rank == 16
     assert eqft.LoRARecipe.tiny_data().rank == 4
-    assert eqft.RankMaskedLoRAConfig().rank_mask_init == "all_active"
+    assert eqft.StaticRankMaskedLoRAConfig().rank_mask_init == "all_active"
     assert eqft.DoRARecipe().external_lr_hint == "slightly_lower_than_lora"
     assert eqft.AdapterRecipe.strong().placement == "both"
     assert eqft.LinearProbeRecipe().feature_norm == "l2_or_standardize"
@@ -156,7 +156,7 @@ def test_spec_config_fields_are_public():
     assert eqft.SupervisedAfterSSLConfig().reuse_ssl_delta
     assert eqft.TIESConfig().merge == "disjoint_mean"
     assert eqft.TaskVectorConfig().mask == "floating_backbone"
-    assert eqft.DAREConfig().apply_to == "task_vector"
+    assert eqft.DARETransform().scope == "per_tensor"
     assert eqft.BreadcrumbsConfig().rescale is False
     assert eqft.FisherMergeConfig().normalize_fisher
     assert eqft.RegMeanConfig().require_input_covariances
@@ -166,18 +166,18 @@ def test_spec_config_fields_are_public():
     assert eqft.LLRDConfig.audio_transformer().decay == 0.75
     assert eqft.PromptConfig(init="normal", train_head=False).train_head is False
     assert eqft.SoftPromptConfig(num_tokens=2).prepend_to == "input"
-    assert eqft.DeepPromptConfig(share_across_layers=True).depth == "all"
+    assert eqft.PTuningV2Config(share_across_layers=True).depth == "all"
     assert eqft.PrefixConfig(prefix_dropout=0.1, train_head=False).prefix_dropout == 0.1
     assert eqft.IA3Config(axis="feature", mergeable=True).mergeable
     assert eqft.ScaleShiftConfig(axis="channel", mergeable=True).axis == "channel"
-    assert eqft.ScaleShiftConfig.convnet().target.tags == ("conv", "stage.block", "norm")
+    assert eqft.ScaleShiftConfig.convnet().target.tags_any == ("conv", "stage.block", "norm")
     assert eqft.LSTConfig(gate_init=0.5, train_head=False).gate_init == 0.5
     vera = eqft.VeRAConfig(
         seed_required=True,
         frozen_A_init="kaiming_uniform",
         trainable_input_scale_init=0.5,
     )
-    assert vera.target.tags == ("attention.qkv", "attention.proj")
+    assert vera.target.tags_any == ("attention.qkv", "attention.proj")
     assert vera.trainable_input_scale_init == 0.5
 
 

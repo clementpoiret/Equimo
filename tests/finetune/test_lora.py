@@ -99,7 +99,7 @@ def test_lora_train_base_includes_wrapped_base_leaves(tiny_vision_transformer):
             rank=2,
             alpha=4.0,
             train_base=True,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -156,7 +156,7 @@ def test_lora_fused_qkv_shape(tiny_vision_transformer):
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.qkv",)),
+            target=eqft.TargetSpec(tags_any=("attention.qkv",)),
         ),
         key=jr.PRNGKey(0),
     )

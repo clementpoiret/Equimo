@@ -107,7 +107,7 @@ def test_full_ft_patch_embed_frozen(tiny_vision_transformer):
         tiny_vision_transformer,
         trainable=eqft.TrainableSpec(
             mode="full",
-            freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+            freeze=eqft.TargetSpec(tags_any=("embedding.patch",)),
         ),
     )
 
@@ -122,12 +122,12 @@ def test_frozen_patch_embed_does_not_change_after_one_step(tiny_vision_transform
         tiny_vision_transformer,
         trainable=eqft.TrainableSpec(
             mode="full",
-            freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+            freeze=eqft.TargetSpec(tags_any=("embedding.patch",)),
         ),
     )
     before = eqft.extract_subtree(
         tiny_vision_transformer,
-        eqft.TargetSpec(tags=("embedding.patch",)),
+        eqft.TargetSpec(tags_any=("embedding.patch",)),
     )
 
     def loss_fn(trainable):
@@ -169,7 +169,7 @@ def test_surgical_input_feature_output_regions(tiny_vision_transformer):
         tiny_vision_transformer,
         trainable=eqft.TrainableSpec(
             mode="surgical",
-            shift="input",
+            method_name="input",
             train_head=False,
         ),
     )
@@ -177,7 +177,7 @@ def test_surgical_input_feature_output_regions(tiny_vision_transformer):
         tiny_vision_transformer,
         trainable=eqft.TrainableSpec(
             mode="surgical",
-            shift="output",
+            method_name="output",
             train_head=True,
         ),
     )

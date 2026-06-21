@@ -20,7 +20,7 @@ def test_finetune_bundle_has_required_lora_metadata(tiny_vision_transformer):
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -49,7 +49,7 @@ def test_delta_spec_order_and_bundle_roundtrip(tmp_path, tiny_vision_transformer
     spec = eqft.LoRAConfig(
         rank=2,
         alpha=4.0,
-        target=eqft.TargetSpec(tags=("attention.proj",)),
+        target=eqft.TargetSpec(tags_any=("attention.proj",)),
     )
     model = eqft.apply_lora(
         tiny_vision_transformer,
@@ -63,7 +63,7 @@ def test_delta_spec_order_and_bundle_roundtrip(tmp_path, tiny_vision_transformer
     loaded_model = eqft.load_delta(path, tiny_vision_transformer)
 
     assert loaded_bundle.method == bundle.method
-    assert bundle.selector_spec["target"]["tags"] == ("attention.proj",)
+    assert bundle.selector_spec["target"]["tags_any"] == ("attention.proj",)
     assert loaded_model.blocks[0].attn.proj.lora_A.shape == model.blocks[0].attn.proj.lora_A.shape
 
 
@@ -71,7 +71,7 @@ def test_delta_spec_keyword_model_form_roundtrip(tmp_path, tiny_vision_transform
     spec = eqft.LoRAConfig(
         rank=2,
         alpha=4.0,
-        target=eqft.TargetSpec(tags=("attention.proj",)),
+        target=eqft.TargetSpec(tags_any=("attention.proj",)),
     )
     model = eqft.apply_lora(
         tiny_vision_transformer,
@@ -88,7 +88,7 @@ def test_delta_spec_keyword_model_form_roundtrip(tmp_path, tiny_vision_transform
     )
     loaded_model = eqft.load_delta(path, tiny_vision_transformer)
 
-    assert bundle.selector_spec["target"]["tags"] == ("attention.proj",)
+    assert bundle.selector_spec["target"]["tags_any"] == ("attention.proj",)
     assert loaded_model.blocks[0].attn.proj.lora_A.shape == model.blocks[0].attn.proj.lora_A.shape
 
 
@@ -101,7 +101,7 @@ def test_delta_rejects_same_architecture_different_base_checkpoint(
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -120,7 +120,7 @@ def test_delta_file_is_pickle_free_archive(tmp_path, tiny_vision_transformer):
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -156,7 +156,7 @@ def test_lora_bundle_missing_path_raises_bundle_error(tmp_path, tiny_vision_tran
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

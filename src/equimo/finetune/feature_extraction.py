@@ -8,6 +8,7 @@ import equinox as eqx
 import jax
 
 from ._typing import PyTree
+from .config import FeatureSpec
 from .heads import IdentityHead, LinearHead
 from .pooling import GlobalAveragePool, MeanPatchPool, MeanTokenPool, PoolName, pool_features
 from .surgery import replace_head
@@ -18,10 +19,18 @@ class FeatureExtractor(eqx.Module):
 
     model: PyTree
     pool: PoolName | eqx.Module | None = eqx.field(static=True)
+    feature_spec: FeatureSpec | None = eqx.field(static=True)
 
-    def __init__(self, model: PyTree, *, pool: PoolName | eqx.Module | None = "auto"):
+    def __init__(
+        self,
+        model: PyTree,
+        *,
+        pool: PoolName | eqx.Module | None = "auto",
+        feature_spec: FeatureSpec | None = None,
+    ):
         self.model = model
         self.pool = pool
+        self.feature_spec = feature_spec
 
     def __call__(self, *args, key: jax.Array | None = None, inference: bool | None = True, **kwargs):
         return extract_features(
@@ -40,6 +49,7 @@ class LinearProbe(eqx.Module):
     backbone: PyTree
     head: eqx.Module
     pool: PoolName | eqx.Module | None = eqx.field(static=True)
+    feature_spec: FeatureSpec | None = eqx.field(static=True)
 
     def __init__(
         self,
@@ -47,10 +57,12 @@ class LinearProbe(eqx.Module):
         head: eqx.Module,
         *,
         pool: PoolName | eqx.Module | None = "auto",
+        feature_spec: FeatureSpec | None = None,
     ):
         self.backbone = backbone
         self.head = head
         self.pool = pool
+        self.feature_spec = feature_spec
 
     def __call__(self, *args, key: jax.Array | None = None, inference: bool | None = True, **kwargs):
         features = extract_features(

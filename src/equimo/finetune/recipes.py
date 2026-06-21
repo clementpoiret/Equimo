@@ -20,7 +20,7 @@ from .peft.adapters import (
     apply_adaptformer,
 )
 from .peft.lora import LoRAConfig, apply_lora
-from .peft.prompts import PromptConfig, PromptedModel, apply_prompts
+from .peft.prompts import PromptedModel, VPTDeepConfig, apply_prompts
 from .pooling import PoolName
 from .selectors import is_linear
 from .surgery import prepare_finetune
@@ -126,8 +126,8 @@ class PartialUnfreezeConfig:
 
 
 @dataclass(frozen=True)
-class SurgicalFineTuneConfig:
-    """Configuration metadata for surgical fine-tuning."""
+class HeuristicSurgicalPreset:
+    """Equimo heuristic surgical fine-tuning preset."""
 
     shift: str = "output"
     span_fraction: float = 0.10
@@ -281,13 +281,13 @@ def partial_unfreeze(
 
 def surgical(
     model: PyTree,
-    config: SurgicalFineTuneConfig | None = None,
+    config: HeuristicSurgicalPreset | None = None,
     *,
     labels: LLRDConfig | None = None,
 ) -> FineTunePlan:
-    """Prepare a surgical fine-tuning plan from ``SurgicalFineTuneConfig``."""
+    """Prepare a surgical fine-tuning plan from ``HeuristicSurgicalPreset``."""
 
-    config = SurgicalFineTuneConfig() if config is None else config
+    config = HeuristicSurgicalPreset() if config is None else config
     depths = sorted({info.depth for info in iter_param_infos(model) if info.depth is not None})
     selected_depths = frozenset(
         _surgical_depths(
@@ -396,7 +396,7 @@ def lora_transformer(
 
     return apply_lora(
         model,
-        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(tags=target)),
+        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(tags_any=target)),
         key=key,
     )
 
@@ -427,7 +427,7 @@ def vpt_deep(
 
     return apply_prompts(
         model,
-        PromptConfig(num_tokens=num_tokens, depth="deep"),
+        VPTDeepConfig(num_tokens=num_tokens),
         key=key,
     )
 
@@ -456,7 +456,7 @@ def task_adapter_bank(
 
 
 def _patch_freeze(enabled: bool) -> TargetSpec | None:
-    return TargetSpec(tags=("embedding.patch",)) if enabled else None
+    return TargetSpec(tags_any=("embedding.patch",)) if enabled else None
 
 
 def _resolve_last_k(k: int | str, depth_count: int) -> int:
@@ -523,7 +523,7 @@ __all__ = (
     "LinearProbeConfig",
     "LinearProbeRecipe",
     "PartialUnfreezeConfig",
-    "SurgicalFineTuneConfig",
+    "HeuristicSurgicalPreset",
     "adapter_transformer",
     "adapter_transformer_strong",
     "adaptformer_transformer",

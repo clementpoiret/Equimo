@@ -27,7 +27,7 @@ def test_peft_wrappers_filter_jit_and_vmap(tiny_vision_transformer):
             tiny_vision_transformer,
             eqft.LoRAConfig(
                 rank=2,
-                target=eqft.TargetSpec(tags=("attention.proj",)),
+                target=eqft.TargetSpec(tags_any=("attention.proj",)),
             ),
             key=key,
         ),
@@ -35,7 +35,7 @@ def test_peft_wrappers_filter_jit_and_vmap(tiny_vision_transformer):
             tiny_vision_transformer,
             eqft.DoRAConfig(
                 rank=2,
-                target=eqft.TargetSpec(tags=("attention.proj",)),
+                target=eqft.TargetSpec(tags_any=("attention.proj",)),
             ),
             key=key,
         ),
@@ -60,13 +60,13 @@ def test_peft_wrappers_filter_jit_and_vmap(tiny_vision_transformer):
         ),
         eqft.apply_ia3(
             tiny_vision_transformer,
-            eqft.IA3Config(target=eqft.TargetSpec(tags=("attention.proj",))),
+            eqft.IA3Config(target=eqft.TargetSpec(tags_any=("attention.proj",))),
         ),
         eqft.apply_vera(
             tiny_vision_transformer,
             eqft.VeRAConfig(
                 rank=3,
-                target=eqft.TargetSpec(tags=("attention.proj",)),
+                target=eqft.TargetSpec(tags_any=("attention.proj",)),
             ),
             key=key,
         ),

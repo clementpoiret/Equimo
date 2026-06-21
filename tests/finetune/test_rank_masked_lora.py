@@ -23,11 +23,11 @@ class TinyLinearModel(eqx.Module):
 def test_rank_masked_lora_delta_roundtrip(tmp_path, tiny_vision_transformer):
     model = eqft.apply_lora(
         tiny_vision_transformer,
-        eqft.RankMaskedLoRAConfig(
+        eqft.StaticRankMaskedLoRAConfig(
             rank=4,
             target_rank=2,
             rank_mask_init="target_rank",
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -45,11 +45,11 @@ def test_rank_masked_lora_delta_roundtrip(tmp_path, tiny_vision_transformer):
 def test_rank_masked_lora_default_starts_all_initial_ranks_active(tiny_vision_transformer):
     model = eqft.apply_lora(
         tiny_vision_transformer,
-        eqft.RankMaskedLoRAConfig(
+        eqft.StaticRankMaskedLoRAConfig(
             rank=4,
             initial_rank=4,
             target_rank=2,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -68,7 +68,7 @@ def test_rank_masked_lora_default_starts_all_initial_ranks_active(tiny_vision_tr
 def test_lora_rank_groups_use_canonical_path_strings():
     model = eqft.apply_lora(
         TinyLinearModel(),
-        eqft.RankMaskedLoRAConfig(
+        eqft.StaticRankMaskedLoRAConfig(
             rank=4,
             initial_rank=4,
             target_rank=2,
@@ -83,7 +83,7 @@ def test_lora_rank_groups_use_canonical_path_strings():
 def test_apply_lora_rank_pattern_updates_rank_masks():
     model = eqft.apply_lora(
         TinyLinearModel(),
-        eqft.RankMaskedLoRAConfig(
+        eqft.StaticRankMaskedLoRAConfig(
             rank=4,
             initial_rank=4,
             target_rank=2,
@@ -101,7 +101,7 @@ def test_apply_lora_rank_pattern_updates_rank_masks():
 def test_apply_lora_rank_pattern_validates_paths_and_shapes():
     model = eqft.apply_lora(
         TinyLinearModel(),
-        eqft.RankMaskedLoRAConfig(
+        eqft.StaticRankMaskedLoRAConfig(
             rank=4,
             initial_rank=4,
             target_rank=2,
@@ -126,7 +126,7 @@ def test_apply_lora_rank_pattern_validates_paths_and_shapes():
 def test_apply_lora_rank_pattern_rejects_merged_modules():
     model = eqft.apply_lora(
         TinyLinearModel(),
-        eqft.RankMaskedLoRAConfig(
+        eqft.StaticRankMaskedLoRAConfig(
             rank=4,
             initial_rank=4,
             target_rank=2,
@@ -146,7 +146,7 @@ def test_apply_lora_rank_pattern_rejects_merged_modules():
 def test_rank_mask_affects_unmerged_lora_forward():
     model = eqft.apply_lora(
         TinyLinearModel(),
-        eqft.RankMaskedLoRAConfig(
+        eqft.StaticRankMaskedLoRAConfig(
             rank=2,
             initial_rank=2,
             target_rank=1,

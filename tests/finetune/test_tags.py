@@ -70,7 +70,7 @@ def test_register_token_tags_and_labels():
     assert "embedding.register_token" in infos["reg_tokens"].tags
     paths = eqft.resolve_target_paths(
         model,
-        eqft.TargetSpec(tags=("embedding.register_token",)),
+        eqft.TargetSpec(tags_any=("embedding.register_token",)),
     )
     assert paths == ("reg_tokens",)
 
@@ -97,13 +97,13 @@ def test_model_family_tag_adapters(tiny_ast_like_encoder, tiny_text_encoder):
 
     audio_paths = audio_selectors.resolve_target_paths(
         tiny_ast_like_encoder,
-        eqft.TargetSpec(tags=("audio.patch_embed",)),
+        eqft.TargetSpec(tags_any=("audio.patch_embed",)),
     )
     assert audio_paths == ("patch_embed.proj.weight", "patch_embed.proj.bias")
 
     text_paths = language_selectors.resolve_target_paths(
         tiny_text_encoder,
-        eqft.TargetSpec(tags=("text.embedding",)),
+        eqft.TargetSpec(tags_any=("text.embedding",)),
     )
     assert text_paths == ("token_embed.weight",)
 

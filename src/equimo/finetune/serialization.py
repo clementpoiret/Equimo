@@ -36,7 +36,14 @@ from .peft.prefix import (
     PrefixTunedModel,
     strip_prefixes,
 )
-from .peft.prompts import DeepPromptConfig, PromptConfig, PromptedModel, SoftPromptConfig
+from .peft.prompts import (
+    PTuningV2Config,
+    PromptConfig,
+    PromptedModel,
+    SoftPromptConfig,
+    VPTDeepConfig,
+    VPTShallowConfig,
+)
 from .peft.scale_shift import ScaleShift, ScaleShiftWrapper
 from .peft.side_tuning import (
     LSTConfig,
@@ -236,6 +243,7 @@ def _bundle_to_manifest(bundle: FineTuneBundle) -> tuple[dict[str, Any], dict[st
         "selector_spec": bundle.selector_spec,
         "trainable_labels": _labels_to_metadata(bundle.trainable_labels),
         "delta_tree": bundle.delta_tree,
+        "lineage": _lineage_to_dict(bundle.lineage),
         "metadata": bundle.metadata,
     }
     return {
@@ -263,6 +271,8 @@ def _bundle_from_manifest(
     _collect_array_templates(encoded, template)
     arrays = eqx.tree_deserialise_leaves(arrays_data, template)
     payload = _decode_value(encoded, arrays)
+    if isinstance(payload.get("lineage"), dict):
+        payload["lineage"] = _lineage_from_dict(payload["lineage"])
     return FineTuneBundle(**payload)
 
 
@@ -334,6 +344,36 @@ def _labels_to_metadata(labels: Any) -> dict[str, str]:
         for key_path, leaf in jtu.tree_leaves_with_path(labels)
         if isinstance(leaf, str)
     }
+
+
+def _lineage_to_dict(lineage) -> dict[str, Any]:
+    return {
+        "base_model_name": lineage.base_model_name,
+        "base_checkpoint_id": lineage.base_checkpoint_id,
+        "base_checkpoint_hash": lineage.base_checkpoint_hash,
+        "model_revision": lineage.model_revision,
+        "identity_stability": lineage.identity_stability,
+        "parent_lineages": tuple(_lineage_to_dict(item) for item in lineage.parent_lineages),
+        "notes": dict(lineage.notes),
+    }
+
+
+def _lineage_from_dict(data: dict[str, Any]):
+    from .config import ModelLineage
+
+    parents = tuple(
+        _lineage_from_dict(item) if isinstance(item, dict) else item
+        for item in data.get("parent_lineages", ())
+    )
+    return ModelLineage(
+        base_model_name=data.get("base_model_name"),
+        base_checkpoint_id=data.get("base_checkpoint_id"),
+        base_checkpoint_hash=data.get("base_checkpoint_hash"),
+        model_revision=data.get("model_revision"),
+        identity_stability=data.get("identity_stability", "path_derived"),
+        parent_lineages=parents,
+        notes=data.get("notes", {}),
+    )
 
 
 def _extract_prompt_delta(model: PyTree) -> FineTuneBundle:
@@ -700,6 +740,8 @@ def _extract_dora_delta(model: PyTree) -> FineTuneBundle:
                 "scaling": wrapper.scaling_mode,
                 "dropout": wrapper.dropout,
                 "eps": wrapper.eps,
+                "norm_gradient": wrapper.norm_gradient,
+                "norm_impl": wrapper.norm_impl,
                 "train_base": wrapper.train_base,
                 "mergeable": wrapper.mergeable,
                 "lora_A": wrapper.lora_A,
@@ -741,6 +783,8 @@ def _load_dora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
             scaling=entry["scaling"],
             dropout=float(entry.get("dropout", 0.0)),
             eps=float(entry["eps"]),
+            norm_gradient=entry.get("norm_gradient", "full"),
+            norm_impl=entry.get("norm_impl", "dense"),
             train_base=bool(entry.get("train_base", False)),
             mergeable=bool(entry.get("mergeable", True)),
             key=jr.PRNGKey(0),
@@ -1064,11 +1108,14 @@ def _selector_spec_from_spec(spec: Any | None) -> dict[str, Any]:
 
 def _target_spec_to_dict(target: TargetSpec) -> dict[str, Any]:
     return {
+        "tags_all": target.tags_all,
+        "tags_any": target.tags_any,
         "include": target.include,
         "exclude": target.exclude,
-        "tags": target.tags,
         "min_depth": target.min_depth,
         "max_depth": target.max_depth,
+        "target_kind": target.target_kind,
+        "allow_empty": target.allow_empty,
         "predicate": None
         if target.predicate is None
         else getattr(target.predicate, "__name__", "<callable>"),
@@ -1090,7 +1137,9 @@ def _prompt_config_from_dict(
     config_type = {
         "PromptConfig": PromptConfig,
         "SoftPromptConfig": SoftPromptConfig,
-        "DeepPromptConfig": DeepPromptConfig,
+        "PTuningV2Config": PTuningV2Config,
+        "VPTDeepConfig": VPTDeepConfig,
+        "VPTShallowConfig": VPTShallowConfig,
     }.get(class_name, PromptConfig)
     return config_type(**config)
 

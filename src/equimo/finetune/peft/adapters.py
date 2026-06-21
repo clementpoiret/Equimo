@@ -42,7 +42,7 @@ class AdapterConfig:
     residual_scale_init: float = 1.0
     pre_norm: bool = False
     train_base: bool = False
-    target: TargetSpec = TargetSpec(tags=("block",))
+    target: TargetSpec = TargetSpec(tags_any=("block",))
 
 
 @dataclass(frozen=True)
@@ -110,7 +110,7 @@ class AdaptFormerConfig:
     up_init: str = "zeros"
     scale_init: float = 1.0
     train_head: bool = True
-    target: TargetSpec = TargetSpec(tags=("block",))
+    target: TargetSpec = TargetSpec(tags_any=("block",))
 
 
 @dataclass(frozen=True)
@@ -130,6 +130,30 @@ class AdapterFusionConfig:
     freeze_task_adapters: bool = True
     fusion_dropout: float = 0.0
     placement: tuple[str, ...] = ("after_mlp",)
+
+
+@dataclass(frozen=True)
+class OrthogonalAdapterConfig:
+    """OFT/BOFT orthogonal adaptation configuration contract."""
+
+    side: Literal["input", "output"] = "input"
+    parameterization: Literal["cayley", "butterfly_cayley"] = "cayley"
+    block_size: int | None = None
+    num_factors: int = 1
+    eps: float = 1e-6
+
+
+@dataclass(frozen=True)
+class ConvPassConfig:
+    """Vision-native ConvPass adapter configuration."""
+
+    bottleneck: int = 8
+    kernel_size: int = 3
+    placement: Literal["parallel_mlp", "parallel_block"] = "parallel_mlp"
+    activation: ActivationName = "gelu"
+    dropout: float = 0.0
+    up_init: str = "zeros"
+    target: TargetSpec = TargetSpec(tags_any=("block",))
 
 
 class AdapterFusion(eqx.Module):
@@ -614,7 +638,7 @@ def adapter_fusion_trainable_spec(
     tags = ("adapter_fusion",) if config.freeze_task_adapters else ("adapter",)
     return TrainableSpec(
         mode="peft",
-        target=TargetSpec(tags=tags),
+        target=TargetSpec(tags_any=tags),
         train_head=train_head,
     )
 
@@ -1217,7 +1241,9 @@ __all__ = (
     "AdapterFusionConfig",
     "AdapterRecipe",
     "BottleneckAdapter",
+    "ConvPassConfig",
     "OutputAdapterModule",
+    "OrthogonalAdapterConfig",
     "ParallelAdapterConfig",
     "ParallelAdapterBlock",
     "SerialAdapterBlock",

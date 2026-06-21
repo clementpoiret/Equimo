@@ -13,7 +13,7 @@ def test_ia3_identity(tiny_vision_transformer):
     x = jnp.ones((2, 3))
     tuned = eqft.apply_ia3(
         tiny_vision_transformer,
-        eqft.IA3Config(target=eqft.TargetSpec(tags=("attention.proj",))),
+        eqft.IA3Config(target=eqft.TargetSpec(tags_any=("attention.proj",))),
     )
 
     assert jnp.allclose(tiny_vision_transformer(x), tuned(x), atol=1e-6)
@@ -30,7 +30,7 @@ def test_merge_ia3_preserves_outputs_and_removes_wrapper(tiny_vision_transformer
     x = jnp.ones((2, 3))
     tuned = eqft.apply_ia3(
         tiny_vision_transformer,
-        eqft.IA3Config(target=eqft.TargetSpec(tags=("attention.proj",))),
+        eqft.IA3Config(target=eqft.TargetSpec(tags_any=("attention.proj",))),
     )
     tuned = eqx.tree_at(
         lambda model: model.blocks[0].attn.proj.ia3,
@@ -48,7 +48,7 @@ def test_merge_ia3_rejects_non_mergeable_wrappers(tiny_vision_transformer):
     tuned = eqft.apply_ia3(
         tiny_vision_transformer,
         eqft.IA3Config(
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
             mergeable=False,
         ),
     )
@@ -60,7 +60,7 @@ def test_merge_ia3_rejects_non_mergeable_wrappers(tiny_vision_transformer):
 def test_ia3_labels(tiny_vision_transformer):
     tuned = eqft.apply_ia3(
         tiny_vision_transformer,
-        eqft.IA3Config(target=eqft.TargetSpec(tags=("attention.proj",))),
+        eqft.IA3Config(target=eqft.TargetSpec(tags_any=("attention.proj",))),
     )
     plan = eqft.prepare_finetune(
         tuned,

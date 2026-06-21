@@ -10,7 +10,7 @@ import equimo.finetune as eqft
 def test_selector_tags_qkv(tiny_vision_transformer):
     paths = eqft.resolve_target_paths(
         tiny_vision_transformer,
-        eqft.TargetSpec(tags=("attention.qkv",)),
+        eqft.TargetSpec(tags_any=("attention.qkv",)),
     )
 
     assert paths == (
@@ -24,7 +24,7 @@ def test_selector_tags_qkv(tiny_vision_transformer):
 def test_selector_broad_attention_and_mlp_tags(tiny_vision_transformer):
     paths = eqft.resolve_target_paths(
         tiny_vision_transformer,
-        eqft.TargetSpec(tags=("attention", "mlp")),
+        eqft.TargetSpec(tags_any=("attention", "mlp")),
     )
 
     assert "blocks.0.attn.qkv.weight" in paths
@@ -36,7 +36,7 @@ def test_selector_broad_attention_and_mlp_tags(tiny_vision_transformer):
 def test_selector_tags_patch_embed(tiny_vision_transformer):
     paths = eqft.resolve_target_paths(
         tiny_vision_transformer,
-        eqft.TargetSpec(tags=("embedding.patch",)),
+        eqft.TargetSpec(tags_any=("embedding.patch",)),
     )
 
     assert paths == ("patch_embed.proj.weight", "patch_embed.proj.bias")
@@ -45,7 +45,7 @@ def test_selector_tags_patch_embed(tiny_vision_transformer):
 def test_selector_glob_qkv(tiny_vision_transformer):
     semantic_paths = eqft.resolve_target_paths(
         tiny_vision_transformer,
-        eqft.TargetSpec(tags=("attention.qkv",)),
+        eqft.TargetSpec(tags_any=("attention.qkv",)),
     )
     glob_paths = eqft.resolve_target_paths(
         tiny_vision_transformer,
@@ -80,14 +80,14 @@ def test_selector_empty_raises(tiny_vision_transformer):
     with pytest.raises(ValueError, match="missing.tag"):
         eqft.resolve_target_paths(
             tiny_vision_transformer,
-            eqft.TargetSpec(tags=("missing.tag",)),
+            eqft.TargetSpec(tags_any=("missing.tag",)),
         )
 
 
 def test_depth_resolution_for_blocks(tiny_vision_transformer):
     paths = eqft.resolve_target_paths(
         tiny_vision_transformer,
-        eqft.TargetSpec(tags=("block",), min_depth=1, max_depth=1),
+        eqft.TargetSpec(tags_any=("block",), min_depth=1, max_depth=1),
     )
 
     assert paths

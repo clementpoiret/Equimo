@@ -18,7 +18,7 @@ class PromptConfig:
     """Configuration for visual/soft prompt tuning."""
 
     num_tokens: int = 10
-    depth: Literal["shallow", "deep", "all"] = "deep"
+    depth: Literal["shallow", "deep", "all"] = "shallow"
     init: str = "normal"
     init_std: float = 0.02
     prepend_to: Literal["after_cls", "before_all", "input"] = "after_cls"
@@ -38,8 +38,27 @@ class SoftPromptConfig(PromptConfig):
 
 
 @dataclass(frozen=True)
-class DeepPromptConfig(PromptConfig):
-    """Deep prompt / P-tuning v2-style defaults."""
+class VPTShallowConfig(PromptConfig):
+    """Visual Prompt Tuning shallow configuration."""
+
+    num_tokens: int = 50
+    depth: Literal["shallow"] = "shallow"
+    prompt_dropout: float = 0.0
+
+
+@dataclass(frozen=True)
+class VPTDeepConfig(PromptConfig):
+    """Visual Prompt Tuning deep configuration."""
+
+    num_tokens: int = 10
+    depth: Literal["deep"] = "deep"
+    prompt_dropout: float = 0.0
+    prepend_to: Literal["after_cls"] = "after_cls"
+
+
+@dataclass(frozen=True)
+class PTuningV2Config(PromptConfig):
+    """P-tuning v2-style deep prompt defaults for language encoders."""
 
     num_tokens: int = 10
     depth: Literal["shallow", "deep", "all"] = "all"
@@ -47,7 +66,7 @@ class DeepPromptConfig(PromptConfig):
 
 
 @dataclass(frozen=True)
-class VPTShallowRecipe(PromptConfig):
+class VPTShallowRecipe(VPTShallowConfig):
     """Visual prompt tuning shallow recipe metadata."""
 
     num_tokens: int = 50
@@ -56,7 +75,7 @@ class VPTShallowRecipe(PromptConfig):
 
 
 @dataclass(frozen=True)
-class VPTDeepRecipe(PromptConfig):
+class VPTDeepRecipe(VPTDeepConfig):
     """Visual prompt tuning deep recipe metadata."""
 
     num_tokens: int = 10
@@ -542,11 +561,13 @@ def _uses_deep_prompts(config: PromptConfig) -> bool:
 
 
 __all__ = (
-    "DeepPromptConfig",
+    "PTuningV2Config",
     "PromptConfig",
     "PromptedModel",
     "SoftPromptConfig",
+    "VPTDeepConfig",
     "VPTDeepRecipe",
+    "VPTShallowConfig",
     "VPTShallowRecipe",
     "apply_prompts",
 )

@@ -4,11 +4,11 @@ Selectors resolve parameter leaves by semantic tags, glob paths, predicates, and
 depth constraints.
 
 ```python
-eqft.TargetSpec(tags=("attention.qkv", "attention.proj"))
+eqft.TargetSpec(tags_any=("attention.qkv", "attention.proj"))
 eqft.TargetSpec(include=("*.blocks.*.attn.qkv",))
 eqft.TargetSpec(exclude=("*.pos_embed", "*.cls_token"))
 eqft.TargetSpec(predicate=eqft.is_linear)
-eqft.TargetSpec(tags=("block",), min_depth=8, max_depth=11)
+eqft.TargetSpec(tags_any=("block",), min_depth=8, max_depth=11)
 ```
 
 Common tags include `embedding.patch`, `embedding.position`,
@@ -19,5 +19,5 @@ Common tags include `embedding.patch`, `embedding.position`,
 Empty selectors raise by default. Use explicit tags and inspect the result:
 
 ```python
-paths = eqft.resolve_target_paths(model, eqft.TargetSpec(tags=("attention.qkv",)))
+paths = eqft.resolve_target_paths(model, eqft.TargetSpec(tags_any=("attention.qkv",)))
 ```

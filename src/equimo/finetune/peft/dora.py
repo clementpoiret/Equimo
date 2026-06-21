@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -28,13 +29,16 @@ class DoRAConfig:
     scaling: ScalingMode = "alpha_over_r"
     dropout: float = 0.0
     init: str = "kaiming_A_zero_B"
-    magnitude_init: str = "column_norm"
+    magnitude_axis: Literal["logical_output"] = "logical_output"
+    magnitude_init: Literal["base_weight_norm"] = "base_weight_norm"
+    norm_gradient: Literal["full", "detached"] = "full"
+    norm_impl: Literal["dense", "factored"] = "dense"
     eps: float = 1e-6
     train_base: bool = False
     mergeable: bool = True
     target: TargetSpec = field(
         default_factory=lambda: TargetSpec(
-            tags=("attention.qkv", "attention.proj"),
+            tags_any=("attention.qkv", "attention.proj"),
         )
     )
 
@@ -56,7 +60,7 @@ class DoRARecipe:
             rank=self.rank,
             alpha=self.alpha,
             dropout=self.dropout,
-            target=TargetSpec(tags=self.target),
+            target=TargetSpec(tags_any=self.target),
         )
 
 
@@ -74,6 +78,8 @@ class DoRALinear(eqx.Module):
     eps: float = eqx.field(static=True)
     train_base: bool = eqx.field(static=True)
     mergeable: bool = eqx.field(static=True)
+    norm_gradient: Literal["full", "detached"] = eqx.field(static=True)
+    norm_impl: Literal["dense", "factored"] = eqx.field(static=True)
 
     def __init__(
         self,
@@ -87,7 +93,9 @@ class DoRALinear(eqx.Module):
         train_base: bool,
         mergeable: bool,
         key: jax.Array,
-        magnitude_init: str = "column_norm",
+        magnitude_init: str = "base_weight_norm",
+        norm_gradient: Literal["full", "detached"] = "full",
+        norm_impl: Literal["dense", "factored"] = "dense",
         lora_A: jax.Array | None = None,
         lora_B: jax.Array | None = None,
         magnitude: jax.Array | None = None,
@@ -100,6 +108,8 @@ class DoRALinear(eqx.Module):
         self.eps = eps
         self.train_base = train_base
         self.mergeable = mergeable
+        self.norm_gradient = norm_gradient
+        self.norm_impl = norm_impl
         if lora_A is None or lora_B is None:
             lora_A, lora_B = _init_lora(base, rank, key)
         self.lora_A = lora_A
@@ -121,6 +131,8 @@ class DoRALinear(eqx.Module):
     def weight(self) -> jax.Array:
         direction = self.base.weight + self._delta_weight()
         direction_norm = jnp.linalg.norm(direction, axis=1, keepdims=True)
+        if self.norm_gradient == "detached":
+            direction_norm = jax.lax.stop_gradient(direction_norm)
         direction = direction / jnp.maximum(direction_norm, self.eps)
         return direction * self.magnitude[:, None]
 
@@ -147,6 +159,8 @@ class DoRALinear(eqx.Module):
     def _dropout_weight_projection(self, x: jax.Array, key: jax.Array) -> jax.Array:
         dense_direction = self.base.weight + self._delta_weight()
         direction_norm = jnp.linalg.norm(dense_direction, axis=1)
+        if self.norm_gradient == "detached":
+            direction_norm = jax.lax.stop_gradient(direction_norm)
         x_drop = _dropout(x, self.dropout, key)
         projected = (
             self.base.weight @ x
@@ -199,6 +213,8 @@ def apply_dora(
                 train_base=config.train_base,
                 mergeable=config.mergeable,
                 magnitude_init=config.magnitude_init,
+                norm_gradient=config.norm_gradient,
+                norm_impl=config.norm_impl,
                 key=subkey,
             ),
         )
@@ -262,11 +278,11 @@ def _init_lora(
 
 
 def _init_magnitude(base: eqx.nn.Linear, magnitude_init: str) -> jax.Array:
-    if magnitude_init == "column_norm":
+    if magnitude_init == "base_weight_norm":
         return jnp.linalg.norm(base.weight, axis=1).astype(base.weight.dtype)
     raise ValueError(
         "Unsupported DoRA magnitude_init "
-        f"{magnitude_init!r}; expected 'column_norm'."
+        f"{magnitude_init!r}; expected 'base_weight_norm'."
     )
 
 

@@ -18,7 +18,7 @@ def _trained_like_lora(model):
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

@@ -28,7 +28,7 @@ def test_dora_gradients_flow_to_magnitude_and_low_rank(tiny_vision_transformer):
         eqft.DoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -56,7 +56,7 @@ def test_dora_train_base_includes_wrapped_base_leaves(tiny_vision_transformer):
             rank=2,
             alpha=4.0,
             train_base=True,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -72,14 +72,14 @@ def test_dora_train_base_includes_wrapped_base_leaves(tiny_vision_transformer):
     assert plan.trainable.blocks[0].attn.proj.base.bias is not None
 
 
-def test_dora_magnitude_init_column_norm(tiny_vision_transformer):
+def test_dora_magnitude_init_base_weight_norm(tiny_vision_transformer):
     dora = eqft.apply_dora(
         tiny_vision_transformer,
         eqft.DoRAConfig(
             rank=2,
             alpha=4.0,
-            magnitude_init="column_norm",
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            magnitude_init="base_weight_norm",
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -98,7 +98,7 @@ def test_dora_magnitude_init_rejects_unsupported_policy(tiny_vision_transformer)
                 rank=2,
                 alpha=4.0,
                 magnitude_init="zeros",
-                target=eqft.TargetSpec(tags=("attention.proj",)),
+                target=eqft.TargetSpec(tags_any=("attention.proj",)),
             ),
             key=jr.PRNGKey(0),
         )
@@ -111,7 +111,7 @@ def test_dora_dropout_requires_key_and_affects_low_rank_branch(tiny_vision_trans
             rank=2,
             alpha=4.0,
             dropout=0.5,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -138,7 +138,7 @@ def test_dora_merge_removes_wrappers_and_preserves_outputs(tiny_vision_transform
         eqft.DoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

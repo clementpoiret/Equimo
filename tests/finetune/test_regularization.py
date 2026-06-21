@@ -28,7 +28,7 @@ def test_l2_sp_reduction_and_explicit_coefficient():
         reduction="sum",
     )
 
-    assert unscaled == jnp.asarray(2.5)
+    assert jnp.allclose(unscaled, jnp.asarray(0.0025))
     assert scaled_sum == jnp.asarray(2.5)
 
 
@@ -45,7 +45,7 @@ def test_l2_sp_respects_default_excluded_tags(tiny_vision_transformer):
     included = eqft.l2_sp_loss(
         model,
         tiny_vision_transformer,
-        config=eqft.L2SPConfig(exclude=()),
+        config=eqft.L2SPConfig(shared_mask="all"),
     )
 
     assert excluded == jnp.asarray(0.0)
@@ -57,7 +57,7 @@ def test_adapter_and_task_vector_norm_penalties(tiny_vision_transformer):
         tiny_vision_transformer,
         eqft.LoRAConfig(
             rank=2,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jax.random.PRNGKey(0),
     )

@@ -25,7 +25,7 @@ class ScaleShiftConfig:
     scale_init: float = 1.0
     shift_init: float = 0.0
     axis: Literal["feature", "channel"] = "feature"
-    target: TargetSpec = TargetSpec(tags=("attention", "mlp", "norm"))
+    target: TargetSpec = TargetSpec(tags_any=("attention", "mlp", "norm"))
     train_head: bool = True
     mergeable: bool = True
 
@@ -33,7 +33,7 @@ class ScaleShiftConfig:
     def convnet(
         cls,
         *,
-        target: TargetSpec = TargetSpec(tags=("conv", "stage.block", "norm")),
+        target: TargetSpec = TargetSpec(tags_any=("conv", "stage.block", "norm")),
         axis: Literal["feature", "channel"] = "channel",
         scale_init: float = 1.0,
         shift_init: float = 0.0,

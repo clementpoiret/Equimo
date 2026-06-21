@@ -21,6 +21,7 @@ class WiSEFTConfig:
     """Configuration for WiSE-FT interpolation."""
 
     alpha: float = 0.5
+    head_policy: str = "exclude"
     mask: str = "shared_backbone"
     include_head: bool = False
     strict_shapes: bool = True
@@ -73,20 +74,23 @@ class TIESConfig:
     """TIES merge metadata."""
 
     density: float = 0.20
+    density_scope: str = "global"
     trim_by: str = "magnitude"
     sign_election: str = "sum"
+    zero_sign: str = "zero"
     merge: str = "disjoint_mean"
+    final_scale: float = 1.0
     require_same_base_hash: bool = True
 
 
 @dataclass(frozen=True)
-class DAREConfig:
+class DARETransform:
     """DARE merge metadata."""
 
     drop_rate: float = 0.90
     rescale: bool = True
-    seed_required: bool = True
-    apply_to: str = "task_vector"
+    seed: int | None = None
+    scope: str = "per_tensor"
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,9 @@ class RegMeanConfig:
     """RegMean merge metadata."""
 
     ridge: float = 1e-5
+    covariance_normalization: str = "none"
+    solver: str = "solve"
+    non_matrix_policy: str = "mean"
     require_input_covariances: bool = True
     require_same_architecture_hash: bool = True
 
@@ -310,8 +317,18 @@ def ties_merge(
 
     if not vectors:
         raise ValueError("ties_merge requires at least one task vector.")
+    final_scale = 1.0
     if config is not None:
         density = config.density
+        final_scale = config.final_scale
+        if config.density_scope != "per_tensor":
+            raise ValueError("TIESConfig.density_scope currently supports 'per_tensor'.")
+        if config.trim_by != "magnitude":
+            raise ValueError("TIESConfig.trim_by currently supports 'magnitude'.")
+        if config.sign_election != "sum":
+            raise ValueError("TIESConfig.sign_election currently supports 'sum'.")
+        if config.merge != "disjoint_mean":
+            raise ValueError("TIESConfig.merge currently supports 'disjoint_mean'.")
         _check_vector_compatibility(
             vectors,
             require_same_base_hash=config.require_same_base_hash,
@@ -320,7 +337,12 @@ def ties_merge(
         _check_vector_compatibility(vectors, require_same_base_hash=True)
     merged = _merge_deltas(
         [vector.delta for vector in vectors],
-        lambda leaves: _ties_leaf(leaves, density),
+        lambda leaves: _ties_leaf(
+            leaves,
+            density,
+            zero_sign="zero" if config is None else config.zero_sign,
+            final_scale=final_scale,
+        ),
     )
     first = vectors[0]
     return TaskVector(
@@ -337,7 +359,7 @@ def dare_task_vector(
     drop_rate: float = 0.90,
     key: jax.Array,
     rescale: bool = True,
-    config: DAREConfig | None = None,
+    config: DARETransform | None = None,
 ) -> TaskVector:
     """Apply a static DARE mask to a task vector."""
 
@@ -556,18 +578,45 @@ def _merge_deltas(deltas: Sequence[PyTree], leaf_fn) -> PyTree:
     return jtu.tree_map(lambda leaf, *others: leaf_fn((leaf, *others)), first, *rest)
 
 
-def _ties_leaf(leaves, density: float):
+def _ties_leaf(
+    leaves,
+    density: float,
+    *,
+    zero_sign: str,
+    final_scale: float,
+):
     first = leaves[0]
     if not eqx.is_inexact_array(first):
         return first
     stacked = jnp.stack(leaves)
-    mean = jnp.mean(stacked, axis=0)
-    if density >= 1.0:
-        return mean
-    threshold = jnp.quantile(jnp.abs(mean).reshape(-1), 1.0 - density)
-    mask = jnp.abs(mean) >= threshold
-    consensus = jnp.sign(jnp.sum(jnp.sign(stacked), axis=0))
-    return jnp.where(mask, jnp.abs(mean) * consensus, 0)
+    if not 0.0 < density <= 1.0:
+        raise ValueError("TIES density must satisfy 0 < density <= 1.")
+    if density < 1.0:
+        thresholds = jnp.quantile(
+            jnp.abs(stacked).reshape((stacked.shape[0], -1)),
+            1.0 - density,
+            axis=1,
+        )
+        trim_mask = jnp.abs(stacked) >= thresholds.reshape((-1,) + (1,) * first.ndim)
+        stacked = jnp.where(trim_mask, stacked, 0)
+    sign_sum = jnp.sum(stacked, axis=0)
+    consensus = jnp.sign(sign_sum)
+    if zero_sign == "positive":
+        consensus = jnp.where(consensus == 0, 1, consensus)
+    elif zero_sign == "largest_magnitude":
+        largest = jnp.take_along_axis(
+            stacked,
+            jnp.argmax(jnp.abs(stacked), axis=0, keepdims=True),
+            axis=0,
+        )[0]
+        consensus = jnp.where(consensus == 0, jnp.sign(largest), consensus)
+    elif zero_sign != "zero":
+        raise ValueError("TIES zero_sign must be 'zero', 'positive', or 'largest_magnitude'.")
+    agree = jnp.logical_and(stacked != 0, jnp.sign(stacked) == consensus[None, ...])
+    numerator = jnp.sum(jnp.where(agree, stacked, 0), axis=0)
+    denominator = jnp.sum(agree.astype(jnp.float32), axis=0)
+    merged = jnp.where(denominator > 0, numerator / denominator, 0)
+    return merged * final_scale
 
 
 def _dare_leaf(leaf, *, drop_rate: float, key: jax.Array, rescale: bool):
@@ -762,7 +811,7 @@ __all__ = (
     "UniformSoupConfig",
     "WiSEFTConfig",
     "BreadcrumbsConfig",
-    "DAREConfig",
+    "DARETransform",
     "FisherMergeConfig",
     "GreedySoupConfig",
     "RegMeanConfig",

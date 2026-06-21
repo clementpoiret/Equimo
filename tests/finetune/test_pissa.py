@@ -13,7 +13,7 @@ def test_pissa_initialization_shapes(tiny_vision_transformer):
         tiny_vision_transformer,
         eqft.PiSSAConfig(
             rank=2,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -29,7 +29,7 @@ def test_pissa_freeze_residual_preserves_base_outputs(tiny_vision_transformer):
         tiny_vision_transformer,
         eqft.PiSSAConfig(
             rank=2,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -46,7 +46,7 @@ def test_pissa_delta_roundtrip_preserves_residual_base(
         tiny_vision_transformer,
         eqft.PiSSAConfig(
             rank=2,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -64,7 +64,7 @@ def test_pissa_residual_delta_is_never_trainable(tiny_vision_transformer):
         tiny_vision_transformer,
         eqft.PiSSAConfig(
             rank=2,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

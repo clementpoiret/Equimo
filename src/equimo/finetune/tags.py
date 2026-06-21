@@ -198,8 +198,10 @@ def make_param_info(
     """Build one tagged ``ParamInfo`` record."""
 
     tags = frozenset(tagger(path, leaf))
+    path_string = ".".join(str(part) for part in path)
     return ParamInfo(
         path=path,
+        logical_id=path_string,
         tags=tags,
         role=infer_role(tags),
         depth=infer_depth(path),
@@ -213,6 +215,9 @@ def infer_role(tags: Iterable[str]) -> str:
 
     tag_set = frozenset(tags)
     for tag, role in (
+        ("lora.factor_A", "lora.factor_A"),
+        ("lora.factor_B", "lora.factor_B"),
+        ("adalora.singular", "adalora.singular"),
         ("lora", "lora"),
         ("head", "head"),
         ("attention.qkv", "attention.qkv"),
@@ -309,9 +314,11 @@ def _add_conv_stage_tags(parts: tuple[str, ...], tags: set[str]) -> None:
 
 def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
     if "lora_A" in parts:
-        tags.update(("lora", "lora.A"))
+        tags.update(("lora", "lora.factor_A"))
     if "lora_B" in parts:
-        tags.update(("lora", "lora.B"))
+        tags.update(("lora", "lora.factor_B"))
+    if "singular" in parts and "adalora" in parts:
+        tags.update(("adalora", "adalora.singular"))
     if "rank_mask" in parts:
         tags.update(("lora", "lora.rank_mask"))
     if "base_weight_delta" in parts:

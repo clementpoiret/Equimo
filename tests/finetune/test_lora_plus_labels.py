@@ -13,7 +13,7 @@ def test_lora_plus_labels_expose_a_and_b(tiny_vision_transformer):
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

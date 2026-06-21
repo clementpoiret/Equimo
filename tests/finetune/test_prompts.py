@@ -21,7 +21,7 @@ class MixingBlock(eqx.Module):
 def test_vpt_deep_shapes(tiny_vision_transformer):
     prompted = eqft.apply_prompts(
         tiny_vision_transformer,
-        eqft.PromptConfig(num_tokens=3, depth="deep"),
+        eqft.VPTDeepConfig(num_tokens=3),
         key=jr.PRNGKey(0),
     )
     x = jnp.ones((2, 3))
@@ -37,7 +37,7 @@ def test_vpt_deep_inserts_before_replacing_prompt_slots():
     model = TinyVisionTransformer(depth=2, num_reg_tokens=2)
     prompted = eqft.apply_prompts(
         model,
-        eqft.PromptConfig(num_tokens=2, depth="deep"),
+        eqft.VPTDeepConfig(num_tokens=2),
         key=jr.PRNGKey(0),
     )
     x = jnp.ones((2, 3))
@@ -54,7 +54,7 @@ def test_vpt_preserves_register_tokens_before_blocks():
     model = eqx.tree_at(lambda m: m.norm, model, eqx.nn.Identity())
     prompted = eqft.apply_prompts(
         model,
-        eqft.PromptConfig(num_tokens=2, depth="deep"),
+        eqft.VPTDeepConfig(num_tokens=2),
         key=jr.PRNGKey(0),
     )
     x = jnp.ones((2, 3))
@@ -97,7 +97,7 @@ def test_vpt_real_vit_register_rope_shape():
     )
     prompted = eqft.apply_prompts(
         model,
-        eqft.PromptConfig(num_tokens=2, depth="deep"),
+        eqft.VPTDeepConfig(num_tokens=2),
         key=jr.PRNGKey(1),
     )
     x = jnp.ones((3, 32, 32))
@@ -154,7 +154,7 @@ def test_deep_prompt_config_can_share_across_layers():
     model = TinyVisionTransformer(depth=2)
     prompted = eqft.apply_prompts(
         model,
-        eqft.DeepPromptConfig(num_tokens=2, share_across_layers=True),
+        eqft.PTuningV2Config(num_tokens=2, share_across_layers=True),
         key=jr.PRNGKey(0),
     )
 
@@ -172,7 +172,7 @@ def test_prompts_receive_gradients_when_blocks_mix_tokens(tiny_vision_transforme
     )
     prompted = eqft.apply_prompts(
         model,
-        eqft.PromptConfig(num_tokens=2, depth="deep"),
+        eqft.VPTDeepConfig(num_tokens=2),
         key=jr.PRNGKey(0),
     )
     x = jnp.ones((2, 3))

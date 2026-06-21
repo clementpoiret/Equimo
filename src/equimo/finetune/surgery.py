@@ -9,7 +9,17 @@ import jax
 import jax.numpy as jnp
 
 from ._typing import PyTree
-from .config import FineTunePlan, LLRDConfig, TargetSpec, TrainableSpec
+from .config import (
+    AuxLossSpec,
+    FeatureSpec,
+    FineTunePlan,
+    LLRDConfig,
+    MethodProfile,
+    ModelLineage,
+    StatePolicy,
+    TargetSpec,
+    TrainableSpec,
+)
 from .inspection import make_trainable_report
 from .labels import make_labeled_param_info_tree
 from .masks import make_trainable_filter, resolve_trainable_paths
@@ -30,6 +40,12 @@ def prepare_finetune(
     *,
     trainable: TrainableSpec,
     labels: LLRDConfig | None = None,
+    model_state: eqx.nn.State | None = None,
+    state_policy: StatePolicy | None = None,
+    feature_spec: FeatureSpec | None = None,
+    aux_losses: tuple[AuxLossSpec, ...] = (),
+    profile: MethodProfile | None = None,
+    lineage: ModelLineage | None = None,
     tagger: Tagger = canonical_tags_for_path,
 ) -> FineTunePlan:
     """Partition a model and attach labels/reports for external optimizers."""
@@ -44,6 +60,7 @@ def prepare_finetune(
         tagger=tagger,
     )
     label_tree = _labels_from_param_info(param_info)
+    identities = _identities_from_param_info(param_info)
     report = make_trainable_report(model, param_info)
 
     return FineTunePlan(
@@ -53,6 +70,13 @@ def prepare_finetune(
         group_specs=group_specs,
         trainable_mask=trainable_mask,
         param_info=param_info,
+        identities=identities,
+        model_state=model_state,
+        state_policy=StatePolicy() if state_policy is None else state_policy,
+        feature_spec=feature_spec,
+        aux_losses=aux_losses,
+        profile=profile,
+        lineage=ModelLineage() if lineage is None else lineage,
         report=report,
     )
 
@@ -62,6 +86,12 @@ def partition_for_training(
     trainable: TrainableSpec,
     *,
     labels: LLRDConfig | None = None,
+    model_state: eqx.nn.State | None = None,
+    state_policy: StatePolicy | None = None,
+    feature_spec: FeatureSpec | None = None,
+    aux_losses: tuple[AuxLossSpec, ...] = (),
+    profile: MethodProfile | None = None,
+    lineage: ModelLineage | None = None,
     tagger: Tagger = canonical_tags_for_path,
 ) -> FineTunePlan:
     """Alias for ``prepare_finetune``."""
@@ -70,6 +100,12 @@ def partition_for_training(
         model,
         trainable=trainable,
         labels=labels,
+        model_state=model_state,
+        state_policy=state_policy,
+        feature_spec=feature_spec,
+        aux_losses=aux_losses,
+        profile=profile,
+        lineage=lineage,
         tagger=tagger,
     )
 
@@ -90,7 +126,7 @@ def replace_head(
         if hasattr(model, selector):
             path = (selector,)
         else:
-            selector = TargetSpec(tags=(selector,))
+            selector = TargetSpec(tags_any=(selector,))
             path = _resolve_single_module_path(model, selector, tagger=tagger)
     else:
         path = _resolve_single_module_path(model, selector, tagger=tagger)
@@ -259,6 +295,32 @@ def _labels_from_param_info(param_info: PyTree) -> PyTree:
         lambda info: info.label if isinstance(info, ParamInfo) else None,
         param_info,
     )
+
+
+def _identities_from_param_info(param_info: PyTree) -> PyTree:
+    import jax.tree_util as jtu
+
+    from .config import ParamIdentity, ParamInfo
+    from .paths import path_to_str
+
+    def identity(info):
+        if not isinstance(info, ParamInfo) or not info.is_inexact_array:
+            return None
+        logical_id = info.logical_id or path_to_str(info.path)
+        module_id = path_to_str(info.path[:-1])
+        return ParamIdentity(
+            logical_id=logical_id,
+            module_id=module_id,
+            leaf_role=info.role or (str(info.path[-1]) if info.path else "root"),
+            physical_path=info.path,
+            tags=info.tags,
+            depth=info.depth,
+            alias_group=None,
+            layout=info.layout,
+            segment=info.segment,
+        )
+
+    return jtu.tree_map(identity, param_info)
 
 
 __all__ = (

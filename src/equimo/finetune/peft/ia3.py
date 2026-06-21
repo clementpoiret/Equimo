@@ -22,7 +22,7 @@ from .base import get_path
 class IA3Config:
     """Configuration for IA3 activation scaling."""
 
-    target: TargetSpec = TargetSpec(tags=("attention.k", "attention.v", "mlp.hidden"))
+    target: TargetSpec = TargetSpec(tags_any=("attention.k", "attention.v", "mlp.hidden"))
     init: float = 1.0
     axis: Literal["feature"] = "feature"
     train_head: bool = True

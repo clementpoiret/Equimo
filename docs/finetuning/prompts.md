@@ -6,7 +6,7 @@ blocks. Prompt tokens are excluded from mean-patch pooling by default.
 ```python
 prompted = eqft.apply_prompts(
     model,
-    eqft.PromptConfig(num_tokens=10, depth="deep"),
+    eqft.VPTDeepConfig(num_tokens=10),
     key=key,
 )
 plan = eqft.prepare_finetune(

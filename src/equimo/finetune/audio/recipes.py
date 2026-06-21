@@ -90,7 +90,7 @@ def lora_ast(
 
     return apply_lora(
         model,
-        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(tags=target)),
+        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(tags_any=target)),
         key=key,
     )
 

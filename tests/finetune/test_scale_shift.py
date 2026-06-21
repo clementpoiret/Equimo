@@ -35,7 +35,7 @@ def test_merge_scale_shift_preserves_linear_outputs_and_removes_wrapper(
     x = jnp.ones((2, 3))
     tuned = eqft.apply_scale_shift(
         tiny_vision_transformer,
-        eqft.ScaleShiftConfig(target=eqft.TargetSpec(tags=("attention.proj",))),
+        eqft.ScaleShiftConfig(target=eqft.TargetSpec(tags_any=("attention.proj",))),
     )
     tuned = eqx.tree_at(
         lambda model: (
@@ -69,7 +69,7 @@ def test_merge_scale_shift_rejects_non_mergeable_wrappers(tiny_vision_transforme
     tuned = eqft.apply_scale_shift(
         tiny_vision_transformer,
         eqft.ScaleShiftConfig(
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
             mergeable=False,
         ),
     )
@@ -91,7 +91,7 @@ def test_scale_shift_channel_axis_and_convnet_preset():
     y = transform(x)
 
     assert config.axis == "channel"
-    assert config.target.tags == ("conv", "stage.block", "norm")
+    assert config.target.tags_any == ("conv", "stage.block", "norm")
     assert jnp.array_equal(y[:, 0, 0], jnp.asarray([1.0, 3.0, 5.0]))
 
 

@@ -23,18 +23,30 @@ TrainableMode = Literal[
 ]
 
 DepthAxis = Literal["block", "stage", "module"]
+TargetKind = Literal["module", "leaf", "projection_segment"]
+IdentityStability = Literal["model_owned", "path_derived"]
+ProfileFidelity = Literal[
+    "safe_default",
+    "paper_exact",
+    "reference_implementation",
+    "model_family_recipe",
+    "experimental",
+]
 
 
 @dataclass(frozen=True)
 class TargetSpec:
     """Describe model leaves selected by paths, semantic tags, or predicates."""
 
+    tags_all: tuple[str, ...] = ()
+    tags_any: tuple[str, ...] = ()
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
-    tags: tuple[str, ...] = ()
     predicate: LeafPredicate | None = None
     min_depth: int | None = None
     max_depth: int | None = None
+    target_kind: TargetKind = "leaf"
+    allow_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -48,8 +60,150 @@ class TrainableSpec:
     train_norm: bool = False
     train_bias: bool = False
     depth_range: tuple[int, int] | None = None
-    shift: str | None = None
     method_name: str | None = None
+
+
+@dataclass(frozen=True)
+class MethodProfile:
+    """Declared fidelity profile for a model-side fine-tuning method."""
+
+    id: str
+    method: str
+    fidelity: ProfileFidelity
+    reference_ids: tuple[str, ...]
+    config: Mapping[str, Any]
+    target_spec: Mapping[str, Any]
+    known_deviations: tuple[str, ...] = ()
+    required_artifacts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class StatePolicy:
+    """Training-state semantics for stateful Equinox models."""
+
+    training: Literal[
+        "frozen",
+        "microbatch_sequential",
+        "optimizer_step_aggregate",
+        "external",
+    ] = "frozen"
+    sam_second_pass: Literal["discard", "reuse_first_pass", "update"] = "discard"
+    averaging: Literal[
+        "do_not_average",
+        "average_arrays",
+        "recalibrate",
+    ] = "recalibrate"
+
+
+@dataclass(frozen=True)
+class WeightLayout:
+    """Logical layout metadata for matrix or convolution weights."""
+
+    physical: Literal["out_in", "in_out", "conv_oihw", "conv_hwio"] = "out_in"
+    input_axis: int = 1
+    output_axis: int = 0
+    groups: int = 1
+
+
+@dataclass(frozen=True)
+class ProjectionSegment:
+    """Logical segment inside a fused projection weight."""
+
+    name: Literal["q", "k", "v", "o", "gate", "up", "down", "custom"]
+    axis: int
+    start: int
+    stop: int
+
+
+@dataclass(frozen=True)
+class ParamIdentity:
+    """Stable logical identity for an optimizable or mergeable parameter."""
+
+    logical_id: str
+    module_id: str
+    leaf_role: str
+    physical_path: Path
+    tags: frozenset[str]
+    depth: int | None
+    alias_group: str | None
+    layout: WeightLayout | None
+    segment: ProjectionSegment | None
+
+
+@dataclass(frozen=True)
+class FeatureSpec:
+    """Reproducible feature endpoint and preprocessing metadata."""
+
+    endpoint: str
+    output_layout: Literal["BNC", "BCHW", "BTC", "BCT", "BC"]
+    token_selection: Literal[
+        "all",
+        "cls",
+        "patches",
+        "frames",
+        "last_valid",
+        "custom",
+    ]
+    pooling: str | None
+    mask_field: str | None = None
+    exclude_prompt_tokens: bool = True
+    normalize: Literal["none", "l2", "standardize"] = "none"
+    layer_aggregation: Mapping[str, Any] | None = None
+    preprocessing_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class CalibrationArtifact:
+    """Immutable statistics consumed by data-aware fine-tuning methods."""
+
+    kind: Literal[
+        "activation_covariance",
+        "activation_svd",
+        "input_covariance",
+        "quantization_residual",
+        "fisher_diagonal",
+    ]
+    base_checkpoint_hash: str
+    logical_parameter_ids: tuple[str, ...]
+    statistics: PyTree
+    sample_count: int
+    data_fingerprint: str
+    accumulation_dtype: str
+    distributed_reduction: str
+
+
+@dataclass(frozen=True)
+class AuxLossSpec:
+    """Optimizer-neutral auxiliary-loss declaration."""
+
+    name: str
+    registry_key: str
+    coefficient_hint: float | None
+    reduction: Literal["sum", "mean", "none"]
+    normalizer: Literal["none", "parameters", "examples", "tokens"]
+    required_artifacts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ModelLineage:
+    """Lineage binding for plans, deltas, merges, and checkpoints."""
+
+    base_model_name: str | None = None
+    base_checkpoint_id: str | None = None
+    base_checkpoint_hash: str | None = None
+    model_revision: str | None = None
+    identity_stability: IdentityStability = "path_derived"
+    parent_lineages: tuple["ModelLineage", ...] = ()
+    notes: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CompactLeafMap:
+    """Reversible compact-leaf mapping keyed by logical parameter ID."""
+
+    logical_ids: tuple[str, ...]
+    physical_paths: tuple[Path, ...]
+    treedef_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -138,6 +292,7 @@ class ParamInfo:
     """Per-leaf metadata produced by later planning phases."""
 
     path: Path = ()
+    logical_id: str = ""
     tags: frozenset[str] = frozenset()
     role: str = ""
     depth: int | None = None
@@ -147,6 +302,8 @@ class ParamInfo:
     weight_decay: bool = False
     lr_multiplier: float | None = None
     label: str | None = None
+    layout: WeightLayout | None = None
+    segment: ProjectionSegment | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +344,13 @@ class FineTunePlan:
     group_specs: Mapping[str, GroupSpec]
     trainable_mask: PyTree
     param_info: PyTree
+    identities: PyTree
+    model_state: eqx.nn.State | None
+    state_policy: StatePolicy
+    feature_spec: FeatureSpec | None
+    aux_losses: tuple[AuxLossSpec, ...]
+    profile: MethodProfile | None
+    lineage: ModelLineage
     report: TrainableReport
 
     def combine(self, trainable: PyTree | None = None) -> PyTree:
@@ -212,6 +376,7 @@ class FineTuneBundle:
     selector_spec: Mapping[str, Any] = field(default_factory=dict)
     trainable_labels: Any = None
     delta_tree: Any = None
+    lineage: ModelLineage = field(default_factory=ModelLineage)
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -220,7 +385,11 @@ class FineTuneBundleError(ValueError):
 
 
 __all__ = (
+    "AuxLossSpec",
+    "CalibrationArtifact",
+    "CompactLeafMap",
     "DepthAxis",
+    "FeatureSpec",
     "FineTuneBundle",
     "FineTuneBundleError",
     "FineTunePlan",
@@ -228,10 +397,17 @@ __all__ = (
     "GroupSpec",
     "HeadSpec",
     "LLRDConfig",
+    "MethodProfile",
+    "ModelLineage",
+    "ParamIdentity",
     "ParamInfo",
+    "ProjectionSegment",
     "SAMMetadata",
+    "StatePolicy",
     "TargetSpec",
+    "TargetKind",
     "TrainableMode",
     "TrainableReport",
     "TrainableSpec",
+    "WeightLayout",
 )

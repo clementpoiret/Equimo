@@ -14,7 +14,7 @@ plan = eqft.prepare_finetune(
     model,
     trainable=eqft.TrainableSpec(
         mode="full",
-        freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+        freeze=eqft.TargetSpec(tags_any=("embedding.patch",)),
     ),
     labels=eqft.LLRDConfig(decay=0.75),
 )

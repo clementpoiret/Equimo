@@ -91,7 +91,7 @@ def test_partial_unfreeze_config_controls_span_and_embeddings(tiny_vision_transf
 def test_surgical_config_controls_shift_span_and_embedding_policy(tiny_vision_transformer):
     plan = eqft.surgical(
         tiny_vision_transformer,
-        eqft.SurgicalFineTuneConfig(
+        eqft.HeuristicSurgicalPreset(
             shift="input",
             span_fraction=0.5,
             train_head=False,

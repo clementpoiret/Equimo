@@ -26,7 +26,7 @@ def lora_encoder(
         LoRAConfig(
             rank=rank,
             alpha=alpha,
-            target=TargetSpec(tags=("attention.qkv", "attention.proj")),
+            target=TargetSpec(tags_any=("attention.qkv", "attention.proj")),
         ),
         key=key,
     )

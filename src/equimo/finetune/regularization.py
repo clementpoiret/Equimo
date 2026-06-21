@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import equinox as eqx
 import jax
@@ -21,16 +21,23 @@ from .tags import canonical_tags_for_path
 class L2SPConfig:
     """L2-SP penalty metadata."""
 
-    mask: str = "backbone_trainable"
-    exclude: tuple[str, ...] = ("head", "lora", "adapter", "prompt", "ia3", "scale_shift")
-    reduction: Literal["mean", "sum"] = "mean"
-    coefficient_hint: float = 1e-3
+    shared_mask: str = "transferred_trainable"
+    new_mask: str = "newly_initialized"
+    alpha: float = 1e-3
+    beta: float = 0.0
+    reduction: Literal["sum", "mean_per_parameter"] = "sum"
+    anchor: str = "pretrained"
+    library_variant: str = "paper_objective"
+    coefficient_hint: float | None = None
     sweep_hint: tuple[float, float] = (1e-5, 1e-1)
 
 
 @dataclass(frozen=True)
 class FeatureDistillationConfig:
-    """Feature distillation metadata."""
+    """Generic teacher-feature distillation metadata.
+
+    This is not a DELTA attention-transfer configuration.
+    """
 
     layers: tuple[str, ...] = ("50%", "100%")
     metric: str = "mse"
@@ -49,6 +56,18 @@ class FeatureDistillationConfig:
         """Return a dense-task feature distillation preset."""
 
         return cls(layers=layers, normalize_features=normalize_features)
+
+
+@dataclass(frozen=True)
+class DELTAAttentionConfig:
+    """DELTA-style attention-weighted feature-map transfer metadata."""
+
+    layers: tuple[str, ...] = ("100%",)
+    attention: str = "learned_feature_map_attention"
+    feature_alignment: Mapping[str, Any] = field(default_factory=dict)
+    teacher: str = "pretrained_anchor"
+    stop_gradient_teacher: bool = True
+    reduction: Literal["sum", "mean"] = "sum"
 
 
 @dataclass(frozen=True)
@@ -76,7 +95,7 @@ def l2_sp_loss(
     *,
     config: L2SPConfig | None = None,
     coefficient: float | None = None,
-    reduction: Literal["mean", "sum"] | None = None,
+    reduction: Literal["sum", "mean_per_parameter"] | None = None,
 ) -> jax.Array:
     """Return an optionally scaled L2-SP penalty between compatible leaves."""
 
@@ -93,8 +112,9 @@ def l2_sp_loss(
     if not pairs:
         return jnp.asarray(0.0)
     sums, counts = zip(*pairs, strict=True)
-    penalty = _reduce_terms(sums, counts, resolved_reduction)
-    return penalty if coefficient is None else penalty * coefficient
+    penalty = _reduce_l2sp_terms(sums, counts, resolved_reduction)
+    scale = resolved_config.alpha / 2.0 if coefficient is None else coefficient
+    return penalty * scale
 
 
 def adapter_norm_loss(
@@ -378,20 +398,16 @@ def _matched_l2_entries(
 
 
 def _include_l2_path(path: Path, leaf: jax.Array, config: L2SPConfig) -> bool:
-    if config.mask not in {"all", "backbone", "backbone_trainable"}:
+    if config.shared_mask not in {"all", "backbone", "transferred_trainable"}:
         raise ValueError(
-            "L2SPConfig.mask must be 'all', 'backbone', or 'backbone_trainable'."
+            "L2SPConfig.shared_mask must be 'all', 'backbone', or "
+            "'transferred_trainable'."
         )
-    if config.mask == "all" and not config.exclude:
+    if config.shared_mask == "all":
         return True
     tags = canonical_tags_for_path(path, leaf)
-    path_string = path_to_str(path)
-    for item in config.exclude:
-        if item in tags or any(tag.startswith(f"{item}.") for tag in tags):
-            return False
-        if item and (path_string == item or path_string.startswith(f"{item}.")):
-            return False
-    return True
+    excluded = {"head", "lora", "dora", "adapter", "prompt", "prefix", "ia3", "scale_shift"}
+    return tags.isdisjoint(excluded)
 
 
 def _inexact_array_entries(tree: PyTree) -> tuple[tuple[Path, jax.Array], ...]:
@@ -418,6 +434,20 @@ def _reduce_terms(
         count = jnp.sum(jnp.stack(counts))
         return total / jnp.maximum(count, 1)
     raise ValueError(f"Unsupported reduction {reduction!r}.")
+
+
+def _reduce_l2sp_terms(
+    sums: tuple[jax.Array, ...],
+    counts: tuple[jax.Array, ...],
+    reduction: Literal["sum", "mean_per_parameter"],
+) -> jax.Array:
+    total = jnp.sum(jnp.stack(sums))
+    if reduction == "sum":
+        return total
+    if reduction == "mean_per_parameter":
+        count = jnp.sum(jnp.stack(counts))
+        return total / jnp.maximum(count, 1)
+    raise ValueError(f"Unsupported L2-SP reduction {reduction!r}.")
 
 
 def _reduce_values(
@@ -511,6 +541,7 @@ def _check_mixout_p(p: float) -> None:
 
 
 __all__ = (
+    "DELTAAttentionConfig",
     "EWCConfig",
     "FeatureDistillationConfig",
     "L2SPConfig",

@@ -26,7 +26,7 @@ def test_lora_merge_equivalence(tiny_vision_transformer):
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )
@@ -45,7 +45,7 @@ def test_lora_unmerge_roundtrip(tiny_vision_transformer):
         eqft.LoRAConfig(
             rank=2,
             alpha=4.0,
-            target=eqft.TargetSpec(tags=("attention.proj",)),
+            target=eqft.TargetSpec(tags_any=("attention.proj",)),
         ),
         key=jr.PRNGKey(0),
     )

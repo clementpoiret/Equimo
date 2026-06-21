@@ -35,13 +35,21 @@ def resolve_target(
     by_path = {info.path: info for info in infos}
     selected_paths: set[Path] = set()
 
-    has_positive_selector = bool(target.tags or target.include or target.predicate)
+    allow_empty = allow_empty or target.allow_empty
+    has_positive_selector = bool(
+        target.tags_all or target.tags_any or target.include or target.predicate
+    )
     if not has_positive_selector:
         selected_paths.update(by_path)
 
-    if target.tags:
+    if target.tags_all:
         selected_paths.update(
-            info.path for info in infos if not info.tags.isdisjoint(target.tags)
+            info.path for info in infos if set(target.tags_all) <= info.tags
+        )
+
+    if target.tags_any:
+        selected_paths.update(
+            info.path for info in infos if not info.tags.isdisjoint(target.tags_any)
         )
 
     if target.include:
@@ -151,8 +159,10 @@ def _depth_matches(info: ParamInfo, target: TargetSpec) -> bool:
 
 def _empty_selector_message(target: TargetSpec) -> str:
     details: list[str] = []
-    if target.tags:
-        details.append(f"tags={target.tags!r}")
+    if target.tags_all:
+        details.append(f"tags_all={target.tags_all!r}")
+    if target.tags_any:
+        details.append(f"tags_any={target.tags_any!r}")
     if target.include:
         details.append(f"include={target.include!r}")
     if target.exclude:

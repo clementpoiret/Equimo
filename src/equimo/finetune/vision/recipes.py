@@ -8,9 +8,9 @@ from .._typing import PyTree
 from ..config import FineTunePlan, TargetSpec
 from ..feature_extraction import LinearProbe
 from ..peft.lora import LoRAConfig, apply_lora
-from ..peft.prompts import PromptConfig, PromptedModel, apply_prompts
+from ..peft.prompts import PromptedModel, VPTDeepConfig, VPTShallowConfig, apply_prompts
 from ..recipes import (
-    SurgicalFineTuneConfig,
+    HeuristicSurgicalPreset,
     adapter_transformer,
     adaptformer_transformer,
     full_ft_llrd,
@@ -87,7 +87,7 @@ def surgical_ft_vit(
 
     return surgical_recipe(
         model,
-        SurgicalFineTuneConfig(
+        HeuristicSurgicalPreset(
             shift=shift,
             train_head=train_head,
             train_norm=train_norm,
@@ -107,7 +107,7 @@ def lora_vit(
 
     return apply_lora(
         model,
-        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(tags=target)),
+        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(tags_any=target)),
         key=key,
     )
 
@@ -149,9 +149,14 @@ def vpt_vit(
 ) -> PromptedModel:
     """Apply visual prompt tuning to a ViT-like model."""
 
+    prompt_config = (
+        VPTDeepConfig(num_tokens=num_tokens)
+        if depth == "deep"
+        else VPTShallowConfig(num_tokens=num_tokens)
+    )
     return apply_prompts(
         model,
-        PromptConfig(num_tokens=num_tokens, depth=depth),
+        prompt_config,
         key=key,
     )
 
