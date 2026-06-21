@@ -18,11 +18,50 @@ class PromptConfig:
     """Configuration for visual/soft prompt tuning."""
 
     num_tokens: int = 10
-    depth: Literal["shallow", "deep"] = "deep"
+    depth: Literal["shallow", "deep", "all"] = "deep"
+    init: str = "normal"
     init_std: float = 0.02
-    prepend_to: Literal["after_cls", "before_all"] = "after_cls"
+    prepend_to: Literal["after_cls", "before_all", "input"] = "after_cls"
     prompt_dropout: float = 0.0
     exclude_prompt_tokens_from_pool: bool = True
+    train_head: bool = True
+
+
+@dataclass(frozen=True)
+class SoftPromptConfig(PromptConfig):
+    """Soft prompt tuning defaults for text encoders."""
+
+    num_tokens: int = 20
+    depth: Literal["shallow", "deep", "all"] = "shallow"
+    init: str = "from_embedding_if_available"
+    prepend_to: Literal["after_cls", "before_all", "input"] = "input"
+
+
+@dataclass(frozen=True)
+class DeepPromptConfig(PromptConfig):
+    """Deep prompt / P-tuning v2-style defaults."""
+
+    num_tokens: int = 10
+    depth: Literal["shallow", "deep", "all"] = "all"
+    share_across_layers: bool = False
+
+
+@dataclass(frozen=True)
+class VPTShallowRecipe(PromptConfig):
+    """Visual prompt tuning shallow recipe metadata."""
+
+    num_tokens: int = 50
+    depth: Literal["shallow"] = "shallow"
+    prompt_dropout: float = 0.0
+
+
+@dataclass(frozen=True)
+class VPTDeepRecipe(PromptConfig):
+    """Visual prompt tuning deep recipe metadata."""
+
+    num_tokens: int = 10
+    depth: Literal["deep"] = "deep"
+    prompt_dropout: float = 0.0
 
 
 class PromptedModel(eqx.Module):
@@ -99,7 +138,7 @@ class PromptedModel(eqx.Module):
                 return self.base.head(x)
             token_index = (
                 self.config.num_tokens
-                if self.config.prepend_to == "before_all"
+                if _prepends_before_all(self.config)
                 else 0
             )
             return self.base.head(features[token_index])
@@ -117,15 +156,14 @@ def apply_prompts(
     config = PromptConfig() if config is None else config
     dim = _infer_dim(model)
     prompt_count = _prompt_count(model, config)
-    prompts = tuple(
-        jr.normal(prompt_key, (config.num_tokens, dim), dtype=jnp.float32) * config.init_std
-        for prompt_key in jr.split(key, prompt_count)
-    )
+    prompts = _init_prompts(model, config, dim, prompt_count, key)
     return PromptedModel(model, prompts, config)
 
 
 def _prompt_count(model: PyTree, config: PromptConfig) -> int:
     if config.depth == "shallow":
+        return 1
+    if getattr(config, "share_across_layers", False):
         return 1
     blocks = getattr(model, "blocks", ())
     return max(1, len(blocks))
@@ -136,7 +174,46 @@ def _infer_dim(model: PyTree) -> int:
         return int(model.dim)
     if hasattr(model, "pos_embed"):
         return int(model.pos_embed.shape[-1])
+    if hasattr(model, "token_embed") and hasattr(model.token_embed, "weight"):
+        return int(model.token_embed.weight.shape[-1])
     raise ValueError("Could not infer prompt dimension; pass a model with dim metadata.")
+
+
+def _init_prompts(
+    model: PyTree,
+    config: PromptConfig,
+    dim: int,
+    prompt_count: int,
+    key: jax.Array,
+) -> tuple[jax.Array, ...]:
+    if config.init == "normal":
+        return tuple(
+            jr.normal(prompt_key, (config.num_tokens, dim), dtype=jnp.float32)
+            * config.init_std
+            for prompt_key in jr.split(key, prompt_count)
+        )
+    if config.init == "from_embedding_if_available":
+        prompt = _prompt_from_embedding(model, config.num_tokens)
+        if prompt is not None:
+            return tuple(prompt for _ in range(prompt_count))
+        return tuple(
+            jr.normal(prompt_key, (config.num_tokens, dim), dtype=jnp.float32)
+            * config.init_std
+            for prompt_key in jr.split(key, prompt_count)
+        )
+    raise ValueError(
+        "Unsupported prompt init "
+        f"{config.init!r}; expected normal or from_embedding_if_available."
+    )
+
+
+def _prompt_from_embedding(model: PyTree, num_tokens: int) -> jax.Array | None:
+    token_embed = getattr(model, "token_embed", None)
+    weight = getattr(token_embed, "weight", None)
+    if weight is None:
+        return None
+    indices = jnp.arange(num_tokens) % weight.shape[0]
+    return weight[indices]
 
 
 def _equimo_vit_features(
@@ -221,7 +298,7 @@ def _simple_token_features(
     **kwargs,
 ) -> jax.Array:
     del kwargs
-    x = _map_tokens(model.patch_embed, x)
+    x = _embed_input_tokens(model, x)
     prefix = _simple_prefix_tokens(model)
     x = jnp.concatenate([*prefix, x], axis=0) if prefix else x
     if hasattr(model, "pos_embed"):
@@ -261,7 +338,7 @@ def _run_prompted_blocks(
 
     for index, (block, block_key) in enumerate(zip(blocks, block_keys, strict=True)):
         prompt = None
-        if config.depth == "deep":
+        if _uses_deep_prompts(config):
             prompt = _prompt_for_layer(prompts, config, index, x, block_key)
             if index == 0:
                 x = _insert_prompt(x, prompt, config)
@@ -319,7 +396,7 @@ def _prompt_for_layer(
 
 
 def _insert_prompt(x: jax.Array, prompt: jax.Array, config: PromptConfig) -> jax.Array:
-    if config.prepend_to == "before_all":
+    if _prepends_before_all(config):
         return jnp.concatenate([prompt, x], axis=0)
     return jnp.concatenate([x[:1], prompt, x[1:]], axis=0)
 
@@ -334,7 +411,7 @@ def _insert_prompt_rope(
 
     sin, cos = rope_sincos
     prompt_rows = prompt.shape[0]
-    insert_at = 0 if config.prepend_to == "before_all" else 1
+    insert_at = 0 if _prepends_before_all(config) else 1
     sin_prompt = jnp.zeros((prompt_rows, sin.shape[-1]), dtype=sin.dtype)
     cos_prompt = jnp.ones((prompt_rows, cos.shape[-1]), dtype=cos.dtype)
     sin = jnp.concatenate([sin[:insert_at], sin_prompt, sin[insert_at:]], axis=0)
@@ -344,7 +421,7 @@ def _insert_prompt_rope(
 
 def _replace_prompt(x: jax.Array, prompt: jax.Array, config: PromptConfig) -> jax.Array:
     n = prompt.shape[0]
-    if x.shape[0] >= n and config.prepend_to == "before_all":
+    if x.shape[0] >= n and _prepends_before_all(config):
         return jnp.concatenate([prompt, x[n:]], axis=0)
     if x.shape[0] >= n + 1 and config.prepend_to == "after_cls":
         return jnp.concatenate([x[:1], prompt, x[1 + n :]], axis=0)
@@ -388,7 +465,16 @@ def _is_equimo_vit_like(model) -> bool:
 
 
 def _is_simple_token_model(model) -> bool:
-    return hasattr(model, "patch_embed") and hasattr(model, "blocks")
+    return (
+        hasattr(model, "blocks")
+        and (hasattr(model, "patch_embed") or hasattr(model, "token_embed"))
+    )
+
+
+def _embed_input_tokens(model, x: jax.Array) -> jax.Array:
+    if hasattr(model, "token_embed"):
+        return jax.vmap(model.token_embed)(x)
+    return _map_tokens(model.patch_embed, x)
 
 
 def _simple_prefix_tokens(model) -> list[jax.Array]:
@@ -447,8 +533,20 @@ def _dropout(x: jax.Array, rate: float, key: jax.Array) -> jax.Array:
     return jnp.where(mask, x / keep_prob, 0)
 
 
+def _prepends_before_all(config: PromptConfig) -> bool:
+    return config.prepend_to in {"before_all", "input"}
+
+
+def _uses_deep_prompts(config: PromptConfig) -> bool:
+    return config.depth in {"deep", "all"}
+
+
 __all__ = (
+    "DeepPromptConfig",
     "PromptConfig",
     "PromptedModel",
+    "SoftPromptConfig",
+    "VPTDeepRecipe",
+    "VPTShallowRecipe",
     "apply_prompts",
 )

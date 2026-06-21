@@ -39,3 +39,13 @@ def test_contrastive_projection_head_normalizes():
 
     assert y.shape == (3,)
     assert jnp.linalg.norm(y) == jnp.array(1.0)
+
+
+def test_dense_feature_adapter_projects_last_axis():
+    key = jr.PRNGKey(3)
+    adapter = eqft.DenseFeatureAdapter(4, 2, key=key, activation="relu")
+    x = jnp.ones((3, 5, 4))
+
+    y = adapter(x)
+
+    assert y.shape == (3, 5, 2)

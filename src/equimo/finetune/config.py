@@ -66,6 +66,32 @@ class HeadSpec:
 
 
 @dataclass(frozen=True)
+class FineTuneRecipe:
+    """Declarative fine-tuning preset metadata.
+
+    Recipes describe model-side changes and planning metadata. Optimizers,
+    schedules, dataloaders, and training loops stay external.
+    """
+
+    name: str
+    method: str
+    head: HeadSpec | None
+    peft: Any | None
+    trainable: TrainableSpec
+    labels: "LLRDConfig | None"
+    notes: tuple[str, ...] = ()
+    external_hints: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SAMMetadata:
+    """Metadata marker for external SAM/ASAM optimizer wrappers."""
+
+    external_only: bool = True
+    rho_hint: float = 0.05
+
+
+@dataclass(frozen=True)
 class LLRDConfig:
     """Layer-wise learning-rate decay metadata."""
 
@@ -87,6 +113,24 @@ class LLRDConfig:
     block_label_format: str = "block_{depth:02d}"
     head_label: str = "head"
     embedding_label: str = "embed"
+
+    @classmethod
+    def vit_base(cls, *, decay: float = 0.65) -> "LLRDConfig":
+        """Return the ViT-B-style LLRD preset."""
+
+        return cls(decay=decay)
+
+    @classmethod
+    def vit_large_or_huge(cls, *, decay: float = 0.75) -> "LLRDConfig":
+        """Return the ViT-L/H-style LLRD preset."""
+
+        return cls(decay=decay)
+
+    @classmethod
+    def audio_transformer(cls, *, decay: float = 0.75) -> "LLRDConfig":
+        """Return the audio-transformer LLRD preset."""
+
+        return cls(decay=decay)
 
 
 @dataclass(frozen=True)
@@ -171,14 +215,21 @@ class FineTuneBundle:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+class FineTuneBundleError(ValueError):
+    """Raised when a fine-tuning bundle is malformed or incompatible."""
+
+
 __all__ = (
     "DepthAxis",
     "FineTuneBundle",
+    "FineTuneBundleError",
     "FineTunePlan",
+    "FineTuneRecipe",
     "GroupSpec",
     "HeadSpec",
     "LLRDConfig",
     "ParamInfo",
+    "SAMMetadata",
     "TargetSpec",
     "TrainableMode",
     "TrainableReport",

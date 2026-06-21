@@ -2,22 +2,139 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from typing import Any, Literal
 
+import equinox as eqx
 import jax
 
-from ._typing import PyTree
+from ._typing import Path, PyTree
 from .config import FineTunePlan, LLRDConfig, TargetSpec, TrainableSpec
 from .feature_extraction import LinearProbe, make_linear_probe
 from .peft.adapters import (
     AdaptFormerConfig,
     AdapterConfig,
+    add_adapter,
     apply_adapters,
     apply_adaptformer,
 )
+from .peft.lora import LoRAConfig, apply_lora
+from .peft.prompts import PromptConfig, PromptedModel, apply_prompts
 from .pooling import PoolName
+from .selectors import is_linear
 from .surgery import prepare_finetune
-from .tags import iter_param_infos
+from .tags import canonical_tags_for_path, infer_depth, iter_param_infos
+
+
+@dataclass(frozen=True)
+class LinearProbeConfig:
+    """Configuration metadata for linear probing."""
+
+    pool: str = "auto"
+    feature_norm: str | None = None
+    head: str = "linear"
+    head_bias: bool = True
+    head_init: str = "trunc_normal_0.02"
+    train_backbone: bool = False
+    train_head: bool = True
+    cache_features: bool = False
+
+
+@dataclass(frozen=True)
+class LinearProbeRecipe:
+    """Recipe metadata for linear probing."""
+
+    pool: str = "auto"
+    feature_norm: str = "l2_or_standardize"
+    head: str = "linear"
+
+
+@dataclass(frozen=True)
+class HeadPlusNormConfig:
+    """Configuration metadata for head-plus-norm tuning."""
+
+    train_head: bool = True
+    train_norm: bool = True
+    norm_types: tuple[str, ...] = ("LayerNorm", "RMSNorm", "BatchNorm", "GroupNorm")
+    train_norm_scale: bool = True
+    train_norm_bias: bool = True
+    train_bias: bool = False
+    bn_stats_policy: str = "frozen"
+    include_embeddings: bool = False
+    include_positional_parameters: bool = False
+
+    def trainable_spec(self) -> TrainableSpec:
+        """Return a trainability mask matching this head-plus-norm preset."""
+
+        if not any(
+            (
+                self.train_head,
+                self.train_norm,
+                self.train_bias,
+                self.include_embeddings,
+                self.include_positional_parameters,
+            )
+        ):
+            return TrainableSpec(mode="frozen")
+
+        def predicate(path: Path, leaf: Any) -> bool:
+            if not eqx.is_inexact_array(leaf):
+                return False
+            tags = canonical_tags_for_path(path, leaf)
+            leaf_name = str(path[-1]) if path else ""
+            if self.train_head and "head" in tags:
+                return True
+            if self.train_norm and "norm" in tags:
+                if leaf_name == "bias":
+                    return self.train_norm_bias
+                if leaf_name in {"weight", "scale"}:
+                    return self.train_norm_scale
+                return True
+            if self.train_bias and "bias" in tags:
+                return True
+            if self.include_positional_parameters and "embedding.position" in tags:
+                return True
+            if self.include_embeddings:
+                return any(
+                    tag.startswith("embedding.")
+                    and tag != "embedding.position"
+                    for tag in tags
+                )
+            return False
+
+        return TrainableSpec(
+            mode="surgical",
+            target=TargetSpec(predicate=predicate),
+            train_head=False,
+            train_norm=False,
+            train_bias=False,
+        )
+
+
+@dataclass(frozen=True)
+class PartialUnfreezeConfig:
+    """Configuration metadata for partial unfreezing."""
+
+    span: Literal["last"] = "last"
+    fraction: float = 1 / 3
+    min_blocks: int = 1
+    train_head: bool = True
+    train_norm: bool = True
+    train_embeddings: bool = False
+    train_positional_parameters: bool = False
+
+
+@dataclass(frozen=True)
+class SurgicalFineTuneConfig:
+    """Configuration metadata for surgical fine-tuning."""
+
+    shift: str = "output"
+    span_fraction: float = 0.10
+    min_blocks: int = 1
+    train_head: bool = True
+    train_norm: bool = True
+    train_embeddings_for_input_shift: bool = True
 
 
 @dataclass(frozen=True)
@@ -64,12 +181,16 @@ def linear_probe(
     )
 
 
-def head_plus_norm(model: PyTree) -> FineTunePlan:
+def head_plus_norm(
+    model: PyTree,
+    config: HeadPlusNormConfig | None = None,
+) -> FineTunePlan:
     """Prepare a head-plus-norm fine-tuning plan."""
 
+    config = HeadPlusNormConfig() if config is None else config
     return prepare_finetune(
         model,
-        trainable=TrainableSpec(mode="head_plus_norm"),
+        trainable=config.trainable_spec(),
     )
 
 
@@ -120,6 +241,83 @@ def partial_ft_last_k_blocks(
             freeze=_patch_freeze(freeze_patch_embed),
         ),
         labels=LLRDConfig(decay=decay),
+    )
+
+
+def partial_unfreeze(
+    model: PyTree,
+    config: PartialUnfreezeConfig | None = None,
+    *,
+    labels: LLRDConfig | None = None,
+) -> FineTunePlan:
+    """Prepare a partial-unfreeze plan from ``PartialUnfreezeConfig``."""
+
+    config = PartialUnfreezeConfig() if config is None else config
+    if config.span != "last":
+        raise ValueError("PartialUnfreezeConfig currently supports span='last'.")
+    depths = sorted({info.depth for info in iter_param_infos(model) if info.depth is not None})
+    selected_depths = frozenset(_last_fraction_depths(depths, config.fraction, config.min_blocks))
+
+    def predicate(path: Path, leaf: Any) -> bool:
+        tags = canonical_tags_for_path(path, leaf)
+        depth = _path_depth(path)
+        if depth in selected_depths:
+            return True
+        if config.train_embeddings and "embedding.patch" in tags:
+            return True
+        return config.train_positional_parameters and "embedding.position" in tags
+
+    return prepare_finetune(
+        model,
+        trainable=TrainableSpec(
+            mode="surgical",
+            target=TargetSpec(predicate=predicate),
+            train_head=config.train_head,
+            train_norm=config.train_norm,
+        ),
+        labels=LLRDConfig() if labels is None else labels,
+    )
+
+
+def surgical(
+    model: PyTree,
+    config: SurgicalFineTuneConfig | None = None,
+    *,
+    labels: LLRDConfig | None = None,
+) -> FineTunePlan:
+    """Prepare a surgical fine-tuning plan from ``SurgicalFineTuneConfig``."""
+
+    config = SurgicalFineTuneConfig() if config is None else config
+    depths = sorted({info.depth for info in iter_param_infos(model) if info.depth is not None})
+    selected_depths = frozenset(
+        _surgical_depths(
+            depths,
+            shift=config.shift,
+            fraction=config.span_fraction,
+            min_blocks=config.min_blocks,
+        )
+    )
+
+    def predicate(path: Path, leaf: Any) -> bool:
+        tags = canonical_tags_for_path(path, leaf)
+        depth = _path_depth(path)
+        if depth in selected_depths:
+            return True
+        return (
+            config.shift == "input"
+            and config.train_embeddings_for_input_shift
+            and "embedding.patch" in tags
+        )
+
+    return prepare_finetune(
+        model,
+        trainable=TrainableSpec(
+            mode="surgical",
+            target=TargetSpec(predicate=predicate),
+            train_head=config.train_head,
+            train_norm=config.train_norm,
+        ),
+        labels=LLRDConfig() if labels is None else labels,
     )
 
 
@@ -186,6 +384,77 @@ def adaptformer_transformer(
     )
 
 
+def lora_transformer(
+    model: PyTree,
+    *,
+    key: jax.Array,
+    rank: int = 8,
+    alpha: float = 16.0,
+    target: tuple[str, ...] = ("attention.qkv", "attention.proj"),
+) -> PyTree:
+    """Apply the default transformer LoRA recipe."""
+
+    return apply_lora(
+        model,
+        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(tags=target)),
+        key=key,
+    )
+
+
+def lora_transformer_all_linear(
+    model: PyTree,
+    *,
+    key: jax.Array,
+    rank: int = 8,
+    alpha: float = 16.0,
+) -> PyTree:
+    """Apply LoRA to every linear module selected by the generic predicate."""
+
+    return apply_lora(
+        model,
+        LoRAConfig(rank=rank, alpha=alpha, target=TargetSpec(predicate=is_linear)),
+        key=key,
+    )
+
+
+def vpt_deep(
+    model: PyTree,
+    *,
+    key: jax.Array,
+    num_tokens: int = 10,
+) -> PromptedModel:
+    """Apply the default deep visual prompt-tuning recipe."""
+
+    return apply_prompts(
+        model,
+        PromptConfig(num_tokens=num_tokens, depth="deep"),
+        key=key,
+    )
+
+
+def task_adapter_bank(
+    model: PyTree,
+    *,
+    key: jax.Array,
+    names: tuple[str, ...] = ("default",),
+    bottleneck: int = 64,
+    placement: str = "after_mlp",
+) -> PyTree:
+    """Add a named adapter bank for one or more tasks."""
+
+    if not names:
+        raise ValueError("task_adapter_bank requires at least one adapter name.")
+    updated = model
+    for name, adapter_key in zip(names, jax.random.split(key, len(names)), strict=True):
+        updated = add_adapter(
+            updated,
+            name=name,
+            config=AdapterConfig(bottleneck=bottleneck, placement=placement),
+            key=adapter_key,
+        )
+    return updated
+
+
 def _patch_freeze(enabled: bool) -> TargetSpec | None:
     return TargetSpec(tags=("embedding.patch",)) if enabled else None
 
@@ -200,14 +469,73 @@ def _resolve_last_k(k: int | str, depth_count: int) -> int:
     raise ValueError("k must be an integer or 'one_third'.")
 
 
+def _last_fraction_depths(
+    depths: list[int],
+    fraction: float,
+    min_blocks: int,
+) -> tuple[int, ...]:
+    if not depths:
+        return ()
+    count = _span_count(len(depths), fraction, min_blocks)
+    return tuple(depths[-count:])
+
+
+def _surgical_depths(
+    depths: list[int],
+    *,
+    shift: str,
+    fraction: float,
+    min_blocks: int,
+) -> tuple[int, ...]:
+    if not depths:
+        return ()
+    count = _span_count(len(depths), fraction, min_blocks)
+    if shift == "input" or shift == "corruption":
+        return tuple(depths[:count])
+    if shift == "output" or shift == "label_space":
+        return tuple(depths[-count:])
+    if shift == "feature" or shift == "subpopulation":
+        center = len(depths) // 2
+        start = max(0, min(center - count // 2, len(depths) - count))
+        return tuple(depths[start : start + count])
+    raise ValueError(
+        "Unsupported surgical shift "
+        f"{shift!r}; expected input, feature, output, corruption, "
+        "subpopulation, or label_space."
+    )
+
+
+def _span_count(depth_count: int, fraction: float, min_blocks: int) -> int:
+    if not 0 < fraction <= 1:
+        raise ValueError("span fraction must satisfy 0 < fraction <= 1.")
+    if min_blocks < 1:
+        raise ValueError("min_blocks must be >= 1.")
+    return min(depth_count, max(min_blocks, math.ceil(depth_count * fraction)))
+
+
+def _path_depth(path: Path) -> int | None:
+    return infer_depth(path)
+
+
 __all__ = (
     "LPFTRecipe",
+    "HeadPlusNormConfig",
+    "LinearProbeConfig",
+    "LinearProbeRecipe",
+    "PartialUnfreezeConfig",
+    "SurgicalFineTuneConfig",
     "adapter_transformer",
     "adapter_transformer_strong",
     "adaptformer_transformer",
     "full_ft_llrd",
     "head_plus_norm",
     "linear_probe",
+    "lora_transformer",
+    "lora_transformer_all_linear",
     "lpft",
     "partial_ft_last_k_blocks",
+    "partial_unfreeze",
+    "surgical",
+    "task_adapter_bank",
+    "vpt_deep",
 )

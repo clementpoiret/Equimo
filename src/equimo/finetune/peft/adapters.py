@@ -12,7 +12,7 @@ import jax.random as jr
 import jax.tree_util as jtu
 
 from .._typing import Path, PyTree
-from ..config import FineTuneBundle, TargetSpec
+from ..config import FineTuneBundle, FineTuneBundleError, TargetSpec, TrainableSpec
 from ..heads import ActivationName
 from ..paths import key_path_to_path, path_to_str, str_to_path
 from ..selectors import resolve_target
@@ -22,6 +22,8 @@ from .lora import architecture_hash
 
 
 AdapterPlacement = Literal["after_mlp", "parallel", "both"]
+AdapterMissingPolicy = Literal["error", "ignore"]
+ActiveAdapter = str | tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,64 @@ class AdapterConfig:
     dropout: float = 0.0
     down_init: str = "kaiming_uniform"
     up_init: str = "zeros"
+    residual_scale_init: float = 1.0
+    pre_norm: bool = False
+    train_base: bool = False
     target: TargetSpec = TargetSpec(tags=("block",))
+
+
+@dataclass(frozen=True)
+class AdapterRecipe:
+    """Recipe metadata for bottleneck adapter fine-tuning."""
+
+    bottleneck: int = 64
+    placement: AdapterPlacement = "after_mlp"
+    activation: ActivationName = "gelu"
+    dropout: float = 0.0
+    train_head: bool = True
+    train_norm: bool = True
+
+    @classmethod
+    def strong(
+        cls,
+        *,
+        bottleneck: int = 64,
+        placement: AdapterPlacement = "both",
+        activation: ActivationName = "gelu",
+        dropout: float = 0.0,
+        train_head: bool = True,
+        train_norm: bool = True,
+    ) -> "AdapterRecipe":
+        """Return the stronger two-placement adapter recipe preset."""
+
+        return cls(
+            bottleneck=bottleneck,
+            placement=placement,
+            activation=activation,
+            dropout=dropout,
+            train_head=train_head,
+            train_norm=train_norm,
+        )
+
+    def to_config(self) -> AdapterConfig:
+        """Convert recipe metadata to an adapter module config."""
+
+        return AdapterConfig(
+            bottleneck=self.bottleneck,
+            placement=self.placement,
+            activation=self.activation,
+            dropout=self.dropout,
+        )
+
+
+@dataclass(frozen=True)
+class ParallelAdapterConfig(AdapterConfig):
+    """Configuration for residual parallel adapters."""
+
+    bottleneck: int | None = 64
+    placement: Literal["parallel"] = "parallel"
+    branch: str = "mlp"
+    fusion: Literal["residual_sum"] = "residual_sum"
 
 
 @dataclass(frozen=True)
@@ -50,14 +109,90 @@ class AdaptFormerConfig:
     dropout: float = 0.0
     up_init: str = "zeros"
     scale_init: float = 1.0
+    train_head: bool = True
     target: TargetSpec = TargetSpec(tags=("block",))
+
+
+@dataclass(frozen=True)
+class AdapterBankConfig:
+    """Configuration for named adapter-bank selection."""
+
+    active: ActiveAdapter = "default"
+    allow_multiple_active: bool = False
+    missing_adapter_policy: AdapterMissingPolicy = "error"
+
+
+@dataclass(frozen=True)
+class AdapterFusionConfig:
+    """Metadata for AdapterFusion-style adapter composition."""
+
+    fusion: Literal["attention"] = "attention"
+    freeze_task_adapters: bool = True
+    fusion_dropout: float = 0.0
+    placement: tuple[str, ...] = ("after_mlp",)
+
+
+class AdapterFusion(eqx.Module):
+    """Attention fusion over active adapter outputs."""
+
+    scorer: eqx.nn.Linear
+    fusion: Literal["attention"] = eqx.field(static=True)
+    dropout: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        dim: int,
+        num_adapters: int,
+        *,
+        key: jax.Array,
+        fusion: Literal["attention"] = "attention",
+        dropout: float = 0.0,
+        scorer: eqx.nn.Linear | None = None,
+    ):
+        if fusion != "attention":
+            raise ValueError("AdapterFusion currently supports fusion='attention'.")
+        if num_adapters < 1:
+            raise ValueError("AdapterFusion requires at least one adapter.")
+        self.scorer = (
+            _zero_linear(eqx.nn.Linear(dim, num_adapters, key=key))
+            if scorer is None
+            else scorer
+        )
+        self.fusion = fusion
+        self.dropout = dropout
+
+    def attention_weights(self, x: jax.Array, count: int) -> jax.Array:
+        """Return attention weights for ``count`` adapter outputs."""
+
+        logits = _apply_last_axis(self.scorer, x)[..., :count]
+        return jax.nn.softmax(logits, axis=-1)
+
+    def __call__(
+        self,
+        x: jax.Array,
+        adapter_outputs: tuple[jax.Array, ...],
+        *,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+    ) -> jax.Array:
+        if not adapter_outputs:
+            raise ValueError("AdapterFusion requires at least one adapter output.")
+        weights = self.attention_weights(x, len(adapter_outputs))
+        if self.dropout > 0.0 and not inference:
+            if key is None:
+                raise ValueError("A PRNG key is required when adapter fusion dropout is active.")
+            weights = _dropout(weights, self.dropout, key)
+        stacked = jnp.stack(adapter_outputs, axis=-2)
+        return jnp.sum(stacked * weights[..., None], axis=-2)
 
 
 class BottleneckAdapter(eqx.Module):
     """Residual bottleneck adapter with identity-preserving zero-up init."""
 
+    norm: eqx.nn.LayerNorm | None
     down: eqx.nn.Linear
     up: eqx.nn.Linear
+    residual_scale: jax.Array
     activation: ActivationName = eqx.field(static=True)
     dropout: float = eqx.field(static=True)
 
@@ -71,10 +206,19 @@ class BottleneckAdapter(eqx.Module):
         dropout: float = 0.0,
         down_init: str = "kaiming_uniform",
         up_init: str = "zeros",
+        residual_scale_init: float = 1.0,
+        pre_norm: bool = False,
+        norm: eqx.nn.LayerNorm | None = None,
         down: eqx.nn.Linear | None = None,
         up: eqx.nn.Linear | None = None,
+        residual_scale: jax.Array | None = None,
     ):
         key_down, key_up = jr.split(key, 2)
+        self.norm = (
+            eqx.nn.LayerNorm(dim)
+            if norm is None and pre_norm
+            else norm
+        )
         self.down = (
             _init_linear(
                 eqx.nn.Linear(dim, bottleneck, key=key_down),
@@ -93,6 +237,11 @@ class BottleneckAdapter(eqx.Module):
             if up is None
             else up
         )
+        self.residual_scale = (
+            jnp.asarray(residual_scale_init, dtype=jnp.float32)
+            if residual_scale is None
+            else residual_scale
+        )
         self.activation = activation
         self.dropout = dropout
 
@@ -103,13 +252,14 @@ class BottleneckAdapter(eqx.Module):
         key: jax.Array | None = None,
         inference: bool | None = True,
     ) -> jax.Array:
-        y = _apply_last_axis(self.down, x)
+        y = _apply_last_axis(self.norm, x) if self.norm is not None else x
+        y = _apply_last_axis(self.down, y)
         y = _activation(self.activation)(y)
         if self.dropout > 0.0 and not inference:
             if key is None:
                 raise ValueError("A PRNG key is required when adapter dropout is active.")
             y = _dropout(y, self.dropout, key)
-        return _apply_last_axis(self.up, y)
+        return _apply_last_axis(self.up, y) * self.residual_scale
 
 
 class AdaptFormerAdapter(eqx.Module):
@@ -161,11 +311,56 @@ class SerialAdapterBlock(eqx.Module):
     base: eqx.Module
     adapters: tuple[BottleneckAdapter, ...]
     adapter_names: tuple[str, ...] = eqx.field(static=True, default=())
-    active_adapter: str | None = eqx.field(static=True, default=None)
+    active_adapter: ActiveAdapter | None = eqx.field(static=True, default=None)
+    adapter_fusion: AdapterFusion | None = None
+    train_base: bool = eqx.field(static=True, default=False)
 
     def __call__(self, x: jax.Array, *args, key: jax.Array | None = None, inference: bool | None = None, **kwargs):
         y = _call_base(self.base, x, *args, key=key, inference=inference, **kwargs)
         adapters = _active_adapters(self)
+        if self.adapter_fusion is not None:
+            keys = _split_optional_key(key, len(adapters) + 1)
+            adapter_outputs = tuple(
+                adapter(y, key=adapter_key, inference=inference)
+                for adapter, adapter_key in zip(adapters, keys[:-1], strict=True)
+            )
+            return y + self.adapter_fusion(
+                y,
+                adapter_outputs,
+                key=keys[-1],
+                inference=inference,
+            )
+        keys = _split_optional_key(key, len(adapters))
+        for adapter, adapter_key in zip(adapters, keys, strict=True):
+            y = y + adapter(y, key=adapter_key, inference=inference)
+        return y
+
+
+class OutputAdapterModule(eqx.Module):
+    """Wrap a module and add residual adapters after its output."""
+
+    base: eqx.Module
+    adapters: tuple[BottleneckAdapter, ...]
+    adapter_names: tuple[str, ...] = eqx.field(static=True, default=())
+    active_adapter: ActiveAdapter | None = eqx.field(static=True, default=None)
+    adapter_fusion: AdapterFusion | None = None
+    train_base: bool = eqx.field(static=True, default=False)
+
+    def __call__(self, x: jax.Array, *args, key: jax.Array | None = None, inference: bool | None = None, **kwargs):
+        y = _call_base(self.base, x, *args, key=key, inference=inference, **kwargs)
+        adapters = _active_adapters(self)
+        if self.adapter_fusion is not None:
+            keys = _split_optional_key(key, len(adapters) + 1)
+            adapter_outputs = tuple(
+                adapter(y, key=adapter_key, inference=inference)
+                for adapter, adapter_key in zip(adapters, keys[:-1], strict=True)
+            )
+            return y + self.adapter_fusion(
+                y,
+                adapter_outputs,
+                key=keys[-1],
+                inference=inference,
+            )
         keys = _split_optional_key(key, len(adapters))
         for adapter, adapter_key in zip(adapters, keys, strict=True):
             y = y + adapter(y, key=adapter_key, inference=inference)
@@ -177,6 +372,7 @@ class ParallelAdapterBlock(eqx.Module):
 
     base: eqx.Module
     adapter: BottleneckAdapter
+    train_base: bool = eqx.field(static=True, default=False)
 
     def __call__(self, x: jax.Array, *args, key: jax.Array | None = None, inference: bool | None = None, **kwargs):
         key_base, key_adapter = _split_pair(key)
@@ -216,8 +412,8 @@ def apply_adapters(
             continue
         dim = _infer_dim(block)
         bottleneck = _resolve_bottleneck(dim, config)
-        adapter_keys = jr.split(subkey, 2 if config.placement == "both" else 1)
         if config.placement == "parallel":
+            adapter_keys = jr.split(subkey, 1)
             wrapper = ParallelAdapterBlock(
                 block,
                 BottleneckAdapter(
@@ -228,23 +424,27 @@ def apply_adapters(
                     dropout=config.dropout,
                     down_init=config.down_init,
                     up_init=config.up_init,
+                    residual_scale_init=config.residual_scale_init,
+                    pre_norm=config.pre_norm,
                 ),
+                train_base=config.train_base,
             )
+            updated = eqx.tree_at(lambda tree, p=block_path: get_path(tree, p), updated, wrapper)
         else:
-            adapters = tuple(
-                BottleneckAdapter(
-                    dim,
-                    bottleneck,
+            site_paths = _adapter_site_paths(block, block_path, config.placement)
+            for site_path, adapter_key in zip(
+                site_paths,
+                jr.split(subkey, len(site_paths)),
+                strict=True,
+            ):
+                updated = _add_output_adapter_at_path(
+                    updated,
+                    site_path,
+                    bottleneck=bottleneck,
+                    name=None,
                     key=adapter_key,
-                    activation=config.activation,
-                    dropout=config.dropout,
-                    down_init=config.down_init,
-                    up_init=config.up_init,
+                    config=config,
                 )
-                for adapter_key in adapter_keys
-            )
-            wrapper = SerialAdapterBlock(block, adapters)
-        updated = eqx.tree_at(lambda tree, p=block_path: get_path(tree, p), updated, wrapper)
 
     return updated
 
@@ -272,68 +472,77 @@ def add_adapter(
         block = get_path(updated, block_path)
         if isinstance(block, ParallelAdapterBlock):
             raise ValueError("Named adapter banks do not support parallel adapter wrappers.")
+        if isinstance(block, SerialAdapterBlock) and block.adapter_fusion is not None:
+            raise ValueError("Add adapters before applying AdapterFusion.")
 
         base = block.base if isinstance(block, SerialAdapterBlock) else block
-        existing_adapters = block.adapters if isinstance(block, SerialAdapterBlock) else ()
-        existing_names = (
-            block.adapter_names
-            if isinstance(block, SerialAdapterBlock) and block.adapter_names
-            else ("default",) * len(existing_adapters)
-        )
-        active = (
-            block.active_adapter
-            if isinstance(block, SerialAdapterBlock) and block.active_adapter is not None
-            else ("default" if existing_names else name)
-        )
-        if name in existing_names:
-            raise ValueError(f"Adapter {name!r} already exists at {path_to_str(block_path)}.")
-
         dim = _infer_dim(base)
         bottleneck = _resolve_bottleneck(dim, config)
-        adapter_count = 2 if config.placement == "both" else 1
-        new_adapters = tuple(
-            BottleneckAdapter(
-                dim,
-                bottleneck,
+        site_paths = _adapter_site_paths(base, block_path, config.placement)
+        for site_path, adapter_key in zip(
+            site_paths,
+            jr.split(subkey, len(site_paths)),
+            strict=True,
+        ):
+            existing = get_path(updated, site_path)
+            if isinstance(existing, OutputAdapterModule) and existing.adapter_fusion is not None:
+                raise ValueError("Add adapters before applying AdapterFusion.")
+            existing_names = _wrapper_adapter_names(existing)
+            if name in existing_names:
+                raise ValueError(f"Adapter {name!r} already exists at {path_to_str(site_path)}.")
+            updated = _add_output_adapter_at_path(
+                updated,
+                site_path,
+                bottleneck=bottleneck,
+                name=name,
                 key=adapter_key,
-                activation=config.activation,
-                dropout=config.dropout,
-                down_init=config.down_init,
-                up_init=config.up_init,
+                config=config,
             )
-            for adapter_key in jr.split(subkey, adapter_count)
-        )
-        wrapper = SerialAdapterBlock(
-            base,
-            (*existing_adapters, *new_adapters),
-            (*existing_names, *((name,) * len(new_adapters))),
-            active,
-        )
-        updated = eqx.tree_at(lambda tree, p=block_path: get_path(tree, p), updated, wrapper)
     return updated
 
 
 def set_active_adapter(model: PyTree, name: str) -> PyTree:
     """Return ``model`` with all named serial adapter banks switched to ``name``."""
 
+    return configure_adapter_bank(model, AdapterBankConfig(active=name))
+
+
+def configure_adapter_bank(
+    model: PyTree,
+    config: AdapterBankConfig,
+) -> PyTree:
+    """Return ``model`` with named adapter banks configured per ``config``."""
+
+    active = _normalize_active_adapter(config.active)
+    if len(active) > 1 and not config.allow_multiple_active:
+        raise ValueError("Multiple active adapters require allow_multiple_active=True.")
+
     wrappers = iter_adapter_wrappers(model)
     named_wrappers = [
         (path, wrapper)
         for path, wrapper in wrappers
-        if isinstance(wrapper, SerialAdapterBlock) and wrapper.adapter_names
+        if isinstance(wrapper, (SerialAdapterBlock, OutputAdapterModule))
+        and wrapper.adapter_names
     ]
     if not named_wrappers:
+        if config.missing_adapter_policy == "ignore":
+            return model
         raise ValueError("No named adapter banks found.")
 
     updated = model
     for path, wrapper in named_wrappers:
-        if name not in wrapper.adapter_names:
-            raise ValueError(f"Adapter {name!r} not found at {path_to_str(path)}.")
-        updated_wrapper = SerialAdapterBlock(
+        missing = tuple(name for name in active if name not in wrapper.adapter_names)
+        if missing:
+            if config.missing_adapter_policy == "ignore":
+                continue
+            raise ValueError(f"Adapter {missing[0]!r} not found at {path_to_str(path)}.")
+        updated_wrapper = wrapper.__class__(
             wrapper.base,
             wrapper.adapters,
             wrapper.adapter_names,
-            name,
+            active[0] if len(active) == 1 else active,
+            wrapper.adapter_fusion,
+            train_base=wrapper.train_base,
         )
         updated = eqx.tree_at(
             lambda tree, p=path: get_path(tree, p),
@@ -341,6 +550,73 @@ def set_active_adapter(model: PyTree, name: str) -> PyTree:
             updated_wrapper,
         )
     return updated
+
+
+def apply_adapter_fusion(
+    model: PyTree,
+    config: AdapterFusionConfig | None = None,
+    *,
+    key: jax.Array,
+) -> PyTree:
+    """Attach attention fusion modules to named serial adapter banks."""
+
+    config = AdapterFusionConfig() if config is None else config
+    if config.fusion != "attention":
+        raise ValueError("AdapterFusion currently supports fusion='attention'.")
+    wrappers = [
+        (path, wrapper)
+        for path, wrapper in iter_adapter_wrappers(model)
+        if isinstance(wrapper, (SerialAdapterBlock, OutputAdapterModule))
+        and wrapper.adapter_names
+        and _adapter_fusion_matches_placement(path, config.placement)
+    ]
+    if not wrappers:
+        raise ValueError(
+            "AdapterFusion requires named serial adapter banks at the configured "
+            "placement."
+        )
+    keys = jr.split(key, len(wrappers))
+    updated = model
+    for (path, wrapper), subkey in zip(wrappers, keys, strict=True):
+        active = _fusion_active_names(wrapper)
+        adapters = _adapters_for_names(wrapper, active)
+        dim = _fusion_dim(wrapper)
+        updated_wrapper = wrapper.__class__(
+            wrapper.base,
+            wrapper.adapters,
+            wrapper.adapter_names,
+            active[0] if len(active) == 1 else active,
+            AdapterFusion(
+                dim,
+                len(adapters),
+                key=subkey,
+                fusion=config.fusion,
+                dropout=config.fusion_dropout,
+            ),
+            train_base=wrapper.train_base,
+        )
+        updated = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p),
+            updated,
+            updated_wrapper,
+        )
+    return updated
+
+
+def adapter_fusion_trainable_spec(
+    config: AdapterFusionConfig | None = None,
+    *,
+    train_head: bool = True,
+) -> TrainableSpec:
+    """Return the trainability mask for AdapterFusion training."""
+
+    config = AdapterFusionConfig() if config is None else config
+    tags = ("adapter_fusion",) if config.freeze_task_adapters else ("adapter",)
+    return TrainableSpec(
+        mode="peft",
+        target=TargetSpec(tags=tags),
+        train_head=train_head,
+    )
 
 
 def apply_adaptformer(
@@ -398,10 +674,12 @@ def load_adapter_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
     """Load adapter deltas into a compatible base model."""
 
     if bundle.method != "adapter":
-        raise ValueError(f"Expected an adapter bundle, got method={bundle.method!r}.")
+        raise FineTuneBundleError(
+            f"Expected an adapter bundle, got method={bundle.method!r}."
+        )
     actual_hash = architecture_hash(base_model)
     if bundle.architecture_hash and bundle.architecture_hash != actual_hash:
-        raise ValueError(
+        raise FineTuneBundleError(
             "Adapter delta architecture hash mismatch: "
             f"expected {bundle.architecture_hash}, got {actual_hash}."
         )
@@ -409,7 +687,7 @@ def load_adapter_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
     updated = base_model
     for entry in bundle.adapter_config.get("entries", ()):
         path = str_to_path(entry["path"])
-        block = get_path(updated, path)
+        block = _bundle_get_path(updated, path, method_name="Adapter")
         wrapper = _wrapper_from_entry(block, entry)
         updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, wrapper)
     return updated
@@ -426,10 +704,21 @@ def strip_adapters(model: PyTree) -> PyTree:
 
 def iter_adapter_wrappers(
     model: PyTree,
-) -> tuple[tuple[Path, SerialAdapterBlock | ParallelAdapterBlock | AdaptFormerBlock], ...]:
+) -> tuple[
+    tuple[
+        Path,
+        SerialAdapterBlock | OutputAdapterModule | ParallelAdapterBlock | AdaptFormerBlock,
+    ],
+    ...,
+]:
     """Return path/wrapper pairs for adapter-wrapped blocks."""
 
-    wrapper_types = (SerialAdapterBlock, ParallelAdapterBlock, AdaptFormerBlock)
+    wrapper_types = (
+        SerialAdapterBlock,
+        OutputAdapterModule,
+        ParallelAdapterBlock,
+        AdaptFormerBlock,
+    )
     return tuple(
         (key_path_to_path(key_path), leaf)
         for key_path, leaf in jtu.tree_leaves_with_path(
@@ -442,21 +731,26 @@ def iter_adapter_wrappers(
 
 def _adapter_entry(
     path: Path,
-    wrapper: SerialAdapterBlock | ParallelAdapterBlock | AdaptFormerBlock,
+    wrapper: SerialAdapterBlock | OutputAdapterModule | ParallelAdapterBlock | AdaptFormerBlock,
 ) -> dict[str, Any]:
-    if isinstance(wrapper, SerialAdapterBlock):
+    if isinstance(wrapper, (SerialAdapterBlock, OutputAdapterModule)):
         return {
             "path": path_to_str(path),
-            "class": "SerialAdapterBlock",
+            "class": wrapper.__class__.__name__,
             "adapters": [_bottleneck_state(adapter) for adapter in wrapper.adapters],
             "adapter_names": wrapper.adapter_names,
             "active_adapter": wrapper.active_adapter,
+            "adapter_fusion": None
+            if wrapper.adapter_fusion is None
+            else _adapter_fusion_state(wrapper.adapter_fusion),
+            "train_base": wrapper.train_base,
         }
     if isinstance(wrapper, ParallelAdapterBlock):
         return {
             "path": path_to_str(path),
             "class": "ParallelAdapterBlock",
             "adapter": _bottleneck_state(wrapper.adapter),
+            "train_base": wrapper.train_base,
         }
     return {
         "path": path_to_str(path),
@@ -471,13 +765,42 @@ def _wrapper_from_entry(block: eqx.Module, entry: dict[str, Any]):
             block,
             tuple(_bottleneck_from_state(state) for state in entry["adapters"]),
             tuple(entry.get("adapter_names", ())),
-            entry.get("active_adapter"),
+            _entry_active_adapter(entry.get("active_adapter")),
+            None
+            if entry.get("adapter_fusion") is None
+            else _adapter_fusion_from_state(entry["adapter_fusion"]),
+            train_base=bool(entry.get("train_base", False)),
+        )
+    if entry["class"] == "OutputAdapterModule":
+        return OutputAdapterModule(
+            block,
+            tuple(_bottleneck_from_state(state) for state in entry["adapters"]),
+            tuple(entry.get("adapter_names", ())),
+            _entry_active_adapter(entry.get("active_adapter")),
+            None
+            if entry.get("adapter_fusion") is None
+            else _adapter_fusion_from_state(entry["adapter_fusion"]),
+            train_base=bool(entry.get("train_base", False)),
         )
     if entry["class"] == "ParallelAdapterBlock":
-        return ParallelAdapterBlock(block, _bottleneck_from_state(entry["adapter"]))
+        return ParallelAdapterBlock(
+            block,
+            _bottleneck_from_state(entry["adapter"]),
+            train_base=bool(entry.get("train_base", False)),
+        )
     if entry["class"] == "AdaptFormerBlock":
         return AdaptFormerBlock(block, _adaptformer_from_state(entry["adapter"]))
-    raise ValueError(f"Unknown adapter wrapper class {entry['class']!r}.")
+    raise FineTuneBundleError(f"Unknown adapter wrapper class {entry['class']!r}.")
+
+
+def _bundle_get_path(model: PyTree, path: Path, *, method_name: str):
+    try:
+        return get_path(model, path)
+    except (AttributeError, IndexError, KeyError, TypeError) as error:
+        raise FineTuneBundleError(
+            f"{method_name} delta expects path {path_to_str(path)}, "
+            "but the base model has no matching leaf."
+        ) from error
 
 
 def _bottleneck_state(adapter: BottleneckAdapter) -> dict[str, Any]:
@@ -486,6 +809,8 @@ def _bottleneck_state(adapter: BottleneckAdapter) -> dict[str, Any]:
         "bottleneck": adapter.down.out_features,
         "activation": adapter.activation,
         "dropout": adapter.dropout,
+        "residual_scale": adapter.residual_scale,
+        "norm": None if adapter.norm is None else _layer_norm_state(adapter.norm),
         "down": _linear_state(adapter.down),
         "up": _linear_state(adapter.up),
     }
@@ -497,6 +822,16 @@ def _adaptformer_state(adapter: AdaptFormerAdapter) -> dict[str, Any]:
     return state
 
 
+def _adapter_fusion_state(fusion: AdapterFusion) -> dict[str, Any]:
+    return {
+        "dim": fusion.scorer.in_features,
+        "num_adapters": fusion.scorer.out_features,
+        "fusion": fusion.fusion,
+        "dropout": fusion.dropout,
+        "scorer": _linear_state(fusion.scorer),
+    }
+
+
 def _bottleneck_from_state(state: dict[str, Any]) -> BottleneckAdapter:
     return BottleneckAdapter(
         int(state["dim"]),
@@ -504,8 +839,14 @@ def _bottleneck_from_state(state: dict[str, Any]) -> BottleneckAdapter:
         key=jr.PRNGKey(0),
         activation=state["activation"],
         dropout=float(state["dropout"]),
+        norm=(
+            None
+            if state.get("norm") is None
+            else _layer_norm_from_state(state["norm"])
+        ),
         down=_linear_from_state(state["down"]),
         up=_linear_from_state(state["up"]),
+        residual_scale=state.get("residual_scale"),
     )
 
 
@@ -520,6 +861,56 @@ def _adaptformer_from_state(state: dict[str, Any]) -> AdaptFormerAdapter:
         adapter=adapter,
         scale=state["scale"],
     )
+
+
+def _adapter_fusion_from_state(state: dict[str, Any]) -> AdapterFusion:
+    return AdapterFusion(
+        int(state["dim"]),
+        int(state["num_adapters"]),
+        key=jr.PRNGKey(0),
+        fusion=state["fusion"],
+        dropout=float(state["dropout"]),
+        scorer=_linear_from_state(state["scorer"]),
+    )
+
+
+def _adapter_fusion_matches_placement(path: Path, placements: tuple[str, ...]) -> bool:
+    parts = {str(part) for part in path}
+    for placement in placements:
+        if placement == "after_mlp" and parts.intersection(
+            {"mlp", "ffn", "feed_forward", "feedforward"}
+        ):
+            return True
+        if placement in {"after_attention", "after_attn"} and parts.intersection(
+            {"attn", "attention", "self_attn", "self_attention"}
+        ):
+            return True
+    return False
+
+
+def _layer_norm_state(norm: eqx.nn.LayerNorm) -> dict[str, Any]:
+    return {
+        "shape": norm.shape,
+        "eps": norm.eps,
+        "use_weight": norm.use_weight,
+        "use_bias": norm.use_bias,
+        "weight": norm.weight,
+        "bias": norm.bias,
+    }
+
+
+def _layer_norm_from_state(state: dict[str, Any]) -> eqx.nn.LayerNorm:
+    norm = eqx.nn.LayerNorm(
+        tuple(state["shape"]),
+        eps=float(state["eps"]),
+        use_weight=bool(state["use_weight"]),
+        use_bias=bool(state["use_bias"]),
+    )
+    if state.get("weight") is not None:
+        norm = eqx.tree_at(lambda layer: layer.weight, norm, state["weight"])
+    if state.get("bias") is not None:
+        norm = eqx.tree_at(lambda layer: layer.bias, norm, state["bias"])
+    return norm
 
 
 def _linear_state(linear: eqx.nn.Linear) -> dict[str, Any]:
@@ -571,21 +962,165 @@ def _infer_dim(block: eqx.Module) -> int:
     raise ValueError(f"Could not infer adapter feature dimension for {type(block).__name__}.")
 
 
+def _adapter_site_paths(
+    block: eqx.Module,
+    block_path: Path,
+    placement: AdapterPlacement,
+) -> tuple[Path, ...]:
+    if placement == "after_mlp":
+        return (_child_path(block, block_path, ("mlp", "ffn", "feed_forward", "feedforward")),)
+    if placement == "both":
+        return (
+            _child_path(
+                block,
+                block_path,
+                ("attn", "attention", "self_attn", "self_attention"),
+            ),
+            _child_path(block, block_path, ("mlp", "ffn", "feed_forward", "feedforward")),
+        )
+    raise ValueError(f"Unsupported serial adapter placement {placement!r}.")
+
+
+def _child_path(block: eqx.Module, block_path: Path, names: tuple[str, ...]) -> Path:
+    for name in names:
+        if hasattr(block, name):
+            return (*block_path, name)
+    expected = ", ".join(names)
+    raise ValueError(
+        f"Adapter placement requires block {path_to_str(block_path)!r} to expose "
+        f"one of: {expected}."
+    )
+
+
+def _add_output_adapter_at_path(
+    model: PyTree,
+    site_path: Path,
+    *,
+    bottleneck: int,
+    name: str | None,
+    key: jax.Array,
+    config: AdapterConfig,
+) -> PyTree:
+    module = get_path(model, site_path)
+    if isinstance(module, OutputAdapterModule):
+        base = module.base
+        existing_adapters = module.adapters
+        existing_names = _wrapper_adapter_names(module)
+        active = (
+            module.active_adapter
+            if module.active_adapter is not None
+            else ("default" if existing_names else name)
+        )
+    else:
+        base = module
+        existing_adapters = ()
+        existing_names = ()
+        active = name
+
+    dim = _infer_dim(base)
+    adapter = BottleneckAdapter(
+        dim,
+        bottleneck,
+        key=key,
+        activation=config.activation,
+        dropout=config.dropout,
+        down_init=config.down_init,
+        up_init=config.up_init,
+        residual_scale_init=config.residual_scale_init,
+        pre_norm=config.pre_norm,
+    )
+    names = existing_names
+    if name is not None:
+        names = (*existing_names, name)
+    wrapper = OutputAdapterModule(
+        base,
+        (*existing_adapters, adapter),
+        names,
+        active,
+        None,
+        train_base=bool(config.train_base or getattr(module, "train_base", False)),
+    )
+    return eqx.tree_at(lambda tree, p=site_path: get_path(tree, p), model, wrapper)
+
+
+def _wrapper_adapter_names(wrapper: Any) -> tuple[str, ...]:
+    if not isinstance(wrapper, (SerialAdapterBlock, OutputAdapterModule)):
+        return ()
+    if wrapper.adapter_names:
+        return wrapper.adapter_names
+    return ("default",) * len(wrapper.adapters)
+
+
 def _resolve_bottleneck(dim: int, config: AdapterConfig) -> int:
     if config.bottleneck is not None:
         return config.bottleneck
     bottleneck = max(1, dim // config.reduction_factor)
-    return min(max(bottleneck, config.bottleneck_min), config.bottleneck_max)
+    clipped = min(max(bottleneck, config.bottleneck_min), config.bottleneck_max)
+    return max(1, ((int(clipped) + 7) // 8) * 8)
 
 
-def _active_adapters(wrapper: SerialAdapterBlock) -> tuple[BottleneckAdapter, ...]:
+def _active_adapters(
+    wrapper: SerialAdapterBlock | OutputAdapterModule,
+) -> tuple[BottleneckAdapter, ...]:
     if not wrapper.adapter_names or wrapper.active_adapter is None:
         return wrapper.adapters
+    active = frozenset(_normalize_active_adapter(wrapper.active_adapter))
     return tuple(
         adapter
         for adapter, name in zip(wrapper.adapters, wrapper.adapter_names, strict=True)
-        if name == wrapper.active_adapter
+        if name in active
     )
+
+
+def _fusion_active_names(
+    wrapper: SerialAdapterBlock | OutputAdapterModule,
+) -> tuple[str, ...]:
+    if wrapper.active_adapter is not None:
+        active = _normalize_active_adapter(wrapper.active_adapter)
+        if len(active) > 1:
+            return active
+    return tuple(dict.fromkeys(wrapper.adapter_names))
+
+
+def _adapters_for_names(
+    wrapper: SerialAdapterBlock | OutputAdapterModule,
+    names: tuple[str, ...],
+) -> tuple[BottleneckAdapter, ...]:
+    active = frozenset(names)
+    adapters = tuple(
+        adapter
+        for adapter, name in zip(wrapper.adapters, wrapper.adapter_names, strict=True)
+        if name in active
+    )
+    if not adapters:
+        raise ValueError("AdapterFusion requires at least one active adapter.")
+    return adapters
+
+
+def _fusion_dim(wrapper: SerialAdapterBlock | OutputAdapterModule) -> int:
+    if wrapper.adapters:
+        return int(wrapper.adapters[0].up.out_features)
+    return _infer_dim(wrapper.base)
+
+
+def _normalize_active_adapter(active: ActiveAdapter) -> tuple[str, ...]:
+    if isinstance(active, str):
+        if not active:
+            raise ValueError("Adapter name must be a non-empty string.")
+        return (active,)
+    if not active or any(not name for name in active):
+        raise ValueError("Adapter names must be non-empty strings.")
+    return tuple(active)
+
+
+def _entry_active_adapter(active: Any) -> ActiveAdapter | None:
+    if active is None or isinstance(active, str):
+        return active
+    if isinstance(active, list):
+        return tuple(str(name) for name in active)
+    if isinstance(active, tuple):
+        return active
+    raise ValueError(f"Unsupported active adapter value {active!r}.")
 
 
 def _init_linear(linear: eqx.nn.Linear, key: jax.Array, init: str) -> eqx.nn.Linear:
@@ -603,6 +1138,13 @@ def _init_linear(linear: eqx.nn.Linear, key: jax.Array, init: str) -> eqx.nn.Lin
     else:
         raise ValueError(f"Unsupported adapter init {init!r}.")
     linear = eqx.tree_at(lambda m: m.weight, linear, weight)
+    if linear.bias is not None:
+        linear = eqx.tree_at(lambda m: m.bias, linear, jnp.zeros_like(linear.bias))
+    return linear
+
+
+def _zero_linear(linear: eqx.nn.Linear) -> eqx.nn.Linear:
+    linear = eqx.tree_at(lambda m: m.weight, linear, jnp.zeros_like(linear.weight))
     if linear.bias is not None:
         linear = eqx.tree_at(lambda m: m.bias, linear, jnp.zeros_like(linear.bias))
     return linear
@@ -669,13 +1211,22 @@ __all__ = (
     "AdaptFormerAdapter",
     "AdaptFormerBlock",
     "AdaptFormerConfig",
+    "AdapterBankConfig",
     "AdapterConfig",
+    "AdapterFusion",
+    "AdapterFusionConfig",
+    "AdapterRecipe",
     "BottleneckAdapter",
+    "OutputAdapterModule",
+    "ParallelAdapterConfig",
     "ParallelAdapterBlock",
     "SerialAdapterBlock",
     "add_adapter",
+    "adapter_fusion_trainable_spec",
     "apply_adapters",
     "apply_adaptformer",
+    "apply_adapter_fusion",
+    "configure_adapter_bank",
     "extract_adapter_delta",
     "iter_adapter_wrappers",
     "load_adapter_delta",

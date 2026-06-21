@@ -15,17 +15,76 @@ from .paths import iter_param_leaves, key_path_to_path
 Tagger = Callable[[Path, Any], Iterable[str]]
 
 CANONICAL_TAGS: tuple[str, ...] = (
+    "embedding",
     "embedding.patch",
     "embedding.position",
     "embedding.class_token",
     "embedding.register_token",
+    "embedding.distillation_token",
+    "embedding.mask_token",
+    "embedding.token",
     "block",
+    "block.attention",
+    "block.attention.qkv",
+    "block.attention.q",
+    "block.attention.k",
+    "block.attention.v",
+    "block.attention.proj",
+    "attention",
     "attention.qkv",
+    "attention.q",
+    "attention.k",
+    "attention.v",
     "attention.proj",
+    "block.mlp",
+    "block.mlp.hidden",
+    "block.mlp.fc1",
+    "block.mlp.fc2",
+    "block.norm.pre",
+    "block.norm.post",
+    "block.drop_path",
+    "block.layer_scale",
+    "mlp",
+    "mlp.hidden",
     "mlp.fc1",
     "mlp.fc2",
+    "stem",
+    "stage",
+    "stage.block",
+    "stage.downsample",
+    "conv",
+    "conv.depthwise",
+    "conv.pointwise",
     "norm",
+    "pool",
     "head",
+    "head.classifier",
+    "head.projection",
+    "audio.frontend",
+    "audio.spectrogram",
+    "audio.patch_embed",
+    "audio.frame_encoder",
+    "audio.transformer.block",
+    "audio.pooling",
+    "audio.ctc_head",
+    "audio.tagging_head",
+    "text.embedding",
+    "text.position",
+    "text.token_type",
+    "text.block",
+    "text.attention.qkv",
+    "text.attention.q",
+    "text.attention.k",
+    "text.attention.v",
+    "text.attention.proj",
+    "text.mlp.fc1",
+    "text.mlp.fc2",
+    "text.pooler",
+    "text.projection_head",
+    "tabular.encoder",
+    "tabular.tokenizer",
+    "tabular.block",
+    "tabular.head",
 )
 
 
@@ -37,19 +96,21 @@ def canonical_tags_for_path(path: Path, leaf: Any | None = None) -> frozenset[st
     tags: set[str] = set()
 
     if "patch_embed" in parts:
-        tags.add("embedding.patch")
+        tags.update(("embedding", "embedding.patch"))
     if any(
         part in {"pos_embed", "position_embed", "position_embedding"} for part in parts
     ):
-        tags.add("embedding.position")
+        tags.update(("embedding", "embedding.position"))
     if "cls_token" in parts:
-        tags.add("embedding.class_token")
+        tags.update(("embedding", "embedding.class_token"))
     if any(part in {"reg_token", "reg_tokens", "register_token", "register_tokens"} for part in parts):
-        tags.add("embedding.register_token")
+        tags.update(("embedding", "embedding.register_token"))
     if "dist_token" in parts:
-        tags.add("embedding.distillation_token")
+        tags.update(("embedding", "embedding.distillation_token"))
     if "mask_token" in parts:
-        tags.add("embedding.mask_token")
+        tags.update(("embedding", "embedding.mask_token"))
+    if "token_embed" in parts or "token_embedding" in parts:
+        tags.update(("embedding", "embedding.token"))
 
     depth = infer_depth(path)
     if depth is not None:
@@ -59,10 +120,19 @@ def canonical_tags_for_path(path: Path, leaf: Any | None = None) -> frozenset[st
     _add_attention_tags(parts, tags)
     _add_mlp_tags(parts, tags)
     _add_norm_tags(parts, tags)
+    _add_conv_stage_tags(parts, tags)
     _add_peft_tags(parts, tags)
 
     if "head" in parts or "classifier" in parts:
-        tags.add("head")
+        tags.update(("head", "head.classifier"))
+    if "projection_head" in parts:
+        tags.update(("head", "head.projection"))
+    if "pool" in parts or "pooler" in parts:
+        tags.add("pool")
+    if "encoder" in parts:
+        tags.add("tabular.encoder")
+    if "tokenizer" in parts:
+        tags.add("tabular.tokenizer")
 
     if parts[-1:] == ("bias",):
         tags.add("bias")
@@ -147,6 +217,7 @@ def infer_role(tags: Iterable[str]) -> str:
         ("head", "head"),
         ("attention.qkv", "attention.qkv"),
         ("attention.proj", "attention.proj"),
+        ("mlp.hidden", "mlp.hidden"),
         ("mlp.fc1", "mlp.fc1"),
         ("mlp.fc2", "mlp.fc2"),
         ("norm", "norm"),
@@ -177,27 +248,29 @@ def _add_attention_tags(parts: tuple[str, ...], tags: set[str]) -> None:
     for index, part in enumerate(parts[:-1]):
         if part not in {"attn", "attention", "self_attn", "self_attention"}:
             continue
+        tags.update(("attention", "block.attention"))
         next_part = parts[index + 1]
         if next_part == "qkv":
-            tags.add("attention.qkv")
+            tags.update(("attention.qkv", "block.attention.qkv"))
         elif next_part in {"proj", "out_proj", "projection"}:
-            tags.add("attention.proj")
+            tags.update(("attention.proj", "block.attention.proj"))
         elif next_part in {"q", "query"}:
-            tags.add("attention.q")
+            tags.update(("attention.q", "block.attention.q"))
         elif next_part in {"k", "key"}:
-            tags.add("attention.k")
+            tags.update(("attention.k", "block.attention.k"))
         elif next_part in {"v", "value"}:
-            tags.add("attention.v")
+            tags.update(("attention.v", "block.attention.v"))
 
 
 def _add_mlp_tags(parts: tuple[str, ...], tags: set[str]) -> None:
     mlp_like = bool({"mlp", "ffn", "feed_forward"}.intersection(parts))
     if not mlp_like:
         return
+    tags.update(("mlp", "block.mlp"))
     if "fc1" in parts:
-        tags.add("mlp.fc1")
+        tags.update(("mlp.hidden", "block.mlp.hidden", "mlp.fc1", "block.mlp.fc1"))
     if "fc2" in parts:
-        tags.add("mlp.fc2")
+        tags.update(("mlp.fc2", "block.mlp.fc2"))
 
 
 def _add_norm_tags(parts: tuple[str, ...], tags: set[str]) -> None:
@@ -213,6 +286,27 @@ def _add_norm_tags(parts: tuple[str, ...], tags: set[str]) -> None:
         tags.add("block.norm.post")
 
 
+def _add_conv_stage_tags(parts: tuple[str, ...], tags: set[str]) -> None:
+    if "stem" in parts:
+        tags.add("stem")
+    if "stages" in parts or "stage" in parts:
+        tags.add("stage")
+        if "blocks" in parts or "block" in parts:
+            tags.add("stage.block")
+        if "downsample" in parts:
+            tags.add("stage.downsample")
+    conv_parts = {part for part in parts if "conv" in part}
+    if conv_parts:
+        tags.add("conv")
+    if any(part in {"dwconv", "depthwise_conv", "depthwise"} for part in parts):
+        tags.add("conv.depthwise")
+    if any(
+        part.startswith("pwconv") or part in {"pointwise_conv", "pointwise"}
+        for part in parts
+    ):
+        tags.add("conv.pointwise")
+
+
 def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
     if "lora_A" in parts:
         tags.update(("lora", "lora.A"))
@@ -220,13 +314,19 @@ def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
         tags.update(("lora", "lora.B"))
     if "rank_mask" in parts:
         tags.update(("lora", "lora.rank_mask"))
+    if "base_weight_delta" in parts:
+        tags.add("peft.metadata")
     if "magnitude" in parts:
         tags.update(("dora", "dora.magnitude"))
     if "adapter" in parts or "adapters" in parts:
         tags.add("adapter")
+    if "adapter_fusion" in parts:
+        tags.update(("adapter", "adapter_fusion"))
     if "prompt" in parts or "prompts" in parts:
         tags.add("prompt")
-    if "prefix" in parts or "prefixes" in parts:
+    if "prefix" in parts or "prefixes" in parts or any(
+        part.startswith("prefix_") for part in parts
+    ):
         tags.add("prefix")
     if "ia3" in parts:
         tags.add("ia3")

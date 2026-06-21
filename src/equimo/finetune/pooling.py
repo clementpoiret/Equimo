@@ -14,6 +14,7 @@ PoolName = Literal[
     "auto",
     "none",
     "cls",
+    "global_avg",
     "mean_token",
     "mean_patch",
     "mean_frame",
@@ -143,6 +144,18 @@ class TokenIndexPool(eqx.Module):
         return x[self.index]
 
 
+class GlobalAveragePool(eqx.Module):
+    """Mean-pool all non-channel axes of dense channel-first features."""
+
+    def __call__(self, x: jax.Array, **kwargs) -> jax.Array:
+        del kwargs
+        if x.ndim <= 1:
+            return x
+        if x.ndim == 2:
+            return jnp.mean(x, axis=0)
+        return jnp.mean(x, axis=tuple(range(1, x.ndim)))
+
+
 def pool_features(
     features: jax.Array | dict,
     pool: PoolName | eqx.Module | None = "auto",
@@ -150,13 +163,22 @@ def pool_features(
 ) -> jax.Array | dict:
     """Apply a pooling policy to feature arrays or return dictionaries unchanged."""
 
+    pool_kwargs = dict(kwargs)
+    pool_key = pool_kwargs.pop("key", None)
     if pool is None or pool == "none":
         return features
     if isinstance(features, dict):
-        return _pool_feature_dict(features, pool, **kwargs)
+        return _pool_feature_dict(features, pool, key=pool_key, **pool_kwargs)
     if isinstance(pool, eqx.Module):
-        return pool(features, **kwargs)
-    return _pool_module(pool, features)(features, **kwargs)
+        return pool(features, **pool_kwargs)
+    if pool == "attention":
+        if pool_key is None:
+            raise ValueError("pool='attention' requires a PRNG key.")
+        return AttentionPool(features.shape[-1], key=pool_key)(
+            features,
+            **pool_kwargs,
+        )
+    return _pool_module(pool, features)(features, **pool_kwargs)
 
 
 def _pool_feature_dict(
@@ -170,6 +192,10 @@ def _pool_feature_dict(
         return jnp.mean(features["x_norm_patchtokens"], axis=0)
     if pool == "mean_frame" and "x_norm_patchtokens" in features:
         return jnp.mean(features["x_norm_patchtokens"], axis=0)
+    if pool == "auto" and "pooler_output" in features:
+        return features["pooler_output"]
+    if pool == "auto" and "last_hidden_state" in features:
+        return pool_features(features["last_hidden_state"], "mean_token", **kwargs)
     if "x_prenorm" in features:
         return pool_features(features["x_prenorm"], pool, **kwargs)
     return features
@@ -182,6 +208,8 @@ def _pool_module(pool: PoolName, features: jax.Array) -> eqx.Module:
         return CLSPool()
     if pool == "cls":
         return CLSPool()
+    if pool == "global_avg":
+        return GlobalAveragePool()
     if pool == "mean_token":
         return MeanTokenPool()
     if pool == "mean_patch":
@@ -207,6 +235,7 @@ __all__ = (
     "AttentionPool",
     "CLSPool",
     "GeMPool",
+    "GlobalAveragePool",
     "IdentityPool",
     "LastTokenPool",
     "MeanFramePool",

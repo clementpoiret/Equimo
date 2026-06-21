@@ -50,5 +50,5 @@ def test_lora_delta_incompatible_shape_raises(tmp_path):
     path = tmp_path / "delta.eqft"
     eqft.save_delta(lora, path)
 
-    with pytest.raises(ValueError, match="architecture hash mismatch"):
+    with pytest.raises(eqft.FineTuneBundleError, match="architecture hash mismatch"):
         eqft.load_delta(incompatible, path)

@@ -8,10 +8,11 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 
 from .._typing import Path, PyTree
 from ..config import TargetSpec
-from ..paths import path_to_str
+from ..paths import key_path_to_path, path_to_str
 from ..selectors import resolve_target
 from ..tags import Tagger, canonical_tags_for_path
 from .base import get_path
@@ -23,8 +24,32 @@ class ScaleShiftConfig:
 
     scale_init: float = 1.0
     shift_init: float = 0.0
-    axis: Literal["feature"] = "feature"
-    target: TargetSpec = TargetSpec(tags=("norm",))
+    axis: Literal["feature", "channel"] = "feature"
+    target: TargetSpec = TargetSpec(tags=("attention", "mlp", "norm"))
+    train_head: bool = True
+    mergeable: bool = True
+
+    @classmethod
+    def convnet(
+        cls,
+        *,
+        target: TargetSpec = TargetSpec(tags=("conv", "stage.block", "norm")),
+        axis: Literal["feature", "channel"] = "channel",
+        scale_init: float = 1.0,
+        shift_init: float = 0.0,
+        train_head: bool = True,
+        mergeable: bool = True,
+    ) -> "ScaleShiftConfig":
+        """Return the ConvNet scale/shift preset."""
+
+        return cls(
+            target=target,
+            axis=axis,
+            scale_init=scale_init,
+            shift_init=shift_init,
+            train_head=train_head,
+            mergeable=mergeable,
+        )
 
 
 class ScaleShift(eqx.Module):
@@ -32,7 +57,7 @@ class ScaleShift(eqx.Module):
 
     scale: jax.Array
     shift: jax.Array
-    axis: Literal["feature"] = eqx.field(static=True)
+    axis: Literal["feature", "channel"] = eqx.field(static=True)
 
     def __init__(
         self,
@@ -40,7 +65,7 @@ class ScaleShift(eqx.Module):
         *,
         scale_init: float = 1.0,
         shift_init: float = 0.0,
-        axis: Literal["feature"] = "feature",
+        axis: Literal["feature", "channel"] = "feature",
         scale: jax.Array | None = None,
         shift: jax.Array | None = None,
     ):
@@ -49,6 +74,9 @@ class ScaleShift(eqx.Module):
         self.axis = axis
 
     def __call__(self, x: jax.Array) -> jax.Array:
+        if self.axis == "channel" and x.ndim > 1:
+            shape = (self.scale.shape[0],) + (1,) * (x.ndim - 1)
+            return x * self.scale.reshape(shape) + self.shift.reshape(shape)
         return x * self.scale + self.shift
 
 
@@ -57,6 +85,7 @@ class ScaleShiftWrapper(eqx.Module):
 
     base: eqx.Module
     scale_shift: ScaleShift
+    mergeable: bool = eqx.field(static=True, default=True)
 
     def __call__(self, x: jax.Array, *args, key: jax.Array | None = None, inference: bool | None = None, **kwargs):
         y = _call_base(self.base, x, *args, key=key, inference=inference, **kwargs)
@@ -88,10 +117,58 @@ def apply_scale_shift(
                 shift_init=config.shift_init,
                 axis=config.axis,
             ),
+            mergeable=config.mergeable,
         )
         updated = eqx.tree_at(lambda tree, p=module_path: get_path(tree, p), updated, wrapper)
 
     return updated
+
+
+def merge_scale_shift(model: PyTree) -> PyTree:
+    """Fold scale/shift wrappers into linear modules where algebraically safe."""
+
+    updated = model
+    for path, wrapper in iter_scale_shift_wrappers(updated):
+        if not wrapper.mergeable:
+            raise ValueError("This scale/shift module is not mergeable.")
+        base = wrapper.base
+        if not isinstance(base, eqx.nn.Linear):
+            raise ValueError(
+                "Scale/shift merge is only algebraically safe for eqx.nn.Linear "
+                f"wrappers; got {type(base).__name__} at {path_to_str(path)}."
+            )
+        scale = wrapper.scale_shift.scale.astype(base.weight.dtype)
+        shift = wrapper.scale_shift.shift.astype(base.weight.dtype)
+        merged = eqx.tree_at(
+            lambda linear: linear.weight,
+            base,
+            base.weight * scale[:, None],
+        )
+        if merged.bias is not None:
+            bias = merged.bias * scale + shift
+            merged = eqx.tree_at(lambda linear: linear.bias, merged, bias)
+        elif bool(jnp.any(shift != 0)):
+            raise ValueError(
+                "Cannot merge nonzero shift into a bias-free linear module at "
+                f"{path_to_str(path)}."
+            )
+        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, merged)
+    return updated
+
+
+def iter_scale_shift_wrappers(
+    model: PyTree,
+) -> tuple[tuple[Path, ScaleShiftWrapper], ...]:
+    """Return path/module pairs for scale/shift wrappers in ``model``."""
+
+    return tuple(
+        (key_path_to_path(key_path), leaf)
+        for key_path, leaf in jtu.tree_leaves_with_path(
+            model,
+            is_leaf=lambda x: isinstance(x, ScaleShiftWrapper),
+        )
+        if isinstance(leaf, ScaleShiftWrapper)
+    )
 
 
 def _target_module_paths(model: PyTree, target: TargetSpec, *, tagger: Tagger) -> tuple[Path, ...]:
@@ -135,4 +212,6 @@ __all__ = (
     "ScaleShiftConfig",
     "ScaleShiftWrapper",
     "apply_scale_shift",
+    "iter_scale_shift_wrappers",
+    "merge_scale_shift",
 )

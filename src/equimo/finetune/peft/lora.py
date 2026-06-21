@@ -12,7 +12,7 @@ import jax.random as jr
 import jax.tree_util as jtu
 
 from .._typing import Path, PyTree
-from ..config import FineTuneBundle, TargetSpec
+from ..config import FineTuneBundle, FineTuneBundleError, TargetSpec
 from ..paths import key_path_to_path, path_to_str, str_to_path
 from ..selectors import resolve_target
 from ..tags import Tagger, canonical_tags_for_path
@@ -38,6 +38,73 @@ class LoRAConfig:
     init: str = "kaiming_A_zero_B"
     train_base: bool = False
     mergeable: bool = True
+    fan_in_fan_out: bool = False
+
+
+@dataclass(frozen=True)
+class LoRARecipe:
+    """Recipe metadata for LoRA fine-tuning."""
+
+    rank: int = 8
+    alpha: float = 16.0
+    dropout: float = 0.05
+    target: tuple[str, ...] = ("attention.qkv", "attention.proj")
+    train_head: bool = True
+
+    @classmethod
+    def hard_task(
+        cls,
+        *,
+        rank: int = 16,
+        alpha: float = 32.0,
+        dropout: float = 0.05,
+        target: tuple[str, ...] = (
+            "attention.qkv",
+            "attention.proj",
+            "mlp.fc1",
+            "mlp.fc2",
+        ),
+        train_head: bool = True,
+    ) -> "LoRARecipe":
+        """Return the hard-task LoRA recipe preset."""
+
+        return cls(
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            target=target,
+            train_head=train_head,
+        )
+
+    @classmethod
+    def tiny_data(
+        cls,
+        *,
+        rank: int = 4,
+        alpha: float = 8.0,
+        dropout: float = 0.0,
+        target: tuple[str, ...] = ("attention.qkv", "attention.proj"),
+        train_head: bool = True,
+    ) -> "LoRARecipe":
+        """Return the tiny-data LoRA recipe preset."""
+
+        return cls(
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            target=target,
+            train_head=train_head,
+        )
+
+    def to_config(self) -> LoRAConfig:
+        """Convert recipe metadata to a LoRA module config."""
+
+        return LoRAConfig(
+            rank=self.rank,
+            alpha=self.alpha,
+            dropout=self.dropout,
+            target=TargetSpec(tags=self.target),
+        )
 
 
 @dataclass(frozen=True)
@@ -57,6 +124,17 @@ class PiSSAConfig(LoRAConfig):
     init: str = "pissa"
     svd: str = "truncated"
     niter: int = 4
+    residual_handling: str = "freeze_residual"
+    fallback_init: str = "kaiming_A_zero_B"
+
+
+@dataclass(frozen=True)
+class LoRAPlusLabelConfig:
+    """Label metadata for LoRA+ A/B learning-rate groups."""
+
+    label_A: str = "lora_A"
+    label_B: str = "lora_B"
+    label_base: str = "frozen"
 
 
 @dataclass(frozen=True)
@@ -68,26 +146,37 @@ class RankMaskedLoRAConfig(LoRAConfig):
     target_rank: int = 8
     min_rank: int = 1
     max_rank: int = 16
+    rank_mask_init: Literal["all_active", "target_rank"] = "all_active"
+
+
+@dataclass(frozen=True)
+class QuantizedLinearCompatibilityConfig:
+    """Metadata for applying LoRA around externally quantized linears."""
+
+    allow_lora_on_quantized_linear: bool = True
+    quantization_owned_by: Literal["external"] = "external"
 
 
 class LoRALinear(eqx.Module):
-    """LoRA wrapper for ``eqx.nn.Linear``."""
+    """LoRA wrapper for linear-like modules."""
 
-    base: eqx.nn.Linear
+    base: eqx.Module
     lora_A: jax.Array
     lora_B: jax.Array
     rank_mask: jax.Array | None
+    base_weight_delta: jax.Array | None
     rank: int = eqx.field(static=True)
     alpha: float = eqx.field(static=True)
     scaling_mode: ScalingMode = eqx.field(static=True)
     dropout: float = eqx.field(static=True)
     train_base: bool = eqx.field(static=True)
     mergeable: bool = eqx.field(static=True)
+    fan_in_fan_out: bool = eqx.field(static=True)
     merged: bool = eqx.field(static=True)
 
     def __init__(
         self,
-        base: eqx.nn.Linear,
+        base: eqx.Module,
         *,
         rank: int,
         alpha: float,
@@ -96,9 +185,11 @@ class LoRALinear(eqx.Module):
         train_base: bool,
         mergeable: bool,
         key: jax.Array,
+        fan_in_fan_out: bool = False,
         lora_A: jax.Array | None = None,
         lora_B: jax.Array | None = None,
         rank_mask: jax.Array | None = None,
+        base_weight_delta: jax.Array | None = None,
         merged: bool = False,
     ):
         if rank < 1:
@@ -110,13 +201,20 @@ class LoRALinear(eqx.Module):
         self.dropout = dropout
         self.train_base = train_base
         self.mergeable = mergeable
+        self.fan_in_fan_out = fan_in_fan_out
         self.merged = merged
 
         if lora_A is None or lora_B is None:
-            lora_A, lora_B = _init_lora(base, rank, key)
+            lora_A, lora_B = _init_lora(
+                base,
+                rank,
+                key,
+                fan_in_fan_out=fan_in_fan_out,
+            )
         self.lora_A = lora_A
         self.lora_B = lora_B
         self.rank_mask = rank_mask
+        self.base_weight_delta = base_weight_delta
 
     @property
     def scaling(self) -> float:
@@ -131,6 +229,8 @@ class LoRALinear(eqx.Module):
         if self.merged:
             return y
         x_drop = _dropout(x, self.dropout, key) if self.dropout > 0.0 else x
+        if self.fan_in_fan_out:
+            return y + x_drop @ self.delta_weight()
         update = self.lora_B @ (self.lora_A @ x_drop)
         return y + update * self.scaling
 
@@ -140,7 +240,8 @@ class LoRALinear(eqx.Module):
         lora_B = self.lora_B
         if self.rank_mask is not None:
             lora_B = lora_B * self.rank_mask[None, :]
-        return (lora_B @ self.lora_A) * self.scaling
+        delta = (lora_B @ self.lora_A) * self.scaling
+        return delta.T if self.fan_in_fan_out else delta
 
     def merge(self):
         """Return a module with the LoRA delta folded into ``base.weight``."""
@@ -168,7 +269,7 @@ class LoRALinear(eqx.Module):
         )
         return self._replace(base=base, merged=False)
 
-    def _replace(self, *, base: eqx.nn.Linear, merged: bool):
+    def _replace(self, *, base: eqx.Module, merged: bool):
         return self.__class__(
             base,
             rank=self.rank,
@@ -177,10 +278,12 @@ class LoRALinear(eqx.Module):
             dropout=self.dropout,
             train_base=self.train_base,
             mergeable=self.mergeable,
+            fan_in_fan_out=self.fan_in_fan_out,
             key=jr.PRNGKey(0),
             lora_A=self.lora_A,
             lora_B=self.lora_B,
             rank_mask=self.rank_mask,
+            base_weight_delta=self.base_weight_delta,
             merged=merged,
         )
 
@@ -207,15 +310,21 @@ def apply_lora(
         module = get_path(updated, module_path)
         if isinstance(module, LoRALinear):
             continue
-        if not isinstance(module, eqx.nn.Linear):
+        if not _is_linear_like(module):
             raise TypeError(
                 f"LoRA target {path_to_str(module_path)!r} is "
-                f"{type(module).__name__}, expected eqx.nn.Linear."
+                f"{type(module).__name__}, expected a linear-like module."
             )
         wrapper_type = LoRAMergedLinear if _is_fused_qkv_path(module_path) else LoRALinear
         lora_A = lora_B = None
+        base_weight_delta = None
+        rank = config.rank
         if config.init == "pissa":
-            lora_A, lora_B = _pissa_init(module, config.rank)
+            module, lora_A, lora_B, base_weight_delta = _pissa_prepare(
+                module,
+                config,
+            )
+            rank = int(lora_A.shape[0])
         elif config.init != "kaiming_A_zero_B":
             raise ValueError(
                 f"Unsupported LoRA init {config.init!r}; expected kaiming_A_zero_B or pissa."
@@ -223,16 +332,18 @@ def apply_lora(
         rank_mask = _rank_mask(config, module.weight.dtype)
         lora_module = wrapper_type(
             module,
-            rank=config.rank,
+            rank=rank,
             alpha=config.alpha,
             scaling=config.scaling,
             dropout=config.dropout,
             train_base=config.train_base,
             mergeable=config.mergeable,
+            fan_in_fan_out=config.fan_in_fan_out,
             key=subkey,
             lora_A=lora_A,
             lora_B=lora_B,
             rank_mask=rank_mask,
+            base_weight_delta=base_weight_delta,
         )
         updated = eqx.tree_at(
             lambda tree, path=module_path: get_path(tree, path),
@@ -276,14 +387,16 @@ def extract_lora_delta(
                 "dropout": module.dropout,
                 "train_base": module.train_base,
                 "mergeable": module.mergeable,
+                "fan_in_fan_out": module.fan_in_fan_out,
                 "merged": module.merged,
-                "base_weight_shape": tuple(module.base.weight.shape),
+                "base_weight_shape": tuple(_linear_weight(module.base).shape),
                 "base_bias_shape": None
-                if module.base.bias is None
-                else tuple(module.base.bias.shape),
+                if _linear_bias(module.base) is None
+                else tuple(_linear_bias(module.base).shape),
                 "lora_A": module.lora_A,
                 "lora_B": module.lora_B,
                 "rank_mask": module.rank_mask,
+                "base_weight_delta": module.base_weight_delta,
             }
         )
 
@@ -304,11 +417,13 @@ def load_lora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
     """Apply a LoRA bundle to a compatible base model."""
 
     if bundle.method != "lora":
-        raise ValueError(f"Expected a LoRA bundle, got method={bundle.method!r}.")
+        raise FineTuneBundleError(
+            f"Expected a LoRA bundle, got method={bundle.method!r}."
+        )
 
     actual_hash = architecture_hash(base_model)
     if bundle.architecture_hash and bundle.architecture_hash != actual_hash:
-        raise ValueError(
+        raise FineTuneBundleError(
             "LoRA delta architecture hash mismatch: "
             f"expected {bundle.architecture_hash}, got {actual_hash}."
         )
@@ -317,23 +432,31 @@ def load_lora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
     entries = bundle.adapter_config.get("entries", ())
     for entry in entries:
         path = str_to_path(entry["path"])
-        module = get_path(updated, path)
-        if not isinstance(module, eqx.nn.Linear):
-            raise ValueError(
-                f"LoRA delta expects linear module at {entry['path']}, "
+        module = _bundle_get_path(updated, path, method_name="LoRA")
+        if not _is_linear_like(module):
+            raise FineTuneBundleError(
+                f"LoRA delta expects linear-like module at {entry['path']}, "
                 f"got {type(module).__name__}."
             )
-        if tuple(module.weight.shape) != tuple(entry["base_weight_shape"]):
-            raise ValueError(
+        if tuple(_linear_weight(module).shape) != tuple(entry["base_weight_shape"]):
+            raise FineTuneBundleError(
                 f"LoRA delta expects path {entry['path']} with weight shape "
-                f"{entry['base_weight_shape']}, got {tuple(module.weight.shape)}."
+                f"{entry['base_weight_shape']}, got {tuple(_linear_weight(module).shape)}."
             )
         expected_bias_shape = entry["base_bias_shape"]
-        actual_bias_shape = None if module.bias is None else tuple(module.bias.shape)
+        bias = _linear_bias(module)
+        actual_bias_shape = None if bias is None else tuple(bias.shape)
         if actual_bias_shape != expected_bias_shape:
-            raise ValueError(
+            raise FineTuneBundleError(
                 f"LoRA delta expects path {entry['path']} with bias shape "
                 f"{expected_bias_shape}, got {actual_bias_shape}."
+            )
+        base_weight_delta = entry.get("base_weight_delta")
+        if base_weight_delta is not None:
+            module = eqx.tree_at(
+                lambda linear: linear.weight,
+                module,
+                _linear_weight(module) + base_weight_delta.astype(_linear_weight(module).dtype),
             )
 
         wrapper_type = LoRAMergedLinear if entry["class"] == "LoRAMergedLinear" else LoRALinear
@@ -345,10 +468,12 @@ def load_lora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
             dropout=float(entry["dropout"]),
             train_base=bool(entry["train_base"]),
             mergeable=bool(entry["mergeable"]),
+            fan_in_fan_out=bool(entry.get("fan_in_fan_out", False)),
             key=jr.PRNGKey(0),
             lora_A=entry["lora_A"],
             lora_B=entry["lora_B"],
             rank_mask=entry.get("rank_mask"),
+            base_weight_delta=base_weight_delta,
             merged=False,
         )
         if entry["merged"]:
@@ -363,7 +488,8 @@ def strip_lora(model: PyTree) -> PyTree:
 
     stripped = unmerge_lora(model)
     for path, module in iter_lora_modules(stripped):
-        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, module.base)
+        base = _restore_base_weight(module)
+        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, base)
     return stripped
 
 
@@ -410,6 +536,16 @@ def _target_linear_module_paths(
     return tuple(sorted(paths, key=path_to_str))
 
 
+def _bundle_get_path(model: PyTree, path: Path, *, method_name: str):
+    try:
+        return get_path(model, path)
+    except (AttributeError, IndexError, KeyError, TypeError) as error:
+        raise FineTuneBundleError(
+            f"{method_name} delta expects path {path_to_str(path)}, "
+            "but the base model has no matching leaf."
+        ) from error
+
+
 def _linear_module_path(path: Path) -> Path:
     if path[-1:] in (("weight",), ("bias",)):
         return path[:-1]
@@ -421,46 +557,160 @@ def _is_fused_qkv_path(path: Path) -> bool:
 
 
 def _init_lora(
-    base: eqx.nn.Linear,
+    base: eqx.Module,
     rank: int,
     key: jax.Array,
+    *,
+    fan_in_fan_out: bool = False,
 ) -> tuple[jax.Array, jax.Array]:
     key_a, _ = jr.split(key, 2)
-    in_features = base.weight.shape[1]
-    out_features = base.weight.shape[0]
+    weight = _linear_weight(base)
+    in_features, out_features = (
+        (weight.shape[0], weight.shape[1])
+        if fan_in_fan_out
+        else (weight.shape[1], weight.shape[0])
+    )
     bound = jnp.sqrt(6.0 / in_features)
     lora_A = jr.uniform(
         key_a,
         (rank, in_features),
         minval=-bound,
         maxval=bound,
-        dtype=base.weight.dtype,
+        dtype=weight.dtype,
     )
-    lora_B = jnp.zeros((out_features, rank), dtype=base.weight.dtype)
+    lora_B = jnp.zeros((out_features, rank), dtype=weight.dtype)
     return lora_A, lora_B
+
+
+def _pissa_prepare(
+    base: eqx.Module,
+    config: LoRAConfig,
+) -> tuple[eqx.Module, jax.Array, jax.Array, jax.Array | None]:
+    if not isinstance(config, PiSSAConfig):
+        lora_A, lora_B = _pissa_init(
+            base,
+            config.rank,
+            fan_in_fan_out=config.fan_in_fan_out,
+        )
+        return base, lora_A, lora_B, None
+    if config.svd not in {"truncated", "exact"}:
+        raise ValueError("PiSSAConfig.svd must be 'truncated' or 'exact'.")
+    if config.niter < 0:
+        raise ValueError("PiSSAConfig.niter must be non-negative.")
+    if config.residual_handling not in {"freeze_residual", "none"}:
+        raise ValueError(
+            "PiSSAConfig.residual_handling must be 'freeze_residual' or 'none'."
+        )
+    try:
+        lora_A, lora_B = _pissa_init(
+            base,
+            config.rank,
+            fan_in_fan_out=config.fan_in_fan_out,
+        )
+    except Exception:
+        if config.fallback_init != "kaiming_A_zero_B":
+            raise
+        lora_A, lora_B = _init_lora(
+            base,
+            config.rank,
+            jr.PRNGKey(0),
+            fan_in_fan_out=config.fan_in_fan_out,
+        )
+        return base, lora_A, lora_B, None
+    if config.residual_handling == "none":
+        return base, lora_A, lora_B, None
+
+    rank = int(lora_A.shape[0])
+    delta = (lora_B @ lora_A) * _scaling(config.scaling, config.alpha, rank)
+    if config.fan_in_fan_out:
+        delta = delta.T
+    weight = _linear_weight(base)
+    base_weight_delta = -delta.astype(weight.dtype)
+    residual_base = eqx.tree_at(
+        lambda linear: linear.weight,
+        base,
+        weight + base_weight_delta,
+    )
+    return residual_base, lora_A, lora_B, base_weight_delta
 
 
 def _pissa_init(
-    base: eqx.nn.Linear,
+    base: eqx.Module,
     rank: int,
+    *,
+    fan_in_fan_out: bool = False,
 ) -> tuple[jax.Array, jax.Array]:
-    u, s, vh = jnp.linalg.svd(base.weight, full_matrices=False)
+    weight = _linear_weight(base)
+    svd_weight = weight.T if fan_in_fan_out else weight
+    u, s, vh = jnp.linalg.svd(svd_weight, full_matrices=False)
     rank = min(rank, s.shape[0])
-    sqrt_s = jnp.sqrt(s[:rank]).astype(base.weight.dtype)
-    lora_B = u[:, :rank].astype(base.weight.dtype) * sqrt_s[None, :]
-    lora_A = sqrt_s[:, None] * vh[:rank].astype(base.weight.dtype)
+    sqrt_s = jnp.sqrt(s[:rank]).astype(weight.dtype)
+    lora_B = u[:, :rank].astype(weight.dtype) * sqrt_s[None, :]
+    lora_A = sqrt_s[:, None] * vh[:rank].astype(weight.dtype)
     return lora_A, lora_B
 
 
+def _scaling(mode: ScalingMode, alpha: float, rank: int) -> float:
+    if mode == "alpha_over_r":
+        return float(alpha / rank)
+    if mode == "alpha_over_sqrt_r":
+        return float(alpha / jnp.sqrt(rank))
+    raise ValueError(f"Unsupported LoRA scaling mode {mode!r}.")
+
+
+def _is_linear_like(module: Any) -> bool:
+    weight = getattr(module, "weight", None)
+    return (
+        callable(module)
+        and eqx.is_inexact_array(weight)
+        and weight.ndim == 2
+    )
+
+
+def _linear_weight(module: Any) -> jax.Array:
+    weight = getattr(module, "weight", None)
+    if not eqx.is_inexact_array(weight) or weight.ndim != 2:
+        raise TypeError(f"{type(module).__name__} is not a linear-like module.")
+    return weight
+
+
+def _linear_bias(module: Any) -> jax.Array | None:
+    bias = getattr(module, "bias", None)
+    if bias is None:
+        return None
+    if not eqx.is_inexact_array(bias):
+        raise TypeError(f"{type(module).__name__}.bias is not an inexact array.")
+    return bias
+
+
+def _restore_base_weight(module: LoRALinear) -> eqx.Module:
+    if module.base_weight_delta is None:
+        return module.base
+    return eqx.tree_at(
+        lambda linear: linear.weight,
+        module.base,
+        _linear_weight(module.base) - module.base_weight_delta.astype(_linear_weight(module.base).dtype),
+    )
+
+
 def _rank_mask(config: LoRAConfig, dtype) -> jax.Array | None:
+    del dtype
     if not isinstance(config, RankMaskedLoRAConfig):
         return None
     if not config.min_rank <= config.target_rank <= config.max_rank:
         raise ValueError("target_rank must lie between min_rank and max_rank.")
-    if config.target_rank > config.rank:
-        raise ValueError("target_rank must be <= rank.")
-    values = jnp.arange(config.rank) < config.target_rank
-    return values.astype(dtype)
+    if not config.min_rank <= config.initial_rank <= config.max_rank:
+        raise ValueError("initial_rank must lie between min_rank and max_rank.")
+    if config.rank_mask_init == "all_active":
+        active_rank = min(config.initial_rank, config.rank)
+    elif config.rank_mask_init == "target_rank":
+        active_rank = min(config.target_rank, config.rank)
+    else:
+        raise ValueError(
+            "rank_mask_init must be either 'all_active' or 'target_rank'."
+        )
+    values = jnp.arange(config.rank) < active_rank
+    return values.astype(jnp.bool_)
 
 
 def _dropout(x: jax.Array, rate: float, key: jax.Array | None) -> jax.Array:
@@ -500,7 +750,10 @@ __all__ = (
     "LoRAConfig",
     "LoRALinear",
     "LoRAMergedLinear",
+    "LoRAPlusLabelConfig",
+    "LoRARecipe",
     "PiSSAConfig",
+    "QuantizedLinearCompatibilityConfig",
     "RankMaskedLoRAConfig",
     "RsLoRAConfig",
     "apply_lora",

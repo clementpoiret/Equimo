@@ -15,19 +15,33 @@ def _infos_by_path(model):
 
 
 def test_canonical_tags_include_selector_defaults():
-    assert set(eqft.CANONICAL_TAGS) == {
+    required = {
+        "embedding",
         "embedding.patch",
         "embedding.position",
         "embedding.class_token",
         "embedding.register_token",
+        "embedding.mask_token",
+        "embedding.token",
         "block",
+        "block.attention",
+        "block.attention.qkv",
+        "attention",
         "attention.qkv",
         "attention.proj",
+        "block.mlp",
+        "mlp",
+        "mlp.hidden",
         "mlp.fc1",
         "mlp.fc2",
         "norm",
         "head",
+        "audio.patch_embed",
+        "text.embedding",
+        "tabular.encoder",
     }
+
+    assert required <= set(eqft.CANONICAL_TAGS)
 
 
 def test_semantic_tags_for_tiny_vit(tiny_vision_transformer):
@@ -36,12 +50,14 @@ def test_semantic_tags_for_tiny_vit(tiny_vision_transformer):
     assert "embedding.patch" in infos["patch_embed.proj.weight"].tags
     assert "embedding.position" in infos["pos_embed"].tags
     assert "embedding.class_token" in infos["cls_token"].tags
-    assert {"block", "block.0", "attention.qkv"} <= infos[
+    assert {"block", "block.0", "attention", "block.attention", "attention.qkv"} <= infos[
         "blocks.0.attn.qkv.weight"
     ].tags
     assert infos["blocks.0.attn.qkv.weight"].depth == 0
     assert "attention.proj" in infos["blocks.1.attn.proj.bias"].tags
-    assert "mlp.fc1" in infos["blocks.1.mlp.fc1.weight"].tags
+    assert {"mlp", "block.mlp", "mlp.hidden", "mlp.fc1"} <= infos[
+        "blocks.1.mlp.fc1.weight"
+    ].tags
     assert "mlp.fc2" in infos["blocks.1.mlp.fc2.bias"].tags
     assert {"norm", "block.norm.post", "bias"} <= infos["blocks.1.norm2.bias"].tags
     assert "head" in infos["head.weight"].tags
@@ -90,3 +106,13 @@ def test_model_family_tag_adapters(tiny_ast_like_encoder, tiny_text_encoder):
         eqft.TargetSpec(tags=("text.embedding",)),
     )
     assert text_paths == ("token_embed.weight",)
+
+
+def test_conv_stage_tags_for_convnext_like(tiny_convnext_like):
+    infos = _infos_by_path(tiny_convnext_like)
+
+    assert "stem" in infos["stem.weight"].tags
+    assert {"stage", "stage.block", "conv.depthwise"} <= infos[
+        "stages.0.blocks.0.dwconv.weight"
+    ].tags
+    assert {"conv", "conv.pointwise"} <= infos["stages.0.blocks.0.pwconv1.weight"].tags

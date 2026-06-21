@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from dataclasses import replace
@@ -17,19 +18,34 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 import lz4.frame
+import numpy as np
 
 from ._typing import PyTree
-from .config import FineTuneBundle, TargetSpec
+from .config import FineTuneBundle, FineTuneBundleError, TargetSpec
+from .heads import MLPHead
 from .paths import key_path_to_path, path_to_str, str_to_path
-from .peft.adapters import extract_adapter_delta, load_adapter_delta
+from .peft.adapters import extract_adapter_delta, load_adapter_delta, strip_adapters
 from .peft.base import get_path
 from .peft.dora import DoRALinear, DoRAMergedLinear
 from .peft.ia3 import IA3Linear
-from .peft.lora import extract_lora_delta, load_lora_delta
+from .peft.lora import extract_lora_delta, iter_lora_modules, load_lora_delta, strip_lora
 from .peft.lora import architecture_hash, merge_lora
-from .peft.prefix import PrefixConfig, PrefixTunedModel, strip_prefixes
-from .peft.prompts import PromptConfig, PromptedModel
+from .peft.prefix import (
+    PrefixConfig,
+    PrefixProjection,
+    PrefixTunedModel,
+    strip_prefixes,
+)
+from .peft.prompts import DeepPromptConfig, PromptConfig, PromptedModel, SoftPromptConfig
 from .peft.scale_shift import ScaleShift, ScaleShiftWrapper
+from .peft.side_tuning import (
+    LSTConfig,
+    LadderConnection,
+    SideNetwork,
+    SideTunedModel,
+    strip_side_tuning,
+)
+from .peft.vera import VeRALinear, strip_vera
 
 _FORMAT = "equimo.finetune.bundle"
 _FORMAT_VERSION = 1
@@ -41,18 +57,23 @@ def save_delta(
     *args,
     method: str = "lora",
     metadata: dict[str, Any] | None = None,
+    model: PyTree | None = None,
+    path: str | Path | None = None,
     base_model: PyTree | None = None,
     spec: Any | None = None,
 ) -> FineTuneBundle:
     """Save a method delta bundle and return the saved bundle.
 
-    Both ``save_delta(model, path, ...)`` and the spec-style
-    ``save_delta(path, model, base_model, spec)`` call order are accepted.
-    ``base_model`` and ``spec`` are metadata inputs; optimizers remain external.
+    ``save_delta(model, path, ...)``, ``save_delta(path, model, base_model, spec)``,
+    and the spec-style ``save_delta(path, model=..., base_model=..., spec=...)``
+    call orders are accepted. ``base_model`` and ``spec`` are metadata inputs;
+    optimizers remain external.
     """
 
     model, path, resolved_base_model, resolved_spec = _resolve_save_delta_args(
         args,
+        model=model,
+        path=path,
         base_model=base_model,
         spec=spec,
     )
@@ -71,11 +92,15 @@ def save_delta(
         bundle = _extract_scale_shift_delta(model)
     elif method == "ia3":
         bundle = _extract_ia3_delta(model)
+    elif method == "vera":
+        bundle = _extract_vera_delta(model)
+    elif method == "side_tuning":
+        bundle = _extract_side_tuning_delta(model)
     else:
         raise ValueError(
             "Unsupported delta method "
             f"{method!r}; currently 'lora', 'dora', 'adapter', 'prompt', "
-            "'prefix', 'scale_shift', or 'ia3'."
+            "'prefix', 'scale_shift', 'ia3', 'vera', or 'side_tuning'."
         )
 
     bundle = _enrich_bundle(
@@ -105,6 +130,7 @@ def load_delta(
         else _read_bundle(path_or_bundle)
     )
     _check_schema(bundle)
+    _check_base_checkpoint(base_model, bundle)
     if bundle.method == "lora":
         return load_lora_delta(base_model, bundle)
     if bundle.method == "adapter":
@@ -119,7 +145,11 @@ def load_delta(
         return _load_scale_shift_delta(base_model, bundle)
     if bundle.method == "ia3":
         return _load_ia3_delta(base_model, bundle)
-    raise ValueError(f"Unsupported delta method {bundle.method!r}.")
+    if bundle.method == "vera":
+        return _load_vera_delta(base_model, bundle)
+    if bundle.method == "side_tuning":
+        return _load_side_tuning_delta(base_model, bundle)
+    raise FineTuneBundleError(f"Unsupported delta method {bundle.method!r}.")
 
 
 def save_finetune_bundle(path: str | Path, bundle: FineTuneBundle) -> FineTuneBundle:
@@ -182,7 +212,7 @@ def _read_bundle(path: str | Path) -> FineTuneBundle:
             manifest_file = tar.extractfile("manifest.json")
             arrays_file = tar.extractfile("arrays.eqx")
             if manifest_file is None or arrays_file is None:
-                raise ValueError(
+                raise FineTuneBundleError(
                     f"Delta file {path!s} is missing manifest.json or arrays.eqx."
                 )
             manifest = json.loads(manifest_file.read().decode())
@@ -220,11 +250,11 @@ def _bundle_from_manifest(
     arrays_data: io.BytesIO,
 ) -> FineTuneBundle:
     if manifest.get("format") != _FORMAT:
-        raise ValueError(
+        raise FineTuneBundleError(
             f"Unsupported fine-tuning bundle format {manifest.get('format')!r}."
         )
     if manifest.get("format_version") != _FORMAT_VERSION:
-        raise ValueError(
+        raise FineTuneBundleError(
             "Unsupported fine-tuning bundle format_version="
             f"{manifest.get('format_version')!r}; expected {_FORMAT_VERSION}."
         )
@@ -313,7 +343,11 @@ def _extract_prompt_delta(model: PyTree) -> FineTuneBundle:
         method="prompt",
         schema_version=1,
         architecture_hash=architecture_hash(model.base),
-        adapter_config={"prompts": model.prompts, "config": _config_to_dict(model.config)},
+        adapter_config={
+            "prompts": model.prompts,
+            "config": _config_to_dict(model.config),
+            "config_class": model.config.__class__.__name__,
+        },
     )
 
 
@@ -322,7 +356,10 @@ def _load_prompt_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
     return PromptedModel(
         base_model,
         tuple(bundle.adapter_config["prompts"]),
-        _prompt_config_from_dict(bundle.adapter_config["config"]),
+        _prompt_config_from_dict(
+            bundle.adapter_config["config"],
+            bundle.adapter_config.get("config_class", "PromptConfig"),
+        ),
     )
 
 
@@ -333,7 +370,14 @@ def _extract_prefix_delta(model: PyTree) -> FineTuneBundle:
         method="prefix",
         schema_version=1,
         architecture_hash=architecture_hash(strip_prefixes(model.base)),
-        adapter_config={"prefixes": model.prefixes, "config": _config_to_dict(model.config)},
+        adapter_config={
+            "prefixes": model.prefixes,
+            "prefix_projections": tuple(
+                None if projection is None else _prefix_projection_state(projection)
+                for projection in model.prefix_projections
+            ),
+            "config": _config_to_dict(model.config),
+        },
     )
 
 
@@ -343,6 +387,34 @@ def _load_prefix_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
         base_model,
         tuple(bundle.adapter_config["prefixes"]),
         _prefix_config_from_dict(bundle.adapter_config["config"]),
+        prefix_projections=tuple(
+            None if state is None else _prefix_projection_from_state(state)
+            for state in bundle.adapter_config.get("prefix_projections", ())
+        )
+        or None,
+    )
+
+
+def _prefix_projection_state(projection: PrefixProjection) -> dict[str, Any]:
+    return {
+        "down": _linear_state(projection.down),
+        "up": _linear_state(projection.up),
+        "num_heads": projection.num_heads,
+        "head_dim": projection.head_dim,
+    }
+
+
+def _prefix_projection_from_state(state: dict[str, Any]) -> PrefixProjection:
+    down = _linear_from_state(state["down"])
+    up = _linear_from_state(state["up"])
+    return PrefixProjection(
+        int(down.in_features),
+        int(down.out_features),
+        int(state["num_heads"]),
+        int(state["head_dim"]),
+        key=jr.PRNGKey(0),
+        down=down,
+        up=up,
     )
 
 
@@ -356,6 +428,7 @@ def _extract_scale_shift_delta(model: PyTree) -> FineTuneBundle:
                 "scale": wrapper.scale_shift.scale,
                 "shift": wrapper.scale_shift.shift,
                 "axis": wrapper.scale_shift.axis,
+                "mergeable": wrapper.mergeable,
             }
         )
         stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, wrapper.base)
@@ -372,8 +445,19 @@ def _load_scale_shift_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTre
     updated = base_model
     for entry in bundle.adapter_config.get("entries", ()):
         path = str_to_path(entry["path"])
-        base = get_path(updated, path)
+        base = _bundle_get_path(updated, path, method_name="Scale/shift")
         dim = int(entry["scale"].shape[0])
+        if entry["scale"].shape != entry["shift"].shape:
+            raise FineTuneBundleError(
+                f"Scale/shift delta expects matching scale and shift shapes at "
+                f"{entry['path']}, got {entry['scale'].shape} and {entry['shift'].shape}."
+            )
+        expected_dim = _scale_shift_dim(base)
+        if dim != expected_dim:
+            raise FineTuneBundleError(
+                f"Scale/shift delta expects path {entry['path']} with feature "
+                f"dimension {dim}, got {expected_dim}."
+            )
         wrapper = ScaleShiftWrapper(
             base,
             ScaleShift(
@@ -382,6 +466,7 @@ def _load_scale_shift_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTre
                 scale=entry["scale"],
                 shift=entry["shift"],
             ),
+            mergeable=bool(entry.get("mergeable", True)),
         )
         updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, wrapper)
     return updated
@@ -395,6 +480,7 @@ def _extract_ia3_delta(model: PyTree) -> FineTuneBundle:
             {
                 "path": path_to_str(path),
                 "ia3": wrapper.ia3,
+                "mergeable": wrapper.mergeable,
                 "weight_shape": tuple(wrapper.base.weight.shape),
             }
         )
@@ -412,15 +498,193 @@ def _load_ia3_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
     updated = base_model
     for entry in bundle.adapter_config.get("entries", ()):
         path = str_to_path(entry["path"])
-        base = get_path(updated, path)
+        base = _bundle_get_path(updated, path, method_name="IA3")
+        if not isinstance(base, eqx.nn.Linear):
+            raise FineTuneBundleError(
+                f"IA3 delta expects linear module at {entry['path']}, "
+                f"got {type(base).__name__}."
+            )
         if tuple(base.weight.shape) != tuple(entry["weight_shape"]):
-            raise ValueError(
+            raise FineTuneBundleError(
                 f"IA3 delta expects path {entry['path']} with shape "
                 f"{entry['weight_shape']}, got {tuple(base.weight.shape)}."
             )
-        wrapper = IA3Linear(base, ia3=entry["ia3"])
+        wrapper = IA3Linear(
+            base,
+            ia3=entry["ia3"],
+            mergeable=bool(entry.get("mergeable", True)),
+        )
         updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, wrapper)
     return updated
+
+
+def _extract_vera_delta(model: PyTree) -> FineTuneBundle:
+    entries = []
+    for path, wrapper in _iter_wrappers(model, VeRALinear):
+        entries.append(
+            {
+                "path": path_to_str(path),
+                "rank": int(wrapper.vera_A.shape[0]),
+                "shared": wrapper.shared,
+                "frozen_A_init": wrapper.frozen_A_init,
+                "frozen_B_init": wrapper.frozen_B_init,
+                "mergeable": wrapper.mergeable,
+                "base_weight_shape": tuple(wrapper.base.weight.shape),
+                "base_bias_shape": None
+                if wrapper.base.bias is None
+                else tuple(wrapper.base.bias.shape),
+                "vera_A": wrapper.vera_A,
+                "vera_B": wrapper.vera_B,
+                "vera_input_scale": wrapper.vera_input_scale,
+                "vera_output_scale": wrapper.vera_output_scale,
+            }
+        )
+    return FineTuneBundle(
+        method="vera",
+        schema_version=1,
+        architecture_hash=architecture_hash(strip_vera(model)),
+        adapter_config={"entries": entries},
+    )
+
+
+def _load_vera_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
+    _check_hash(base_model, bundle, "VeRA")
+    updated = base_model
+    for entry in bundle.adapter_config.get("entries", ()):
+        path = str_to_path(entry["path"])
+        base = _bundle_get_path(updated, path, method_name="VeRA")
+        if not isinstance(base, eqx.nn.Linear):
+            raise FineTuneBundleError(
+                f"VeRA delta expects linear module at {entry['path']}, "
+                f"got {type(base).__name__}."
+            )
+        if tuple(base.weight.shape) != tuple(entry["base_weight_shape"]):
+            raise FineTuneBundleError(
+                f"VeRA delta expects path {entry['path']} with weight shape "
+                f"{entry['base_weight_shape']}, got {tuple(base.weight.shape)}."
+            )
+        expected_bias_shape = entry["base_bias_shape"]
+        actual_bias_shape = None if base.bias is None else tuple(base.bias.shape)
+        if actual_bias_shape != expected_bias_shape:
+            raise FineTuneBundleError(
+                f"VeRA delta expects path {entry['path']} with bias shape "
+                f"{expected_bias_shape}, got {actual_bias_shape}."
+            )
+        wrapper = VeRALinear(
+            base,
+            rank=int(entry["rank"]),
+            key=jr.PRNGKey(0),
+            shared=bool(entry.get("shared", True)),
+            frozen_A_init=entry.get("frozen_A_init", "kaiming_uniform"),
+            frozen_B_init=entry.get("frozen_B_init", "kaiming_uniform"),
+            mergeable=bool(entry.get("mergeable", True)),
+            vera_A=entry["vera_A"],
+            vera_B=entry["vera_B"],
+            vera_input_scale=entry["vera_input_scale"],
+            vera_output_scale=entry["vera_output_scale"],
+        )
+        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, wrapper)
+    return updated
+
+
+def _extract_side_tuning_delta(model: PyTree) -> FineTuneBundle:
+    entries = []
+    for path, wrapper in _iter_wrappers(model, SideTunedModel):
+        entries.append(
+            {
+                "path": path_to_str(path),
+                "side": _side_network_state(wrapper.side),
+                "gate": wrapper.ladder.gate,
+                "config": _config_to_dict(wrapper.config),
+            }
+        )
+    return FineTuneBundle(
+        method="side_tuning",
+        schema_version=1,
+        architecture_hash=architecture_hash(strip_side_tuning(model)),
+        adapter_config={"entries": entries},
+    )
+
+
+def _load_side_tuning_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
+    _check_hash(base_model, bundle, "Side-tuning")
+    updated = base_model
+    for entry in bundle.adapter_config.get("entries", ()):
+        path = str_to_path(entry["path"])
+        target = (
+            updated
+            if path == ()
+            else _bundle_get_path(updated, path, method_name="Side-tuning")
+        )
+        wrapper = SideTunedModel(
+            target,
+            _side_network_from_state(entry["side"]),
+            LadderConnection(gate_init=0.0),
+            LSTConfig(**entry["config"]),
+        )
+        wrapper = eqx.tree_at(lambda m: m.ladder.gate, wrapper, entry["gate"])
+        if path == ():
+            updated = wrapper
+        else:
+            updated = eqx.tree_at(
+                lambda tree, p=path: get_path(tree, p),
+                updated,
+                wrapper,
+            )
+    return updated
+
+
+def _side_network_state(side: SideNetwork) -> dict[str, Any]:
+    return {
+        "head": {
+            "activation": side.head.activation,
+            "dropout": side.head.dropout,
+            "layers": [_linear_state(layer) for layer in side.head.layers],
+        }
+    }
+
+
+def _side_network_from_state(state: dict[str, Any]) -> SideNetwork:
+    head_state = state["head"]
+    layers = tuple(_linear_from_state(layer) for layer in head_state["layers"])
+    head = MLPHead(
+        int(layers[0].in_features),
+        int(layers[-1].out_features),
+        key=jr.PRNGKey(0),
+        num_layers=len(layers),
+        activation=head_state["activation"],
+        dropout=float(head_state["dropout"]),
+    )
+    head = eqx.tree_at(lambda m: m.layers, head, layers)
+    return SideNetwork(
+        int(layers[0].in_features),
+        int(layers[-1].out_features),
+        key=jr.PRNGKey(0),
+        head=head,
+    )
+
+
+def _linear_state(linear: eqx.nn.Linear) -> dict[str, Any]:
+    return {
+        "in_features": linear.in_features,
+        "out_features": linear.out_features,
+        "use_bias": linear.bias is not None,
+        "weight": linear.weight,
+        "bias": linear.bias,
+    }
+
+
+def _linear_from_state(state: dict[str, Any]) -> eqx.nn.Linear:
+    linear = eqx.nn.Linear(
+        int(state["in_features"]),
+        int(state["out_features"]),
+        use_bias=bool(state["use_bias"]),
+        key=jr.PRNGKey(0),
+    )
+    linear = eqx.tree_at(lambda layer: layer.weight, linear, state["weight"])
+    if state["bias"] is not None:
+        linear = eqx.tree_at(lambda layer: layer.bias, linear, state["bias"])
+    return linear
 
 
 def _extract_dora_delta(model: PyTree) -> FineTuneBundle:
@@ -434,7 +698,10 @@ def _extract_dora_delta(model: PyTree) -> FineTuneBundle:
                 "rank": wrapper.rank,
                 "alpha": wrapper.alpha,
                 "scaling": wrapper.scaling_mode,
+                "dropout": wrapper.dropout,
                 "eps": wrapper.eps,
+                "train_base": wrapper.train_base,
+                "mergeable": wrapper.mergeable,
                 "lora_A": wrapper.lora_A,
                 "lora_B": wrapper.lora_B,
                 "magnitude": wrapper.magnitude,
@@ -455,9 +722,14 @@ def _load_dora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
     updated = base_model
     for entry in bundle.adapter_config.get("entries", ()):
         path = str_to_path(entry["path"])
-        base = get_path(updated, path)
+        base = _bundle_get_path(updated, path, method_name="DoRA")
+        if not isinstance(base, eqx.nn.Linear):
+            raise FineTuneBundleError(
+                f"DoRA delta expects linear module at {entry['path']}, "
+                f"got {type(base).__name__}."
+            )
         if tuple(base.weight.shape) != tuple(entry["weight_shape"]):
-            raise ValueError(
+            raise FineTuneBundleError(
                 f"DoRA delta expects path {entry['path']} with shape "
                 f"{entry['weight_shape']}, got {tuple(base.weight.shape)}."
             )
@@ -467,7 +739,10 @@ def _load_dora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
             rank=int(entry["rank"]),
             alpha=float(entry["alpha"]),
             scaling=entry["scaling"],
+            dropout=float(entry.get("dropout", 0.0)),
             eps=float(entry["eps"]),
+            train_base=bool(entry.get("train_base", False)),
+            mergeable=bool(entry.get("mergeable", True)),
             key=jr.PRNGKey(0),
             lora_A=entry["lora_A"],
             lora_B=entry["lora_B"],
@@ -480,7 +755,7 @@ def _load_dora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
 def _check_hash(base_model: PyTree, bundle: FineTuneBundle, method_name: str) -> None:
     actual_hash = architecture_hash(base_model)
     if bundle.architecture_hash and bundle.architecture_hash != actual_hash:
-        raise ValueError(
+        raise FineTuneBundleError(
             f"{method_name} delta architecture hash mismatch: "
             f"expected {bundle.architecture_hash}, got {actual_hash}."
         )
@@ -488,10 +763,33 @@ def _check_hash(base_model: PyTree, bundle: FineTuneBundle, method_name: str) ->
 
 def _check_schema(bundle: FineTuneBundle) -> None:
     if bundle.schema_version != 1:
-        raise ValueError(
+        raise FineTuneBundleError(
             f"Unsupported fine-tuning bundle schema_version={bundle.schema_version!r}; "
             "expected 1."
         )
+
+
+def _bundle_get_path(model: PyTree, path: tuple[str | int, ...], *, method_name: str):
+    try:
+        return get_path(model, path)
+    except (AttributeError, IndexError, KeyError, TypeError) as error:
+        raise FineTuneBundleError(
+            f"{method_name} delta expects path {path_to_str(path)}, "
+            "but the base model has no matching leaf."
+        ) from error
+
+
+def _scale_shift_dim(module: eqx.Module) -> int:
+    if isinstance(module, eqx.nn.Linear):
+        return int(module.out_features)
+    if hasattr(module, "shape"):
+        shape = module.shape
+        return int(shape[0] if isinstance(shape, tuple) else shape)
+    if hasattr(module, "weight"):
+        return int(module.weight.shape[0])
+    raise FineTuneBundleError(
+        f"Scale/shift delta cannot infer target dimension for {type(module).__name__}."
+    )
 
 
 def _iter_wrappers(model: PyTree, wrapper_type: type):
@@ -508,28 +806,70 @@ def _iter_wrappers(model: PyTree, wrapper_type: type):
 def _resolve_save_delta_args(
     args,
     *,
+    model: PyTree | None,
+    path: str | Path | None,
     base_model: PyTree | None,
     spec: Any | None,
 ) -> tuple[PyTree, str | Path, PyTree | None, Any | None]:
-    if len(args) < 2:
-        raise TypeError("save_delta requires a model and path.")
-
-    if _is_pathlike(args[0]):
-        path = args[0]
-        model = args[1]
-        resolved_base_model = args[2] if len(args) >= 3 else base_model
-        resolved_spec = args[3] if len(args) >= 4 else spec
-    else:
-        model = args[0]
-        path = args[1]
-        resolved_base_model = args[2] if len(args) >= 3 else base_model
-        resolved_spec = args[3] if len(args) >= 4 else spec
+    resolved_model = model
+    resolved_path = path
+    resolved_base_model = base_model
+    resolved_spec = spec
 
     if len(args) > 4:
         raise TypeError("save_delta accepts at most four positional arguments.")
-    if not _is_pathlike(path):
+
+    if args:
+        if _is_pathlike(args[0]):
+            if resolved_path is not None:
+                raise TypeError("save_delta path was provided both positionally and by keyword.")
+            resolved_path = args[0]
+            if len(args) >= 2:
+                if resolved_model is not None:
+                    raise TypeError(
+                        "save_delta model was provided both positionally and by keyword."
+                    )
+                resolved_model = args[1]
+            if len(args) >= 3:
+                if resolved_base_model is not None:
+                    raise TypeError(
+                        "save_delta base_model was provided both positionally and by keyword."
+                    )
+                resolved_base_model = args[2]
+            if len(args) >= 4:
+                if resolved_spec is not None:
+                    raise TypeError(
+                        "save_delta spec was provided both positionally and by keyword."
+                    )
+                resolved_spec = args[3]
+        else:
+            if resolved_model is not None:
+                raise TypeError("save_delta model was provided both positionally and by keyword.")
+            resolved_model = args[0]
+            if len(args) >= 2:
+                if resolved_path is not None:
+                    raise TypeError(
+                        "save_delta path was provided both positionally and by keyword."
+                    )
+                resolved_path = args[1]
+            if len(args) >= 3:
+                if resolved_base_model is not None:
+                    raise TypeError(
+                        "save_delta base_model was provided both positionally and by keyword."
+                    )
+                resolved_base_model = args[2]
+            if len(args) >= 4:
+                if resolved_spec is not None:
+                    raise TypeError(
+                        "save_delta spec was provided both positionally and by keyword."
+                    )
+                resolved_spec = args[3]
+
+    if resolved_model is None or resolved_path is None:
+        raise TypeError("save_delta requires a model and path.")
+    if not _is_pathlike(resolved_path):
         raise TypeError("save_delta path must be a str or pathlib.Path.")
-    return model, path, resolved_base_model, resolved_spec
+    return resolved_model, resolved_path, resolved_base_model, resolved_spec
 
 
 def _resolve_load_delta_args(args) -> tuple[PyTree, str | Path | FineTuneBundle]:
@@ -553,16 +893,27 @@ def _enrich_bundle(
     spec: Any | None,
     user_metadata: dict[str, Any] | None,
 ) -> FineTuneBundle:
-    stats_model = base_model if base_model is not None else model
-    stats = _bundle_stats(model, stats_model, bundle)
+    metadata_model = (
+        base_model if base_model is not None else _metadata_base_model(model, bundle.method)
+    )
+    stats = _bundle_stats(model, metadata_model, bundle)
     if spec is not None:
         stats["spec"] = _metadata_repr(spec)
     if user_metadata:
         stats["user_metadata"] = user_metadata
-    metadata_model = base_model if base_model is not None else model
-    selector_spec = bundle.selector_spec or _selector_spec_from_spec(spec) or _selector_spec(bundle)
+    selector_spec = (
+        bundle.selector_spec
+        or _selector_spec_from_spec(spec)
+        or _selector_spec(bundle)
+    )
+    base_checkpoint_id = bundle.base_checkpoint_id
+    if base_checkpoint_id is None and (
+        base_model is not None or _can_infer_exact_base_checkpoint(model, bundle.method)
+    ):
+        base_checkpoint_id = _checkpoint_hash(metadata_model)
     return replace(
         bundle,
+        base_checkpoint_id=base_checkpoint_id,
         base_model_name=bundle.base_model_name or _model_name(metadata_model),
         base_model_config=bundle.base_model_config or _model_config(metadata_model),
         equimo_version=bundle.equimo_version or _equimo_version(),
@@ -598,7 +949,78 @@ def _param_count(tree: PyTree) -> int:
     )
 
 
+def _checkpoint_hash(tree: PyTree) -> str:
+    digest = hashlib.sha256()
+    for key_path, leaf in jtu.tree_leaves_with_path(eqx.filter(tree, eqx.is_inexact_array)):
+        if not eqx.is_inexact_array(leaf):
+            continue
+        array = np.asarray(leaf)
+        digest.update(path_to_str(key_path_to_path(key_path)).encode())
+        digest.update(str(array.shape).encode())
+        digest.update(str(array.dtype).encode())
+        digest.update(array.tobytes())
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _check_base_checkpoint(base_model: PyTree, bundle: FineTuneBundle) -> None:
+    if not bundle.base_checkpoint_id or not bundle.base_checkpoint_id.startswith("sha256:"):
+        return
+    if bundle.architecture_hash and architecture_hash(base_model) != bundle.architecture_hash:
+        return
+    actual = _checkpoint_hash(base_model)
+    if actual != bundle.base_checkpoint_id:
+        raise FineTuneBundleError(
+            f"{bundle.method} delta base checkpoint mismatch: "
+            f"expected {bundle.base_checkpoint_id}, got {actual}."
+        )
+
+
+def _metadata_base_model(model: PyTree, method: str) -> PyTree:
+    if method == "lora":
+        return strip_lora(model)
+    if method == "adapter":
+        return strip_adapters(model)
+    if method == "prompt" and isinstance(model, PromptedModel):
+        return model.base
+    if method == "prefix" and isinstance(model, PrefixTunedModel):
+        return strip_prefixes(model.base)
+    if method == "scale_shift":
+        return _strip_wrappers(model, ScaleShiftWrapper)
+    if method == "ia3":
+        return _strip_wrappers(model, IA3Linear)
+    if method == "vera":
+        return strip_vera(model)
+    if method == "side_tuning":
+        return strip_side_tuning(model)
+    if method == "dora":
+        return _strip_wrappers(model, DoRALinear)
+    return model
+
+
+def _can_infer_exact_base_checkpoint(model: PyTree, method: str) -> bool:
+    if method != "lora":
+        return True
+    return all(module.base_weight_delta is None for _, module in iter_lora_modules(model))
+
+
+def _strip_wrappers(model: PyTree, wrapper_type: type) -> PyTree:
+    stripped = model
+    for path, wrapper in _iter_wrappers(stripped, wrapper_type):
+        base = getattr(wrapper, "base", None)
+        if base is None:
+            continue
+        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, base)
+    return stripped
+
+
 def _delta_param_count(bundle: FineTuneBundle) -> int:
+    if bundle.method == "vera":
+        return int(
+            sum(
+                entry["vera_input_scale"].size + entry["vera_output_scale"].size
+                for entry in bundle.adapter_config.get("entries", ())
+            )
+        )
     leaves = jtu.tree_leaves(bundle.adapter_config)
     return int(sum(leaf.size for leaf in leaves if eqx.is_inexact_array(leaf)))
 
@@ -661,8 +1083,16 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
     }
 
 
-def _prompt_config_from_dict(config: dict[str, Any]) -> PromptConfig:
-    return PromptConfig(**config)
+def _prompt_config_from_dict(
+    config: dict[str, Any],
+    class_name: str = "PromptConfig",
+) -> PromptConfig:
+    config_type = {
+        "PromptConfig": PromptConfig,
+        "SoftPromptConfig": SoftPromptConfig,
+        "DeepPromptConfig": DeepPromptConfig,
+    }.get(class_name, PromptConfig)
+    return config_type(**config)
 
 
 def _prefix_config_from_dict(config: dict[str, Any]) -> PrefixConfig:
@@ -728,7 +1158,10 @@ def _metadata_scalar(value: Any) -> Any:
 
 
 def _is_mergeable(bundle: FineTuneBundle) -> bool:
-    if bundle.method == "lora":
+    if bundle.method in {"ia3", "lora", "scale_shift"}:
+        entries = bundle.adapter_config.get("entries", ())
+        return all(bool(entry.get("mergeable", True)) for entry in entries)
+    if bundle.method == "vera":
         entries = bundle.adapter_config.get("entries", ())
         return all(bool(entry.get("mergeable", True)) for entry in entries)
     return bundle.method == "dora"

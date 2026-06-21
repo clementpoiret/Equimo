@@ -263,6 +263,57 @@ class TokenClassificationHead(eqx.Module):
         return self.head(x)
 
 
+class DenseFeatureAdapter(eqx.Module):
+    """Project dense or token features along the last axis."""
+
+    projection: eqx.nn.Linear
+    activation: ActivationName = eqx.field(static=True)
+    dropout: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        *,
+        key: jax.Array,
+        activation: ActivationName = "identity",
+        dropout: float = 0.0,
+        bias: bool = True,
+        weight_init: str = "trunc_normal_0.02",
+        bias_init: float = 0.0,
+    ):
+        self.projection = _init_linear(
+            eqx.nn.Linear(
+                in_features,
+                out_features,
+                use_bias=bias,
+                key=key,
+            ),
+            key,
+            weight_init=weight_init,
+            bias_init=bias_init,
+        )
+        self.activation = activation
+        self.dropout = dropout
+
+    def __call__(
+        self,
+        x: jax.Array,
+        *,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+    ) -> jax.Array:
+        y = _apply_last_axis(self.projection, x)
+        y = _activation(self.activation)(y)
+        if self.dropout > 0.0 and not inference:
+            if key is None:
+                raise ValueError(
+                    "A PRNG key is required when DenseFeatureAdapter dropout is active."
+                )
+            y = _dropout(y, self.dropout, key)
+        return y
+
+
 def _init_linear(
     linear: eqx.nn.Linear,
     key: jax.Array,
@@ -330,6 +381,7 @@ def _logit(p: float) -> float:
 __all__ = (
     "CTCHead",
     "ContrastiveProjectionHead",
+    "DenseFeatureAdapter",
     "IdentityHead",
     "LinearHead",
     "MLPHead",

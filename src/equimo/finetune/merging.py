@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
@@ -9,9 +10,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
+import numpy as np
 
 from ._typing import PyTree
-from .paths import key_path_to_path
+from .paths import key_path_to_path, path_to_str
 
 
 @dataclass(frozen=True)
@@ -19,7 +21,9 @@ class WiSEFTConfig:
     """Configuration for WiSE-FT interpolation."""
 
     alpha: float = 0.5
+    mask: str = "shared_backbone"
     include_head: bool = False
+    strict_shapes: bool = True
     require_same_architecture_hash: bool = True
 
 
@@ -29,6 +33,19 @@ class UniformSoupConfig:
 
     weights: tuple[float, ...] | str = "equal"
     require_same_base_hash: bool = True
+    strict_shapes: bool = True
+    mask: str = "floating_compatible_leaves"
+
+
+@dataclass(frozen=True)
+class GreedySoupConfig:
+    """Configuration metadata for greedy model soups."""
+
+    sort_by: str = "validation_score_desc"
+    start: str = "best_model"
+    add_if_improves: bool = True
+    min_delta: float = 0.0
+    require_same_base_hash: bool = True
 
 
 @dataclass(frozen=True)
@@ -36,6 +53,7 @@ class TaskVectorConfig:
     """Configuration for task-vector extraction/application."""
 
     scale: float = 1.0
+    mask: str = "floating_backbone"
     include_head: bool = False
     require_same_base_hash: bool = True
 
@@ -46,6 +64,8 @@ class TaskVector:
 
     delta: PyTree
     include_head: bool = False
+    base_architecture_hash: str = ""
+    base_checkpoint_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -53,6 +73,10 @@ class TIESConfig:
     """TIES merge metadata."""
 
     density: float = 0.20
+    trim_by: str = "magnitude"
+    sign_election: str = "sum"
+    merge: str = "disjoint_mean"
+    require_same_base_hash: bool = True
 
 
 @dataclass(frozen=True)
@@ -61,6 +85,8 @@ class DAREConfig:
 
     drop_rate: float = 0.90
     rescale: bool = True
+    seed_required: bool = True
+    apply_to: str = "task_vector"
 
 
 @dataclass(frozen=True)
@@ -69,13 +95,18 @@ class BreadcrumbsConfig:
 
     bottom_fraction: float = 0.05
     top_fraction: float = 0.01
+    rescale: bool = False
+    require_same_base_hash: bool = True
 
 
 @dataclass(frozen=True)
 class FisherMergeConfig:
     """Fisher merge metadata."""
 
+    fisher: str = "diagonal"
+    normalize_fisher: bool = True
     eps: float = 1e-8
+    require_statistics: bool = True
 
 
 @dataclass(frozen=True)
@@ -83,6 +114,8 @@ class RegMeanConfig:
     """RegMean merge metadata."""
 
     ridge: float = 1e-5
+    require_input_covariances: bool = True
+    require_same_architecture_hash: bool = True
 
 
 def interpolate_models(
@@ -91,8 +124,20 @@ def interpolate_models(
     *,
     alpha: float = 0.5,
     include_head: bool = False,
+    config: WiSEFTConfig | None = None,
 ) -> PyTree:
     """Interpolate compatible model leaves."""
+
+    strict_shapes = True
+    if config is not None:
+        alpha = config.alpha
+        include_head = config.include_head
+        strict_shapes = config.strict_shapes
+        if config.require_same_architecture_hash:
+            _check_same_architecture(
+                (base_model, tuned_model),
+                include_head=include_head,
+            )
 
     return jtu.tree_map_with_path(
         lambda path, base, tuned: _interpolate_leaf(
@@ -101,6 +146,7 @@ def interpolate_models(
             tuned,
             alpha=alpha,
             include_head=include_head,
+            strict_shapes=strict_shapes,
         ),
         base_model,
         tuned_model,
@@ -112,11 +158,22 @@ def uniform_soup(
     *,
     weights: Sequence[float] | str = "equal",
     include_head: bool = True,
+    config: UniformSoupConfig | None = None,
 ) -> PyTree:
     """Return the weighted arithmetic mean of compatible model leaves."""
 
     if not models:
         raise ValueError("uniform_soup requires at least one model.")
+    strict_shapes = True
+    if config is not None:
+        weights = config.weights
+        strict_shapes = config.strict_shapes
+        _check_same_base_metadata(
+            models,
+            require_same_base_hash=config.require_same_base_hash,
+        )
+        if config.strict_shapes:
+            _check_same_architecture(models, include_head=include_head)
     resolved_weights = _resolve_weights(len(models), weights)
     first, *rest = models
     return jtu.tree_map_with_path(
@@ -125,6 +182,7 @@ def uniform_soup(
             (leaf, *other_leaves),
             resolved_weights,
             include_head=include_head,
+            strict_shapes=strict_shapes,
         ),
         first,
         *rest,
@@ -136,11 +194,35 @@ def greedy_soup(
     score_fn: Callable[[PyTree], float],
     *,
     higher_is_better: bool = True,
+    config: GreedySoupConfig | None = None,
 ) -> tuple[PyTree, tuple[int, ...]]:
     """Greedily add models when the user-provided score improves."""
 
     if not models:
         raise ValueError("greedy_soup requires at least one model.")
+    min_delta = 0.0 if config is None else config.min_delta
+    add_if_improves = True if config is None else config.add_if_improves
+    if config is not None:
+        _check_same_base_metadata(
+            models,
+            require_same_base_hash=config.require_same_base_hash,
+        )
+        if config.sort_by != "validation_score_desc":
+            raise ValueError(
+                "GreedySoupConfig.sort_by currently supports "
+                "'validation_score_desc'."
+            )
+        if config.start != "best_model":
+            raise ValueError(
+                "GreedySoupConfig.start currently supports 'best_model'."
+            )
+        return _greedy_soup_from_best(
+            models,
+            score_fn,
+            higher_is_better=higher_is_better,
+            min_delta=min_delta,
+            add_if_improves=add_if_improves,
+        )
 
     selected = [0]
     soup = models[0]
@@ -149,8 +231,12 @@ def greedy_soup(
     for index, candidate in enumerate(models[1:], start=1):
         proposal = uniform_soup([soup, candidate])
         score = score_fn(proposal)
-        improves = score >= best_score if higher_is_better else score <= best_score
-        if improves:
+        improves = (
+            score >= best_score + min_delta
+            if higher_is_better
+            else score <= best_score - min_delta
+        )
+        if add_if_improves and improves:
             soup = proposal
             best_score = score
             selected.append(index)
@@ -163,8 +249,17 @@ def task_vector(
     tuned_model: PyTree,
     *,
     include_head: bool = False,
+    config: TaskVectorConfig | None = None,
 ) -> TaskVector:
     """Extract a task vector from compatible model leaves."""
+
+    if config is not None:
+        include_head = config.include_head
+        if config.require_same_base_hash:
+            _check_same_architecture(
+                (base_model, tuned_model),
+                include_head=include_head,
+            )
 
     delta = jtu.tree_map_with_path(
         lambda path, base, tuned: _delta_leaf(
@@ -176,7 +271,12 @@ def task_vector(
         base_model,
         tuned_model,
     )
-    return TaskVector(delta=delta, include_head=include_head)
+    return TaskVector(
+        delta=delta,
+        include_head=include_head,
+        base_architecture_hash=_architecture_hash(base_model, include_head=include_head),
+        base_checkpoint_hash=_checkpoint_hash(base_model, include_head=include_head),
+    )
 
 
 def apply_task_vector(
@@ -184,9 +284,13 @@ def apply_task_vector(
     vector: TaskVector,
     *,
     scale: float = 1.0,
+    config: TaskVectorConfig | None = None,
 ) -> PyTree:
     """Apply a task vector to a compatible base model."""
 
+    if config is not None:
+        scale = config.scale
+    _check_task_vector_base(base_model, vector)
     return jtu.tree_map(
         lambda base, delta: base + delta * scale
         if eqx.is_inexact_array(base) and eqx.is_inexact_array(delta)
@@ -196,16 +300,35 @@ def apply_task_vector(
     )
 
 
-def ties_merge(vectors: Sequence[TaskVector], *, density: float = 0.20) -> TaskVector:
+def ties_merge(
+    vectors: Sequence[TaskVector],
+    *,
+    density: float = 0.20,
+    config: TIESConfig | None = None,
+) -> TaskVector:
     """Merge task vectors with a simple TIES-style sign consensus."""
 
     if not vectors:
         raise ValueError("ties_merge requires at least one task vector.")
+    if config is not None:
+        density = config.density
+        _check_vector_compatibility(
+            vectors,
+            require_same_base_hash=config.require_same_base_hash,
+        )
+    else:
+        _check_vector_compatibility(vectors, require_same_base_hash=True)
     merged = _merge_deltas(
         [vector.delta for vector in vectors],
         lambda leaves: _ties_leaf(leaves, density),
     )
-    return TaskVector(merged, include_head=all(vector.include_head for vector in vectors))
+    first = vectors[0]
+    return TaskVector(
+        merged,
+        include_head=all(vector.include_head for vector in vectors),
+        base_architecture_hash=first.base_architecture_hash,
+        base_checkpoint_hash=first.base_checkpoint_hash,
+    )
 
 
 def dare_task_vector(
@@ -214,16 +337,25 @@ def dare_task_vector(
     drop_rate: float = 0.90,
     key: jax.Array,
     rescale: bool = True,
+    config: DAREConfig | None = None,
 ) -> TaskVector:
     """Apply a static DARE mask to a task vector."""
 
+    if config is not None:
+        drop_rate = config.drop_rate
+        rescale = config.rescale
     leaves, treedef = jtu.tree_flatten(vector.delta)
     keys = jax.random.split(key, len(leaves))
     masked = [
         _dare_leaf(leaf, drop_rate=drop_rate, key=leaf_key, rescale=rescale)
         for leaf, leaf_key in zip(leaves, keys, strict=True)
     ]
-    return TaskVector(jtu.tree_unflatten(treedef, masked), include_head=vector.include_head)
+    return TaskVector(
+        jtu.tree_unflatten(treedef, masked),
+        include_head=vector.include_head,
+        base_architecture_hash=vector.base_architecture_hash,
+        base_checkpoint_hash=vector.base_checkpoint_hash,
+    )
 
 
 def breadcrumbs_task_vector(
@@ -231,9 +363,13 @@ def breadcrumbs_task_vector(
     *,
     bottom_fraction: float = 0.05,
     top_fraction: float = 0.01,
+    config: BreadcrumbsConfig | None = None,
 ) -> TaskVector:
     """Remove the smallest and largest task-vector deltas by magnitude."""
 
+    if config is not None:
+        bottom_fraction = config.bottom_fraction
+        top_fraction = config.top_fraction
     return TaskVector(
         jtu.tree_map(
             lambda leaf: _breadcrumbs_leaf(
@@ -246,6 +382,8 @@ def breadcrumbs_task_vector(
             vector.delta,
         ),
         include_head=vector.include_head,
+        base_architecture_hash=vector.base_architecture_hash,
+        base_checkpoint_hash=vector.base_checkpoint_hash,
     )
 
 
@@ -254,9 +392,14 @@ def fisher_merge(
     fishers: Sequence[PyTree] | None = None,
     *,
     eps: float = 1e-8,
+    config: FisherMergeConfig | None = None,
 ) -> PyTree:
     """Fisher-weighted merge requiring external Fisher statistics."""
 
+    if config is not None:
+        eps = config.eps
+        if config.fisher != "diagonal":
+            raise ValueError("fisher_merge currently supports fisher='diagonal'.")
     if fishers is None:
         raise ValueError("fisher_merge requires external Fisher statistics.")
     if len(models) != len(fishers):
@@ -281,29 +424,100 @@ def regmean_merge(
     covariances: Sequence[PyTree] | None = None,
     *,
     ridge: float = 1e-5,
+    config: RegMeanConfig | None = None,
 ) -> PyTree:
     """RegMean-style merge requiring external covariance statistics."""
 
+    if config is not None:
+        ridge = config.ridge
+        if config.require_same_architecture_hash:
+            _check_same_architecture(models, include_head=True)
     if covariances is None:
         raise ValueError("regmean_merge requires external covariance statistics.")
-    del ridge
-    return uniform_soup(models)
+    if len(models) != len(covariances):
+        raise ValueError("models and covariances must have the same length.")
+    first_model, *other_models = models
+    first_covariance, *other_covariances = covariances
+    return jtu.tree_map(
+        lambda model_leaf, *rest: _regmean_leaf(
+            (model_leaf, *rest[: len(other_models)]),
+            (rest[len(other_models)], *rest[len(other_models) + 1 :]),
+            ridge=ridge,
+        ),
+        first_model,
+        *other_models,
+        first_covariance,
+        *other_covariances,
+    )
 
 
-def _interpolate_leaf(path, base, tuned, *, alpha: float, include_head: bool):
-    if not _mergeable(path, base, tuned, include_head=include_head):
+def _greedy_soup_from_best(
+    models: Sequence[PyTree],
+    score_fn: Callable[[PyTree], float],
+    *,
+    higher_is_better: bool,
+    min_delta: float,
+    add_if_improves: bool,
+) -> tuple[PyTree, tuple[int, ...]]:
+    scores = tuple(float(score_fn(model)) for model in models)
+    order = tuple(
+        sorted(
+            range(len(models)),
+            key=lambda index: scores[index],
+            reverse=higher_is_better,
+        )
+    )
+    selected = [order[0]]
+    soup = models[order[0]]
+    best_score = scores[order[0]]
+
+    for index in order[1:]:
+        candidate = models[index]
+        proposal = uniform_soup([soup, candidate])
+        score = float(score_fn(proposal))
+        improves = (
+            score >= best_score + min_delta
+            if higher_is_better
+            else score <= best_score - min_delta
+        )
+        if add_if_improves and improves:
+            soup = proposal
+            best_score = score
+            selected.append(index)
+
+    return soup, tuple(selected)
+
+
+def _interpolate_leaf(
+    path,
+    base,
+    tuned,
+    *,
+    alpha: float,
+    include_head: bool,
+    strict_shapes: bool,
+):
+    if not _mergeable(
+        path,
+        base,
+        tuned,
+        include_head=include_head,
+        strict_shapes=strict_shapes,
+    ):
         return base
     return (1.0 - alpha) * base + alpha * tuned
 
 
-def _soup_leaf(path, leaves, weights, *, include_head: bool):
+def _soup_leaf(path, leaves, weights, *, include_head: bool, strict_shapes: bool = True):
     first = leaves[0]
-    if not eqx.is_inexact_array(first) or (not include_head and "head" in path):
+    if not eqx.is_inexact_array(first) or (not include_head and _is_head_path(path)):
         return first
     total = jnp.zeros_like(first)
     for leaf, weight in zip(leaves, weights, strict=True):
         if not eqx.is_inexact_array(leaf) or leaf.shape != first.shape:
-            raise ValueError("uniform_soup encountered incompatible leaves.")
+            if strict_shapes:
+                raise ValueError("uniform_soup encountered incompatible leaves.")
+            return first
         total = total + leaf * weight
     return total
 
@@ -314,12 +528,16 @@ def _delta_leaf(path, base, tuned, *, include_head: bool):
     return tuned - base
 
 
-def _mergeable(path, base, tuned, *, include_head: bool) -> bool:
+def _mergeable(path, base, tuned, *, include_head: bool, strict_shapes: bool = True) -> bool:
     if not eqx.is_inexact_array(base) or not eqx.is_inexact_array(tuned):
         return False
+    if not include_head and _is_head_path(path):
+        return False
     if base.shape != tuned.shape:
+        if not strict_shapes:
+            return False
         raise ValueError("Cannot merge leaves with different shapes.")
-    return include_head or "head" not in path
+    return True
 
 
 def _resolve_weights(count: int, weights: Sequence[float] | str) -> tuple[float, ...]:
@@ -380,6 +598,163 @@ def _fisher_leaf(model_leaves, fisher_leaves, *, eps: float):
     return numerator / jnp.maximum(denominator, eps)
 
 
+def _regmean_leaf(model_leaves, covariance_leaves, *, ridge: float):
+    first = model_leaves[0]
+    if not eqx.is_inexact_array(first):
+        return first
+    if first.ndim == 2 and _all_input_covariances(first, covariance_leaves):
+        covariance_sum = jnp.zeros_like(covariance_leaves[0])
+        weighted_sum = jnp.zeros_like(first)
+        for model_leaf, covariance in zip(model_leaves, covariance_leaves, strict=True):
+            covariance_sum = covariance_sum + covariance
+            weighted_sum = weighted_sum + model_leaf @ covariance
+        eye = jnp.eye(covariance_sum.shape[0], dtype=covariance_sum.dtype)
+        system = covariance_sum + ridge * eye
+        return jnp.linalg.solve(system.T, weighted_sum.T).T
+    if all(
+        eqx.is_inexact_array(covariance) and covariance.shape == first.shape
+        for covariance in covariance_leaves
+    ):
+        return _fisher_leaf(model_leaves, covariance_leaves, eps=max(ridge, 1e-12))
+    return _soup_leaf(
+        (),
+        model_leaves,
+        _resolve_weights(len(model_leaves), "equal"),
+        include_head=True,
+    )
+
+
+def _all_input_covariances(first, covariance_leaves) -> bool:
+    input_dim = first.shape[1]
+    return all(
+        eqx.is_inexact_array(covariance)
+        and covariance.shape == (input_dim, input_dim)
+        for covariance in covariance_leaves
+    )
+
+
+def _check_same_architecture(
+    models: Sequence[PyTree],
+    *,
+    include_head: bool,
+) -> None:
+    hashes = tuple(_architecture_hash(model, include_head=include_head) for model in models)
+    if len(set(hashes)) > 1:
+        raise ValueError("Models must have the same architecture for this merge operation.")
+
+
+def _check_same_base_metadata(
+    models: Sequence[PyTree],
+    *,
+    require_same_base_hash: bool,
+) -> None:
+    if not require_same_base_hash:
+        return
+    hashes = tuple(_base_hash_metadata(model) for model in models)
+    present = tuple(hash_value for hash_value in hashes if hash_value)
+    if not present:
+        return
+    if len(present) != len(models):
+        raise ValueError(
+            "Same-base compatibility requires base checkpoint metadata on every model."
+        )
+    if len(set(present)) > 1:
+        raise ValueError("Models must declare the same base checkpoint hash.")
+
+
+def _check_task_vector_base(base_model: PyTree, vector: TaskVector) -> None:
+    if vector.base_architecture_hash:
+        actual_architecture = _architecture_hash(
+            base_model,
+            include_head=vector.include_head,
+        )
+        if actual_architecture != vector.base_architecture_hash:
+            raise ValueError(
+                "Task vector architecture mismatch: expected "
+                f"{vector.base_architecture_hash}, got {actual_architecture}."
+            )
+    if vector.base_checkpoint_hash:
+        actual_checkpoint = _checkpoint_hash(base_model, include_head=vector.include_head)
+        if actual_checkpoint != vector.base_checkpoint_hash:
+            raise ValueError(
+                "Task vector base checkpoint mismatch: expected "
+                f"{vector.base_checkpoint_hash}, got {actual_checkpoint}."
+            )
+
+
+def _check_vector_compatibility(
+    vectors: Sequence[TaskVector],
+    *,
+    require_same_base_hash: bool,
+) -> None:
+    architecture_hashes = {
+        vector.base_architecture_hash
+        for vector in vectors
+        if vector.base_architecture_hash
+    }
+    if len(architecture_hashes) > 1:
+        raise ValueError("Task vectors must share the same base architecture.")
+    if not require_same_base_hash:
+        return
+    checkpoint_hashes = {
+        vector.base_checkpoint_hash
+        for vector in vectors
+        if vector.base_checkpoint_hash
+    }
+    if len(checkpoint_hashes) > 1:
+        raise ValueError("Task vectors must share the same base checkpoint.")
+
+
+def _architecture_hash(model: PyTree, *, include_head: bool) -> str:
+    digest = hashlib.sha256()
+    for key_path, leaf in _iter_hashable_leaves(model, include_head=include_head):
+        array = jnp.asarray(leaf)
+        digest.update(path_to_str(key_path_to_path(key_path)).encode())
+        digest.update(str(tuple(array.shape)).encode())
+        digest.update(str(array.dtype).encode())
+    return digest.hexdigest()
+
+
+def _checkpoint_hash(model: PyTree, *, include_head: bool) -> str:
+    digest = hashlib.sha256()
+    for key_path, leaf in _iter_hashable_leaves(model, include_head=include_head):
+        array = np.asarray(leaf)
+        digest.update(path_to_str(key_path_to_path(key_path)).encode())
+        digest.update(str(tuple(array.shape)).encode())
+        digest.update(str(array.dtype).encode())
+        digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def _iter_hashable_leaves(model: PyTree, *, include_head: bool):
+    filtered = eqx.filter(model, eqx.is_inexact_array)
+    for key_path, leaf in jtu.tree_leaves_with_path(filtered):
+        path = key_path_to_path(key_path)
+        if not eqx.is_inexact_array(leaf):
+            continue
+        if not include_head and _is_head_path(path):
+            continue
+        yield key_path, leaf
+
+
+def _is_head_path(path) -> bool:
+    return any(str(part) in {"head", "classifier"} for part in path)
+
+
+def _base_hash_metadata(model: PyTree) -> str | None:
+    for name in ("base_checkpoint_id", "base_checkpoint_hash", "base_model_hash"):
+        value = getattr(model, name, None)
+        if isinstance(value, str) and value:
+            return value
+    metadata = getattr(model, "metadata", None)
+    if isinstance(metadata, dict):
+        for name in ("base_checkpoint_id", "base_checkpoint_hash", "base_model_hash"):
+            value = metadata.get(name)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 __all__ = (
     "TaskVector",
     "TaskVectorConfig",
@@ -389,6 +764,7 @@ __all__ = (
     "BreadcrumbsConfig",
     "DAREConfig",
     "FisherMergeConfig",
+    "GreedySoupConfig",
     "RegMeanConfig",
     "apply_task_vector",
     "breadcrumbs_task_vector",

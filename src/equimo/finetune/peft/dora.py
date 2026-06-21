@@ -26,13 +26,38 @@ class DoRAConfig:
     rank: int = 8
     alpha: float = 16.0
     scaling: ScalingMode = "alpha_over_r"
+    dropout: float = 0.0
+    init: str = "kaiming_A_zero_B"
     magnitude_init: str = "column_norm"
     eps: float = 1e-6
+    train_base: bool = False
+    mergeable: bool = True
     target: TargetSpec = field(
         default_factory=lambda: TargetSpec(
             tags=("attention.qkv", "attention.proj"),
         )
     )
+
+
+@dataclass(frozen=True)
+class DoRARecipe:
+    """Recipe metadata for DoRA fine-tuning."""
+
+    rank: int = 8
+    alpha: float = 16.0
+    dropout: float = 0.05
+    target: tuple[str, ...] = ("attention.qkv", "attention.proj")
+    external_lr_hint: str = "slightly_lower_than_lora"
+
+    def to_config(self) -> DoRAConfig:
+        """Convert recipe metadata to a DoRA module config."""
+
+        return DoRAConfig(
+            rank=self.rank,
+            alpha=self.alpha,
+            dropout=self.dropout,
+            target=TargetSpec(tags=self.target),
+        )
 
 
 class DoRALinear(eqx.Module):
@@ -45,7 +70,10 @@ class DoRALinear(eqx.Module):
     rank: int = eqx.field(static=True)
     alpha: float = eqx.field(static=True)
     scaling_mode: ScalingMode = eqx.field(static=True)
+    dropout: float = eqx.field(static=True)
     eps: float = eqx.field(static=True)
+    train_base: bool = eqx.field(static=True)
+    mergeable: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -54,8 +82,12 @@ class DoRALinear(eqx.Module):
         rank: int,
         alpha: float,
         scaling: ScalingMode,
+        dropout: float,
         eps: float,
+        train_base: bool,
+        mergeable: bool,
         key: jax.Array,
+        magnitude_init: str = "column_norm",
         lora_A: jax.Array | None = None,
         lora_B: jax.Array | None = None,
         magnitude: jax.Array | None = None,
@@ -64,13 +96,16 @@ class DoRALinear(eqx.Module):
         self.rank = rank
         self.alpha = alpha
         self.scaling_mode = scaling
+        self.dropout = dropout
         self.eps = eps
+        self.train_base = train_base
+        self.mergeable = mergeable
         if lora_A is None or lora_B is None:
             lora_A, lora_B = _init_lora(base, rank, key)
         self.lora_A = lora_A
         self.lora_B = lora_B
         self.magnitude = (
-            jnp.linalg.norm(base.weight, axis=1).astype(base.weight.dtype)
+            _init_magnitude(base, magnitude_init)
             if magnitude is None
             else magnitude
         )
@@ -84,16 +119,40 @@ class DoRALinear(eqx.Module):
         raise ValueError(f"Unsupported DoRA scaling mode {self.scaling_mode!r}.")
 
     def weight(self) -> jax.Array:
-        direction = self.base.weight + (self.lora_B @ self.lora_A) * self.scaling
+        direction = self.base.weight + self._delta_weight()
         direction_norm = jnp.linalg.norm(direction, axis=1, keepdims=True)
         direction = direction / jnp.maximum(direction_norm, self.eps)
         return direction * self.magnitude[:, None]
 
-    def __call__(self, x: jax.Array) -> jax.Array:
-        y = self.weight() @ x
+    def __call__(
+        self,
+        x: jax.Array,
+        *,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+    ) -> jax.Array:
+        if self.dropout > 0.0 and not inference:
+            if key is None:
+                raise ValueError("A PRNG key is required when DoRA dropout is active.")
+            y = self._dropout_weight_projection(x, key)
+        else:
+            y = self.weight() @ x
         if self.base.bias is not None:
             y = y + self.base.bias
         return y
+
+    def _delta_weight(self) -> jax.Array:
+        return (self.lora_B @ self.lora_A) * self.scaling
+
+    def _dropout_weight_projection(self, x: jax.Array, key: jax.Array) -> jax.Array:
+        dense_direction = self.base.weight + self._delta_weight()
+        direction_norm = jnp.linalg.norm(dense_direction, axis=1)
+        x_drop = _dropout(x, self.dropout, key)
+        projected = (
+            self.base.weight @ x
+            + (self.lora_B @ (self.lora_A @ x_drop)) * self.scaling
+        )
+        return projected * self.magnitude / jnp.maximum(direction_norm, self.eps)
 
 
 class DoRAMergedLinear(DoRALinear):
@@ -123,6 +182,10 @@ def apply_dora(
                 f"{type(module).__name__}, expected eqx.nn.Linear."
             )
         wrapper_type = DoRAMergedLinear if "qkv" in {str(part) for part in module_path} else DoRALinear
+        if config.init != "kaiming_A_zero_B":
+            raise ValueError(
+                f"Unsupported DoRA init {config.init!r}; expected kaiming_A_zero_B."
+            )
         updated = eqx.tree_at(
             lambda tree, p=module_path: get_path(tree, p),
             updated,
@@ -131,7 +194,11 @@ def apply_dora(
                 rank=config.rank,
                 alpha=config.alpha,
                 scaling=config.scaling,
+                dropout=config.dropout,
                 eps=config.eps,
+                train_base=config.train_base,
+                mergeable=config.mergeable,
+                magnitude_init=config.magnitude_init,
                 key=subkey,
             ),
         )
@@ -143,6 +210,8 @@ def merge_dora(model: PyTree) -> PyTree:
 
     updated = model
     for path, module in iter_dora_modules(updated):
+        if not module.mergeable:
+            raise ValueError("This DoRA module is not mergeable.")
         base = eqx.tree_at(
             lambda linear: linear.weight,
             module.base,
@@ -192,10 +261,26 @@ def _init_lora(
     return lora_A, lora_B
 
 
+def _init_magnitude(base: eqx.nn.Linear, magnitude_init: str) -> jax.Array:
+    if magnitude_init == "column_norm":
+        return jnp.linalg.norm(base.weight, axis=1).astype(base.weight.dtype)
+    raise ValueError(
+        "Unsupported DoRA magnitude_init "
+        f"{magnitude_init!r}; expected 'column_norm'."
+    )
+
+
+def _dropout(x: jax.Array, rate: float, key: jax.Array) -> jax.Array:
+    keep_prob = 1.0 - rate
+    mask = jr.bernoulli(key, keep_prob, shape=x.shape)
+    return jnp.where(mask, x / keep_prob, 0)
+
+
 __all__ = (
     "DoRAConfig",
     "DoRALinear",
     "DoRAMergedLinear",
+    "DoRARecipe",
     "apply_dora",
     "iter_dora_modules",
     "merge_dora",

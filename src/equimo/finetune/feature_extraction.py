@@ -9,7 +9,7 @@ import jax
 
 from ._typing import PyTree
 from .heads import IdentityHead, LinearHead
-from .pooling import MeanPatchPool, PoolName, pool_features
+from .pooling import GlobalAveragePool, MeanPatchPool, MeanTokenPool, PoolName, pool_features
 from .surgery import replace_head
 
 
@@ -64,6 +64,10 @@ class LinearProbe(eqx.Module):
         return _call_head(self.head, features, key=key, inference=inference)
 
 
+class HeadOnlyModel(LinearProbe):
+    """Backbone feature extractor plus a trainable replacement head."""
+
+
 def extract_features(
     model: PyTree,
     *args,
@@ -99,8 +103,8 @@ def extract_features(
             **kwargs,
         )
 
-    pool = _prompt_aware_pool(model, pool)
-    return pool_features(features, pool, **kwargs)
+    pool = _resolve_pool(model, features, _prompt_aware_pool(model, pool))
+    return pool_features(features, pool, key=key, **kwargs)
 
 
 def make_linear_probe(
@@ -138,9 +142,13 @@ def _call_with_optional_key(fn, *args, key, inference, **kwargs):
         if "unexpected keyword argument" not in str(error):
             raise
         call_kwargs.pop("inference", None)
-        if key is None:
+        try:
+            return fn(*args, **call_kwargs)
+        except TypeError as second_error:
+            if "unexpected keyword argument" not in str(second_error):
+                raise
             call_kwargs.pop("key", None)
-        return fn(*args, **call_kwargs)
+            return fn(*args, **call_kwargs)
 
 
 def _prompt_aware_pool(model: PyTree, pool: PoolName | eqx.Module | None):
@@ -156,6 +164,90 @@ def _prompt_aware_pool(model: PyTree, pool: PoolName | eqx.Module | None):
     return pool
 
 
+def _resolve_pool(
+    model: PyTree,
+    features: Any,
+    pool: PoolName | eqx.Module | None,
+) -> PoolName | eqx.Module | None:
+    if pool != "auto":
+        return pool
+    if isinstance(features, dict):
+        return "auto"
+    if not eqx.is_array(features):
+        return pool
+
+    model_name = model.__class__.__name__.lower()
+    if _is_audio_model(model, model_name):
+        return "mean_frame"
+    if _is_text_model(model):
+        if hasattr(model, "pooler") or hasattr(model, "cls_token"):
+            return "cls"
+        return MeanTokenPool()
+    if _is_convnet_model(model):
+        return GlobalAveragePool()
+    if _is_mae_like(model, model_name):
+        return _mean_patch_pool_for_model(model)
+    if _is_vit_like(model):
+        if getattr(model, "global_pool", None) in {"avg", "mean", "mean_patch"}:
+            return _mean_patch_pool_for_model(model)
+        return "cls"
+    if features.ndim <= 1:
+        return "none"
+    return "cls"
+
+
+def _is_vit_like(model: PyTree) -> bool:
+    return hasattr(model, "patch_embed") and hasattr(model, "blocks")
+
+
+def _is_mae_like(model: PyTree, model_name: str) -> bool:
+    return "mae" in model_name or getattr(model, "pool_policy", None) == "mean_patch"
+
+
+def _is_audio_model(model: PyTree, model_name: str) -> bool:
+    return (
+        "ast" in model_name
+        or "audio" in model_name
+        or hasattr(model, "dist_token")
+        or getattr(model, "modality", None) == "audio"
+    )
+
+
+def _is_text_model(model: PyTree) -> bool:
+    return (
+        hasattr(model, "token_embed")
+        or hasattr(model, "token_embedding")
+        or getattr(model, "modality", None) == "text"
+    )
+
+
+def _is_convnet_model(model: PyTree) -> bool:
+    return (
+        hasattr(model, "stem")
+        and hasattr(model, "stages")
+        and not hasattr(model, "patch_embed")
+    )
+
+
+def _mean_patch_pool_for_model(model: PyTree) -> MeanPatchPool:
+    return MeanPatchPool(
+        num_prefix_tokens=int(getattr(model, "num_prefix_tokens", _base_prefix_count(model))),
+        num_prompt_tokens=int(getattr(model, "num_prompt_tokens", 0)),
+    )
+
+
+def _base_prefix_count(model: PyTree) -> int:
+    count = 0
+    for name in ("cls_token", "dist_token"):
+        token = getattr(model, name, None)
+        if token is not None:
+            count += int(token.shape[0]) if hasattr(token, "shape") and token.ndim > 1 else 1
+    reg_tokens = getattr(model, "reg_tokens", None)
+    if reg_tokens is not None:
+        count += int(reg_tokens.shape[0]) if hasattr(reg_tokens, "shape") else 1
+    return count
+
+
 def _call_head(head: eqx.Module, x: Any, *, key: jax.Array | None, inference: bool | None):
     try:
         return head(x, key=key, inference=inference)
@@ -167,6 +259,7 @@ def _call_head(head: eqx.Module, x: Any, *, key: jax.Array | None, inference: bo
 
 __all__ = (
     "FeatureExtractor",
+    "HeadOnlyModel",
     "LinearProbe",
     "extract_features",
     "make_linear_probe",

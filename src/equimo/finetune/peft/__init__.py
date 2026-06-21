@@ -5,26 +5,39 @@ from .adapters import (
     AdaptFormerAdapter,
     AdaptFormerBlock,
     AdaptFormerConfig,
+    AdapterBankConfig,
     AdapterConfig,
+    AdapterFusion,
+    AdapterFusionConfig,
+    AdapterRecipe,
     BottleneckAdapter,
+    OutputAdapterModule,
+    ParallelAdapterConfig,
     ParallelAdapterBlock,
     SerialAdapterBlock,
     add_adapter,
+    adapter_fusion_trainable_spec,
     apply_adapters,
     apply_adaptformer,
+    apply_adapter_fusion,
+    configure_adapter_bank,
     extract_adapter_delta,
     iter_adapter_wrappers,
     load_adapter_delta,
     set_active_adapter,
     strip_adapters,
 )
-from .dora import DoRAConfig, DoRALinear, DoRAMergedLinear, apply_dora, merge_dora
-from .ia3 import IA3Config, IA3Linear, apply_ia3
+from .bitfit import BitFitConfig, bitfit_trainable_spec
+from .dora import DoRAConfig, DoRALinear, DoRAMergedLinear, DoRARecipe, apply_dora, merge_dora
+from .ia3 import IA3Config, IA3Linear, apply_ia3, iter_ia3_modules, merge_ia3
 from .lora import (
     LoRAConfig,
     LoRALinear,
     LoRAMergedLinear,
+    LoRAPlusLabelConfig,
+    LoRARecipe,
     PiSSAConfig,
+    QuantizedLinearCompatibilityConfig,
     RankMaskedLoRAConfig,
     RsLoRAConfig,
     apply_lora,
@@ -35,13 +48,29 @@ from .lora import (
     strip_lora,
     unmerge_lora,
 )
-from .prefix import PrefixAttention, PrefixConfig, PrefixTunedModel, apply_prefixes
-from .prompts import PromptConfig, PromptedModel, apply_prompts
+from .prefix import (
+    PrefixAttention,
+    PrefixConfig,
+    PrefixProjection,
+    PrefixTunedModel,
+    apply_prefixes,
+)
+from .prompts import (
+    DeepPromptConfig,
+    PromptConfig,
+    PromptedModel,
+    SoftPromptConfig,
+    VPTDeepRecipe,
+    VPTShallowRecipe,
+    apply_prompts,
+)
 from .scale_shift import (
     ScaleShift,
     ScaleShiftConfig,
     ScaleShiftWrapper,
     apply_scale_shift,
+    iter_scale_shift_wrappers,
+    merge_scale_shift,
 )
 from .side_tuning import (
     ActivationTap,
@@ -49,19 +78,41 @@ from .side_tuning import (
     LadderConnection,
     SideNetwork,
     SideTunedModel,
+    apply_side_tuning,
+    iter_side_tuned_models,
+    strip_side_tuning,
 )
-from .vera import VeRAConfig, VeRALinear, apply_vera
+from .vera import VeRAConfig, VeRALinear, apply_vera, iter_vera_modules, merge_vera, strip_vera
+
+PEFTConfig = (
+    LoRAConfig
+    | DoRAConfig
+    | AdapterConfig
+    | PromptConfig
+    | PrefixConfig
+    | ScaleShiftConfig
+    | IA3Config
+    | VeRAConfig
+    | LSTConfig
+)
 
 __all__ = (
     "ActivationTap",
     "AdaptFormerAdapter",
     "AdaptFormerBlock",
     "AdaptFormerConfig",
+    "AdapterBankConfig",
     "AdapterConfig",
+    "AdapterFusion",
+    "AdapterFusionConfig",
+    "AdapterRecipe",
+    "BitFitConfig",
     "BottleneckAdapter",
     "DoRAConfig",
     "DoRALinear",
     "DoRAMergedLinear",
+    "DoRARecipe",
+    "DeepPromptConfig",
     "IA3Config",
     "IA3Linear",
     "LSTConfig",
@@ -69,14 +120,21 @@ __all__ = (
     "LoRAConfig",
     "LoRALinear",
     "LoRAMergedLinear",
+    "LoRAPlusLabelConfig",
+    "LoRARecipe",
     "PEFTModuleMixin",
+    "PEFTConfig",
     "PiSSAConfig",
+    "OutputAdapterModule",
+    "ParallelAdapterConfig",
     "ParallelAdapterBlock",
     "PrefixAttention",
     "PrefixConfig",
+    "PrefixProjection",
     "PrefixTunedModel",
     "PromptConfig",
     "PromptedModel",
+    "QuantizedLinearCompatibilityConfig",
     "RankMaskedLoRAConfig",
     "RsLoRAConfig",
     "ScaleShift",
@@ -85,11 +143,16 @@ __all__ = (
     "SerialAdapterBlock",
     "SideNetwork",
     "SideTunedModel",
+    "SoftPromptConfig",
+    "VPTDeepRecipe",
+    "VPTShallowRecipe",
     "VeRAConfig",
     "VeRALinear",
     "add_adapter",
+    "adapter_fusion_trainable_spec",
     "apply_adapters",
     "apply_adaptformer",
+    "apply_adapter_fusion",
     "apply_dora",
     "apply_ia3",
     "apply_lora",
@@ -97,16 +160,28 @@ __all__ = (
     "apply_prompts",
     "apply_scale_shift",
     "apply_vera",
+    "apply_side_tuning",
+    "bitfit_trainable_spec",
+    "configure_adapter_bank",
     "extract_adapter_delta",
     "extract_lora_delta",
     "iter_adapter_wrappers",
     "iter_lora_modules",
+    "iter_ia3_modules",
+    "iter_scale_shift_wrappers",
+    "iter_vera_modules",
+    "iter_side_tuned_models",
     "load_adapter_delta",
     "load_lora_delta",
     "merge_dora",
+    "merge_ia3",
     "merge_lora",
+    "merge_scale_shift",
+    "merge_vera",
     "set_active_adapter",
     "strip_lora",
     "strip_adapters",
+    "strip_vera",
+    "strip_side_tuning",
     "unmerge_lora",
 )

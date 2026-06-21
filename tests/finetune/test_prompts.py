@@ -124,6 +124,46 @@ def test_prompt_trainable_only_prompts_and_head(tiny_vision_transformer):
     assert "prompt_decay" in plan.report.trainable_by_label
 
 
+def test_soft_prompt_uses_text_embedding_initialization(tiny_text_encoder):
+    prompted = eqft.apply_prompts(
+        tiny_text_encoder,
+        eqft.SoftPromptConfig(num_tokens=2),
+        key=jr.PRNGKey(0),
+    )
+    token_ids = jnp.array([0, 1, 2])
+
+    features = prompted.features(token_ids)
+    logits = prompted(token_ids)
+    plan = eqft.prepare_finetune(
+        prompted,
+        trainable=eqft.TrainableSpec(
+            mode="peft",
+            method_name="prompt",
+            train_head=False,
+        ),
+    )
+
+    assert jnp.array_equal(prompted.prompts[0], tiny_text_encoder.token_embed.weight[:2])
+    assert features.shape == (5, tiny_text_encoder.dim)
+    assert logits.shape == (tiny_text_encoder.token_embed.weight.shape[0],)
+    assert "prompt_decay" in plan.report.trainable_by_label
+    assert plan.trainable.base.head.weight is None
+
+
+def test_deep_prompt_config_can_share_across_layers():
+    model = TinyVisionTransformer(depth=2)
+    prompted = eqft.apply_prompts(
+        model,
+        eqft.DeepPromptConfig(num_tokens=2, share_across_layers=True),
+        key=jr.PRNGKey(0),
+    )
+
+    features = prompted.features(jnp.ones((2, 3)))
+
+    assert len(prompted.prompts) == 1
+    assert features.shape == (5, model.dim)
+
+
 def test_prompts_receive_gradients_when_blocks_mix_tokens(tiny_vision_transformer):
     model = eqx.tree_at(
         lambda m: m.blocks,

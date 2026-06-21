@@ -21,6 +21,18 @@ def test_selector_tags_qkv(tiny_vision_transformer):
     )
 
 
+def test_selector_broad_attention_and_mlp_tags(tiny_vision_transformer):
+    paths = eqft.resolve_target_paths(
+        tiny_vision_transformer,
+        eqft.TargetSpec(tags=("attention", "mlp")),
+    )
+
+    assert "blocks.0.attn.qkv.weight" in paths
+    assert "blocks.0.attn.proj.bias" in paths
+    assert "blocks.0.mlp.fc1.weight" in paths
+    assert "blocks.1.mlp.fc2.bias" in paths
+
+
 def test_selector_tags_patch_embed(tiny_vision_transformer):
     paths = eqft.resolve_target_paths(
         tiny_vision_transformer,

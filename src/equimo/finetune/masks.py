@@ -42,9 +42,13 @@ def resolve_trainable_paths(
     infos = iter_param_infos(model, tagger=tagger)
     selected = _base_trainable_paths(model, infos, spec, tagger=tagger)
     selected.update(_flag_trainable_paths(infos, spec))
+    if spec.mode == "peft":
+        selected.update(_trainable_peft_base_paths(model))
 
     if spec.freeze is not None:
         selected.difference_update(_target_paths(model, spec.freeze, tagger=tagger))
+
+    selected.difference_update(_paths_with_any_tag(infos, {"peft.metadata"}))
 
     return frozenset(selected)
 
@@ -195,6 +199,27 @@ def _surgical_paths(
         f"{shift!r}; expected input, feature, output, corruption, "
         "subpopulation, or label_space."
     )
+
+
+def _trainable_peft_base_paths(model: PyTree) -> set[Path]:
+    paths: set[Path] = set()
+    for key_path, wrapper in jtu.tree_leaves_with_path(
+        model,
+        is_leaf=_is_trainable_base_wrapper,
+    ):
+        if not _is_trainable_base_wrapper(wrapper):
+            continue
+        wrapper_path = key_path_to_path(key_path)
+        base = wrapper.base
+        filtered = eqx.filter(base, eqx.is_inexact_array)
+        for base_key_path, leaf in jtu.tree_leaves_with_path(filtered):
+            if eqx.is_inexact_array(leaf):
+                paths.add((*wrapper_path, "base", *key_path_to_path(base_key_path)))
+    return paths
+
+
+def _is_trainable_base_wrapper(node: Any) -> bool:
+    return bool(getattr(node, "train_base", False)) and hasattr(node, "base")
 
 
 __all__ = (

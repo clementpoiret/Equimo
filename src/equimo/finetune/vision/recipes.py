@@ -5,19 +5,20 @@ from __future__ import annotations
 import jax
 
 from .._typing import PyTree
-from ..config import FineTunePlan, TargetSpec, TrainableSpec
+from ..config import FineTunePlan, TargetSpec
 from ..feature_extraction import LinearProbe
 from ..peft.lora import LoRAConfig, apply_lora
 from ..peft.prompts import PromptConfig, PromptedModel, apply_prompts
 from ..recipes import (
+    SurgicalFineTuneConfig,
     adapter_transformer,
     adaptformer_transformer,
     full_ft_llrd,
     head_plus_norm,
     linear_probe,
     partial_ft_last_k_blocks,
+    surgical as surgical_recipe,
 )
-from ..surgery import prepare_finetune
 
 
 def linear_probe_vit(
@@ -84,10 +85,9 @@ def surgical_ft_vit(
 ) -> FineTunePlan:
     """Prepare a surgical ViT fine-tuning plan."""
 
-    return prepare_finetune(
+    return surgical_recipe(
         model,
-        trainable=TrainableSpec(
-            mode="surgical",
+        SurgicalFineTuneConfig(
             shift=shift,
             train_head=train_head,
             train_norm=train_norm,

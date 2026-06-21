@@ -37,3 +37,4 @@ Start with these pages:
 - [Rollfast integration](with_rollfast.md)
 - [Debugging](debugging.md)
 - [Method defaults](method_defaults.md)
+- [Reference anchors](references.md)

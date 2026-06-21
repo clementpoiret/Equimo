@@ -54,6 +54,7 @@ def make_trainable_report(model: PyTree, param_info: PyTree) -> TrainableReport:
     frozen_by_label: defaultdict[str, int] = defaultdict(int)
     target_paths: list[str] = []
     estimated_delta_size_bytes = 0
+    trainable_infos: list[ParamInfo] = []
 
     for info in _param_info_leaves(param_info):
         leaf = leaves_by_path[info.path]
@@ -61,6 +62,7 @@ def make_trainable_report(model: PyTree, param_info: PyTree) -> TrainableReport:
         total_params += count
 
         if info.trainable:
+            trainable_infos.append(info)
             trainable_params += count
             trainable_by_label[info.label or "trainable"] += count
             target_paths.append(path_to_str(info.path))
@@ -82,7 +84,7 @@ def make_trainable_report(model: PyTree, param_info: PyTree) -> TrainableReport:
         frozen_by_label=dict(frozen_by_label),
         adapter_params=adapter_params,
         head_params=head_params,
-        mergeable=False,
+        mergeable=_is_mergeable_plan(trainable_infos),
         estimated_delta_size_bytes=estimated_delta_size_bytes,
         target_paths=tuple(target_paths),
     )
@@ -121,6 +123,18 @@ def _is_adapter_leaf(info: ParamInfo) -> bool:
             "scale_shift",
         )
     )
+
+
+def _is_mergeable_plan(infos: list[ParamInfo]) -> bool:
+    mergeable_tags = {"lora", "dora", "ia3", "vera"}
+    nonmergeable_tags = {"adapter", "prompt", "prefix", "side_tuning"}
+    has_mergeable_leaf = False
+    for info in infos:
+        if not info.tags.isdisjoint(nonmergeable_tags):
+            return False
+        if not info.tags.isdisjoint(mergeable_tags):
+            has_mergeable_leaf = True
+    return has_mergeable_leaf
 
 
 __all__ = (

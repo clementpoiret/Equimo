@@ -22,7 +22,7 @@ a method-specific error.
 
 Use `save_finetune_bundle` and `load_finetune_bundle` when you already have a
 `FineTuneBundle`. Bundle metadata includes parameter counts, dtype summary,
-target paths, mergeability, and optional user metadata.
+target paths, a base checkpoint hash, mergeability, and optional user metadata.
 
 Supported delta methods: `lora`, `dora`, `adapter`, `prompt`, `prefix`,
-`scale_shift`, and `ia3`.
+`scale_shift`, `ia3`, `vera`, and `side_tuning`.

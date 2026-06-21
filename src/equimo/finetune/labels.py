@@ -42,8 +42,13 @@ def make_labeled_param_info_tree(
     """Build a ``ParamInfo`` tree with trainability, labels, and group specs."""
 
     config = LLRDConfig(decay=1.0) if llrd_config is None else llrd_config
-    all_depths = _all_depths(model, tagger=tagger)
-    selected_depths = _selected_depths(model, trainable_paths, tagger=tagger)
+    all_depths = _all_depths(model, config, tagger=tagger)
+    selected_depths = _selected_depths(
+        model,
+        trainable_paths,
+        config,
+        tagger=tagger,
+    )
     filtered = eqx.filter(model, eqx.is_inexact_array)
     group_specs: dict[str, GroupSpec] = {}
 
@@ -53,6 +58,7 @@ def make_labeled_param_info_tree(
 
         path = key_path_to_path(key_path)
         base = make_param_info(path, leaf, tagger=tagger)
+        base = replace(base, depth=_depth_for_path(path, config))
         trainable = trainable_paths is None or path in trainable_paths
         weight_decay = trainable and _uses_weight_decay(base, config)
         lr_multiplier = (
@@ -172,13 +178,19 @@ def _lr_multiplier(
     return 1.0
 
 
-def _all_depths(model: PyTree, *, tagger: Tagger) -> tuple[int, ...]:
+def _all_depths(
+    model: PyTree,
+    config: LLRDConfig,
+    *,
+    tagger: Tagger,
+) -> tuple[int, ...]:
     filtered = eqx.filter(model, eqx.is_inexact_array)
     depths: set[int] = set()
     for key_path, leaf in jtu.tree_leaves_with_path(filtered):
         if not eqx.is_inexact_array(leaf):
             continue
-        depth = make_param_info(key_path_to_path(key_path), leaf, tagger=tagger).depth
+        del leaf
+        depth = _depth_for_path(key_path_to_path(key_path), config)
         if depth is not None:
             depths.add(depth)
     return tuple(sorted(depths))
@@ -187,11 +199,12 @@ def _all_depths(model: PyTree, *, tagger: Tagger) -> tuple[int, ...]:
 def _selected_depths(
     model: PyTree,
     trainable_paths: frozenset[Path] | None,
+    config: LLRDConfig,
     *,
     tagger: Tagger,
 ) -> tuple[int, ...]:
     if trainable_paths is None:
-        return _all_depths(model, tagger=tagger)
+        return _all_depths(model, config, tagger=tagger)
 
     filtered = eqx.filter(model, eqx.is_inexact_array)
     depths: set[int] = set()
@@ -201,10 +214,46 @@ def _selected_depths(
         path = key_path_to_path(key_path)
         if path not in trainable_paths:
             continue
-        depth = make_param_info(path, leaf, tagger=tagger).depth
+        del leaf
+        depth = _depth_for_path(path, config)
         if depth is not None:
             depths.add(depth)
     return tuple(sorted(depths))
+
+
+def _depth_for_path(path: Path, config: LLRDConfig) -> int | None:
+    parts = tuple(str(part) for part in path)
+    if config.depth_axis == "block":
+        return _indexed_depth(parts, {"blocks", "block"})
+    if config.depth_axis == "stage":
+        return _indexed_depth(parts, {"stages", "stage"})
+    if config.depth_axis == "module":
+        return _first_numeric_part(parts)
+    raise ValueError(
+        "LLRDConfig.depth_axis must be 'block', 'stage', or 'module'."
+    )
+
+
+def _indexed_depth(parts: tuple[str, ...], names: set[str]) -> int | None:
+    for index, part in enumerate(parts[:-1]):
+        if part not in names:
+            continue
+        depth = _maybe_int(parts[index + 1])
+        if depth is not None:
+            return depth
+    return None
+
+
+def _first_numeric_part(parts: tuple[str, ...]) -> int | None:
+    for part in parts:
+        value = _maybe_int(part)
+        if value is not None:
+            return value
+    return None
+
+
+def _maybe_int(value: str) -> int | None:
+    return int(value) if value.isdecimal() else None
 
 
 __all__ = (

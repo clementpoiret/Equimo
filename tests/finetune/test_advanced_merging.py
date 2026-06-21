@@ -39,3 +39,27 @@ def test_fisher_and_regmean_require_external_statistics(tiny_vision_transformer)
 
     with pytest.raises(ValueError, match="covariance statistics"):
         eqft.regmean_merge([tiny_vision_transformer])
+
+
+def test_fisher_merge_uses_supplied_diagonal_statistics():
+    merged = eqft.fisher_merge(
+        [jnp.array([1.0, 3.0]), jnp.array([3.0, 5.0])],
+        [jnp.array([1.0, 3.0]), jnp.array([3.0, 1.0])],
+    )
+
+    assert jnp.allclose(merged, jnp.array([2.5, 3.5]))
+
+
+def test_regmean_merge_uses_input_covariances():
+    model_a = jnp.array([[1.0, 2.0]])
+    model_b = jnp.array([[3.0, 4.0]])
+    covariance_a = jnp.eye(2) * 2.0
+    covariance_b = jnp.eye(2)
+
+    merged = eqft.regmean_merge(
+        [model_a, model_b],
+        [covariance_a, covariance_b],
+        ridge=0.0,
+    )
+
+    assert jnp.allclose(merged, jnp.array([[5.0 / 3.0, 8.0 / 3.0]]))

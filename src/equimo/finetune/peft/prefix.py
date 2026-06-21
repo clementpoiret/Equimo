@@ -25,6 +25,8 @@ class PrefixConfig:
     prefix_projection: bool = True
     projection_hidden_dim: int | str = "model_dim"
     init_std: float = 0.02
+    prefix_dropout: float = 0.0
+    train_head: bool = True
 
 
 class PrefixTunedModel(eqx.Module):
@@ -32,6 +34,7 @@ class PrefixTunedModel(eqx.Module):
 
     base: PyTree
     prefixes: tuple[jax.Array, ...]
+    prefix_projections: tuple[PrefixProjection | None, ...]
     config: PrefixConfig = eqx.field(static=True)
 
     def __init__(
@@ -39,11 +42,25 @@ class PrefixTunedModel(eqx.Module):
         base: PyTree,
         prefixes: tuple[jax.Array, ...],
         config: PrefixConfig,
+        prefix_projections: tuple[PrefixProjection | None, ...] | None = None,
     ):
+        _validate_prefix_config(config)
         if not prefixes:
             raise ValueError("PrefixTunedModel requires at least one prefix tensor.")
-        self.base = _ensure_prefix_wrapped(base, prefixes)
+        if prefix_projections is None:
+            prefix_projections = (None,) * len(prefixes)
+        if len(prefix_projections) != len(prefixes):
+            raise ValueError(
+                "PrefixTunedModel requires one projection entry per prefix tensor."
+            )
+        self.base = _ensure_prefix_wrapped(
+            base,
+            prefixes,
+            prefix_projections,
+            config,
+        )
         self.prefixes = prefixes
+        self.prefix_projections = prefix_projections
         self.config = config
 
     def features(
@@ -53,7 +70,7 @@ class PrefixTunedModel(eqx.Module):
         inference: bool | None = True,
         **kwargs,
     ):
-        base = _sync_prefixes(self.base, self.prefixes)
+        base = _sync_prefixes(self.base, self.prefixes, self.prefix_projections)
         if not hasattr(base, "features"):
             raise ValueError("PrefixTunedModel requires the base model to expose features().")
         return _call_with_optional_key(
@@ -65,7 +82,7 @@ class PrefixTunedModel(eqx.Module):
         )
 
     def __call__(self, *args, key: jax.Array | None = None, inference: bool | None = True, **kwargs):
-        base = _sync_prefixes(self.base, self.prefixes)
+        base = _sync_prefixes(self.base, self.prefixes, self.prefix_projections)
         return _call_with_optional_key(
             base,
             *args,
@@ -82,12 +99,20 @@ class PrefixAttention(eqx.Module):
     state: jax.Array
     num_heads: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+    prefix_dropout: float = eqx.field(static=True)
 
-    def __init__(self, base: eqx.Module, state: jax.Array):
+    def __init__(
+        self,
+        base: eqx.Module,
+        state: jax.Array,
+        *,
+        prefix_dropout: float = 0.0,
+    ):
         self.base = base
         self.state = state
         self.num_heads = int(state.shape[1])
         self.head_dim = int(state.shape[3])
+        self.prefix_dropout = prefix_dropout
 
     def __call__(
         self,
@@ -98,7 +123,7 @@ class PrefixAttention(eqx.Module):
         mask: jax.Array | None = None,
         rope_sincos=None,
     ) -> jax.Array:
-        key1, key2 = _split_pair(key)
+        key_prefix, key1, key2 = _split_three(key)
         q, k, v = _project_qkv(self.base, x, self.num_heads, self.head_dim)
         q = _apply_nested_norm(getattr(self.base, "q_norm", None), q)
         k = _apply_nested_norm(getattr(self.base, "k_norm", None), k)
@@ -107,6 +132,12 @@ class PrefixAttention(eqx.Module):
             q, k = _apply_rope(q, k, rope_sincos)
 
         prefix_k, prefix_v = self.state.astype(x.dtype)
+        if self.prefix_dropout > 0.0 and not inference:
+            if key_prefix is None:
+                raise ValueError("A PRNG key is required when prefix dropout is active.")
+            key_k, key_v = jr.split(key_prefix, 2)
+            prefix_k = _dropout(prefix_k, self.prefix_dropout, key_k)
+            prefix_v = _dropout(prefix_v, self.prefix_dropout, key_v)
         k = jnp.concatenate([prefix_k, k], axis=1)
         v = jnp.concatenate([prefix_v, v], axis=1)
         mask = _extend_mask(mask, self.state.shape[2])
@@ -129,6 +160,61 @@ class PrefixAttention(eqx.Module):
         return _call_dropout(getattr(self.base, "proj_drop", None), y, inference, key2)
 
 
+class PrefixProjection(eqx.Module):
+    """Trainable MLP that projects prefix tokens into K/V prefix states."""
+
+    down: eqx.nn.Linear
+    up: eqx.nn.Linear
+    num_heads: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        head_dim: int,
+        *,
+        key: jax.Array,
+        init_std: float = 0.02,
+        down: eqx.nn.Linear | None = None,
+        up: eqx.nn.Linear | None = None,
+    ):
+        down_key, up_key = jr.split(key, 2)
+        self.down = (
+            _init_projection_linear(
+                eqx.nn.Linear(dim, hidden_dim, key=down_key),
+                down_key,
+                init_std,
+            )
+            if down is None
+            else down
+        )
+        self.up = (
+            _init_projection_linear(
+                eqx.nn.Linear(
+                    hidden_dim,
+                    2 * num_heads * head_dim,
+                    key=up_key,
+                ),
+                up_key,
+                init_std,
+            )
+            if up is None
+            else up
+        )
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+
+    def __call__(self, prefix: jax.Array) -> jax.Array:
+        hidden = jax.vmap(self.down)(prefix)
+        state = jax.vmap(self.up)(jnp.tanh(hidden))
+        state = state.reshape(
+            (prefix.shape[0], 2, self.num_heads, self.head_dim)
+        )
+        return jnp.transpose(state, (1, 2, 0, 3))
+
+
 def apply_prefixes(
     model: PyTree,
     config: PrefixConfig | None = None,
@@ -138,6 +224,7 @@ def apply_prefixes(
     """Attach trainable prefix tensors to supported attention modules."""
 
     config = PrefixConfig() if config is None else config
+    _validate_prefix_config(config)
     paths = _prefix_attention_paths(model)
     if config.depth == "shallow":
         paths = paths[:1]
@@ -151,8 +238,17 @@ def apply_prefixes(
         _init_prefix(get_path(model, path), config.num_prefix_tokens, config.init_std, subkey)
         for path, subkey in zip(paths, keys, strict=True)
     )
-    updated = _wrap_prefix_attentions(model, paths, prefixes)
-    return PrefixTunedModel(updated, prefixes, config)
+    projection_keys = jr.split(jr.fold_in(key, 1), len(paths))
+    projections = tuple(
+        _init_prefix_projection(
+            get_path(model, path),
+            config,
+            subkey,
+        )
+        for path, subkey in zip(paths, projection_keys, strict=True)
+    )
+    updated = _wrap_prefix_attentions(model, paths, prefixes, projections, config)
+    return PrefixTunedModel(updated, prefixes, config, projections)
 
 
 def strip_prefixes(model: PyTree) -> PyTree:
@@ -177,7 +273,12 @@ def iter_prefix_attentions(model: PyTree) -> tuple[tuple[Path, PrefixAttention],
     )
 
 
-def _ensure_prefix_wrapped(base: PyTree, prefixes: tuple[jax.Array, ...]) -> PyTree:
+def _ensure_prefix_wrapped(
+    base: PyTree,
+    prefixes: tuple[jax.Array, ...],
+    projections: tuple[PrefixProjection | None, ...],
+    config: PrefixConfig,
+) -> PyTree:
     wrappers = iter_prefix_attentions(base)
     if wrappers:
         if len(wrappers) != len(prefixes):
@@ -185,34 +286,44 @@ def _ensure_prefix_wrapped(base: PyTree, prefixes: tuple[jax.Array, ...]) -> PyT
                 "Prefix bundle/module mismatch: "
                 f"{len(prefixes)} prefixes for {len(wrappers)} wrapped attentions."
             )
-        return _sync_prefixes(base, prefixes)
+        return _sync_prefixes(base, prefixes, projections)
 
     paths = _prefix_attention_paths(base)
     if len(paths) != len(prefixes):
         raise ValueError(
             "Prefix tuning requires attention modules with qkv/proj projections."
         )
-    return _wrap_prefix_attentions(base, paths, prefixes)
+    return _wrap_prefix_attentions(base, paths, prefixes, projections, config)
 
 
 def _wrap_prefix_attentions(
     model: PyTree,
     paths: tuple[Path, ...],
     prefixes: tuple[jax.Array, ...],
+    projections: tuple[PrefixProjection | None, ...],
+    config: PrefixConfig,
 ) -> PyTree:
     updated = model
-    for path, prefix in zip(paths, prefixes, strict=True):
+    for path, prefix, projection in zip(paths, prefixes, projections, strict=True):
         module = get_path(updated, path)
-        state = _prefix_to_state(prefix, module)
+        state = _prefix_to_state(prefix, module, projection)
         if isinstance(module, PrefixAttention):
             wrapper = eqx.tree_at(lambda item: item.state, module, state)
         else:
-            wrapper = PrefixAttention(module, state)
+            wrapper = PrefixAttention(
+                module,
+                state,
+                prefix_dropout=config.prefix_dropout,
+            )
         updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, wrapper)
     return updated
 
 
-def _sync_prefixes(base: PyTree, prefixes: tuple[jax.Array, ...]) -> PyTree:
+def _sync_prefixes(
+    base: PyTree,
+    prefixes: tuple[jax.Array, ...],
+    projections: tuple[PrefixProjection | None, ...],
+) -> PyTree:
     updated = base
     wrappers = iter_prefix_attentions(updated)
     if len(wrappers) != len(prefixes):
@@ -220,8 +331,13 @@ def _sync_prefixes(base: PyTree, prefixes: tuple[jax.Array, ...]) -> PyTree:
             "Prefix bundle/module mismatch: "
             f"{len(prefixes)} prefixes for {len(wrappers)} wrapped attentions."
         )
-    for (path, wrapper), prefix in zip(wrappers, prefixes, strict=True):
-        state = _prefix_to_state(prefix, wrapper)
+    for (path, wrapper), prefix, projection in zip(
+        wrappers,
+        prefixes,
+        projections,
+        strict=True,
+    ):
+        state = _prefix_to_state(prefix, wrapper, projection)
         updated = eqx.tree_at(
             lambda tree, p=path: get_path(tree, p).state,
             updated,
@@ -270,6 +386,41 @@ def _init_prefix(
     )
 
 
+def _init_prefix_projection(
+    module,
+    config: PrefixConfig,
+    key: jax.Array,
+) -> PrefixProjection | None:
+    if not config.prefix_projection:
+        return None
+    num_heads, head_dim = _attention_shape(module)
+    hidden_dim = (
+        module.qkv.in_features
+        if config.projection_hidden_dim == "model_dim"
+        else int(config.projection_hidden_dim)
+    )
+    return PrefixProjection(
+        module.qkv.in_features,
+        hidden_dim,
+        num_heads,
+        head_dim,
+        key=key,
+        init_std=config.init_std,
+    )
+
+
+def _init_projection_linear(
+    linear: eqx.nn.Linear,
+    key: jax.Array,
+    init_std: float,
+) -> eqx.nn.Linear:
+    weight = jr.normal(key, linear.weight.shape, dtype=linear.weight.dtype) * init_std
+    linear = eqx.tree_at(lambda layer: layer.weight, linear, weight)
+    if linear.bias is not None:
+        linear = eqx.tree_at(lambda layer: layer.bias, linear, jnp.zeros_like(linear.bias))
+    return linear
+
+
 def _attention_shape(module) -> tuple[int, int]:
     if isinstance(module, PrefixAttention):
         return module.num_heads, module.head_dim
@@ -283,11 +434,17 @@ def _attention_shape(module) -> tuple[int, int]:
     return num_heads, head_dim
 
 
-def _prefix_to_state(prefix: jax.Array, module) -> jax.Array:
+def _prefix_to_state(
+    prefix: jax.Array,
+    module,
+    projection: PrefixProjection | None = None,
+) -> jax.Array:
     if prefix.ndim == 4:
         return prefix
     if prefix.ndim != 2:
         raise ValueError("Prefix tensors must have shape (tokens, dim).")
+    if projection is not None:
+        return projection(prefix)
     num_heads, head_dim = _attention_shape(module)
     if prefix.shape[-1] != num_heads * head_dim:
         raise ValueError(
@@ -336,6 +493,21 @@ def _call_dropout(module, x: jax.Array, inference: bool | None, key: jax.Array |
     return module(x, inference=inference, key=key)
 
 
+def _validate_prefix_config(config: PrefixConfig) -> None:
+    if config.depth not in {"shallow", "deep", "all"}:
+        raise ValueError("PrefixConfig.depth must be 'shallow', 'deep', or 'all'.")
+    if frozenset(config.target) != frozenset(("attention.k", "attention.v")):
+        raise ValueError(
+            "PrefixConfig.target currently supports only attention.k and attention.v."
+        )
+
+
+def _dropout(x: jax.Array, rate: float, key: jax.Array) -> jax.Array:
+    keep_prob = 1.0 - rate
+    mask = jr.bernoulli(key, keep_prob, shape=x.shape)
+    return jnp.where(mask, x / keep_prob, 0)
+
+
 def _call_with_optional_key(fn, *args, key, inference, **kwargs):
     call_kwargs = dict(kwargs)
     if key is not None:
@@ -353,16 +525,19 @@ def _call_with_optional_key(fn, *args, key, inference, **kwargs):
         return fn(*args, **call_kwargs)
 
 
-def _split_pair(key: jax.Array | None) -> tuple[jax.Array | None, jax.Array | None]:
+def _split_three(
+    key: jax.Array | None,
+) -> tuple[jax.Array | None, jax.Array | None, jax.Array | None]:
     if key is None:
-        return None, None
-    key_a, key_b = jr.split(key, 2)
-    return key_a, key_b
+        return None, None, None
+    key_a, key_b, key_c = jr.split(key, 3)
+    return key_a, key_b, key_c
 
 
 __all__ = (
     "PrefixAttention",
     "PrefixConfig",
+    "PrefixProjection",
     "PrefixTunedModel",
     "apply_prefixes",
     "iter_prefix_attentions",
