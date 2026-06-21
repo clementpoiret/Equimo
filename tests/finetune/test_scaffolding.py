@@ -24,6 +24,20 @@ def test_import_equimo_finetune():
     assert eqft.LLRDConfig().decay == 0.75
 
 
+def test_required_public_api_exports():
+    required = {
+        "HeadSpec",
+        "merge_dora",
+        "add_adapter",
+        "set_active_adapter",
+        "save_finetune_bundle",
+        "load_finetune_bundle",
+        "merge_and_save",
+    }
+
+    assert not {name for name in required if not hasattr(eqft, name)}
+
+
 def test_tiny_fixture_param_counts(finetune_key):
     models = {
         "tiny_ast_like_encoder": TinyASTLikeEncoder(key=finetune_key),

@@ -15,6 +15,7 @@ Equimo provides JAX/Equinox implementations of recent architectures across modal
 - Extensive documentation and type hints
 - Modality-specific namespaces: `equimo.vision`, `equimo.language`, `equimo.audio`, `equimo.tabular`
 - Generic serialization utilities in `equimo.serialization`
+- Equinox-native fine-tuning utilities in `equimo.finetune`
 
 ## Installation
 
@@ -44,6 +45,7 @@ modality-specific code:
 | `equimo.language` | Text encoders and tokenizers |
 | `equimo.audio` | Audio models, audio layers, and audio IO scaffolding |
 | `equimo.tabular` | Tabular models and tabular layers |
+| `equimo.finetune` | Trainability plans, heads, PEFT modules, deltas, model merging, and fine-tuning recipes |
 | `equimo.serialization` | Checkpoint save/load, weight loading, archive download/decompression |
 | `equimo.registry` | Modality-aware model registry |
 
@@ -153,6 +155,70 @@ logits = model(x, key=key, inference=True)
 # Feature extraction
 features = model.features(x, key=key, inference=True)
 ```
+
+## Fine-Tuning
+
+`equimo.finetune` provides Equinox-native model-side fine-tuning primitives:
+trainability masks, parameter labels, LLRD metadata, head replacement, feature
+pooling, LoRA, adapters, prompts, scale/shift, IA3, DoRA, model deltas, and
+model-merging utilities.
+
+Equimo intentionally does not provide optimizers, schedules, dataloaders, or
+training loops. The core abstraction is a `FineTunePlan`, which partitions a
+model into trainable and frozen PyTrees and provides labels/group metadata for
+external optimizers such as Optax or Rollfast.
+
+Minimal example:
+
+```python
+import jax
+import equimo.finetune as eqft
+import equimo.vision.models as em
+
+key = jax.random.PRNGKey(0)
+model = em.vit_tiny_patch16_224(num_classes=10, key=key)
+
+plan = eqft.prepare_finetune(
+    model,
+    trainable=eqft.TrainableSpec(
+        mode="full",
+        freeze=eqft.TargetSpec(tags=("embedding.patch",)),
+    ),
+    labels=eqft.LLRDConfig(decay=0.75),
+)
+
+trainable = plan.trainable
+frozen = plan.frozen
+
+def loss_fn(trainable, batch):
+    model = plan.combine(trainable)
+    logits = jax.vmap(lambda x: model(x, key=key, inference=False))(batch["x"])
+    return cross_entropy(logits, batch["y"])  # supplied by user code
+```
+
+Frozen leaves are absent from `plan.trainable`; they are not assigned a zero
+learning rate. `plan.labels` and `plan.group_specs` are ready for an external
+optimizer partition.
+
+PEFT example:
+
+```python
+lora_model = eqft.apply_lora(
+    model,
+    eqft.LoRAConfig(rank=8, alpha=16.0),
+    key=key,
+)
+lora_plan = eqft.prepare_finetune(
+    lora_model,
+    trainable=eqft.TrainableSpec(mode="peft", method_name="lora"),
+)
+
+eqft.save_delta(lora_model, "my_lora.eqft", method="lora")
+```
+
+See [docs/finetuning](./docs/finetuning/index.md) for selectors, linear
+probing, LP-FT, LLRD, PEFT methods, serialization, and Optax/Rollfast
+integration examples.
 
 ## Predefined Model Variants
 

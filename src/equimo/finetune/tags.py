@@ -18,6 +18,7 @@ CANONICAL_TAGS: tuple[str, ...] = (
     "embedding.patch",
     "embedding.position",
     "embedding.class_token",
+    "embedding.register_token",
     "block",
     "attention.qkv",
     "attention.proj",
@@ -43,6 +44,8 @@ def canonical_tags_for_path(path: Path, leaf: Any | None = None) -> frozenset[st
         tags.add("embedding.position")
     if "cls_token" in parts:
         tags.add("embedding.class_token")
+    if any(part in {"reg_token", "reg_tokens", "register_token", "register_tokens"} for part in parts):
+        tags.add("embedding.register_token")
     if "dist_token" in parts:
         tags.add("embedding.distillation_token")
     if "mask_token" in parts:
@@ -56,6 +59,7 @@ def canonical_tags_for_path(path: Path, leaf: Any | None = None) -> frozenset[st
     _add_attention_tags(parts, tags)
     _add_mlp_tags(parts, tags)
     _add_norm_tags(parts, tags)
+    _add_peft_tags(parts, tags)
 
     if "head" in parts or "classifier" in parts:
         tags.add("head")
@@ -139,6 +143,7 @@ def infer_role(tags: Iterable[str]) -> str:
 
     tag_set = frozenset(tags)
     for tag, role in (
+        ("lora", "lora"),
         ("head", "head"),
         ("attention.qkv", "attention.qkv"),
         ("attention.proj", "attention.proj"),
@@ -148,6 +153,7 @@ def infer_role(tags: Iterable[str]) -> str:
         ("embedding.patch", "embedding.patch"),
         ("embedding.position", "embedding.position"),
         ("embedding.class_token", "embedding.class_token"),
+        ("embedding.register_token", "embedding.register_token"),
         ("block", "block"),
     ):
         if tag in tag_set:
@@ -205,6 +211,31 @@ def _add_norm_tags(parts: tuple[str, ...], tags: set[str]) -> None:
         tags.add("block.norm.pre")
     if "norm2" in matched:
         tags.add("block.norm.post")
+
+
+def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
+    if "lora_A" in parts:
+        tags.update(("lora", "lora.A"))
+    if "lora_B" in parts:
+        tags.update(("lora", "lora.B"))
+    if "rank_mask" in parts:
+        tags.update(("lora", "lora.rank_mask"))
+    if "magnitude" in parts:
+        tags.update(("dora", "dora.magnitude"))
+    if "adapter" in parts or "adapters" in parts:
+        tags.add("adapter")
+    if "prompt" in parts or "prompts" in parts:
+        tags.add("prompt")
+    if "prefix" in parts or "prefixes" in parts:
+        tags.add("prefix")
+    if "ia3" in parts:
+        tags.add("ia3")
+    if "vera_input_scale" in parts or "vera_output_scale" in parts:
+        tags.add("vera")
+    if "side" in parts or "ladder" in parts:
+        tags.add("side_tuning")
+    if "scale_shift" in parts:
+        tags.add("scale_shift")
 
 
 def _maybe_int(value: str) -> int | None:

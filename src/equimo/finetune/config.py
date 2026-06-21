@@ -48,7 +48,21 @@ class TrainableSpec:
     train_norm: bool = False
     train_bias: bool = False
     depth_range: tuple[int, int] | None = None
+    shift: str | None = None
     method_name: str | None = None
+
+
+@dataclass(frozen=True)
+class HeadSpec:
+    """Declarative task-head metadata for recipe presets."""
+
+    kind: str = "linear"
+    in_features: int | None = None
+    out_features: int | None = None
+    hidden_dim: int | None = None
+    num_layers: int = 1
+    bias: bool = True
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -66,6 +80,8 @@ class LLRDConfig:
         "norm",
         "embedding.position",
         "embedding.class_token",
+        "embedding.register_token",
+        "embedding.distillation_token",
         "embedding.mask_token",
     )
     block_label_format: str = "block_{depth:02d}"
@@ -160,6 +176,7 @@ __all__ = (
     "FineTuneBundle",
     "FineTunePlan",
     "GroupSpec",
+    "HeadSpec",
     "LLRDConfig",
     "ParamInfo",
     "TargetSpec",

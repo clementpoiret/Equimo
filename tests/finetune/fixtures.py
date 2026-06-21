@@ -96,6 +96,7 @@ class TinyVisionTransformer(eqx.Module):
 
     patch_embed: TinyPatchEmbed
     cls_token: jax.Array
+    reg_tokens: jax.Array | None
     pos_embed: jax.Array
     blocks: tuple[TinyTransformerBlock, ...]
     norm: eqx.nn.LayerNorm
@@ -109,6 +110,7 @@ class TinyVisionTransformer(eqx.Module):
         depth: int = 2,
         patch_features: int = 3,
         num_patches: int = 2,
+        num_reg_tokens: int = 0,
         num_classes: int = 2,
         key: jax.Array | None = None,
     ):
@@ -118,7 +120,15 @@ class TinyVisionTransformer(eqx.Module):
         self.num_patches = num_patches
         self.patch_embed = TinyPatchEmbed(patch_features, dim, key=patch_key)
         self.cls_token = jnp.zeros((1, dim), dtype=jnp.float32)
-        self.pos_embed = jnp.zeros((num_patches + 1, dim), dtype=jnp.float32)
+        self.reg_tokens = (
+            jnp.zeros((num_reg_tokens, dim), dtype=jnp.float32)
+            if num_reg_tokens > 0
+            else None
+        )
+        self.pos_embed = jnp.zeros(
+            (num_patches + 1 + num_reg_tokens, dim),
+            dtype=jnp.float32,
+        )
         self.blocks = tuple(
             TinyTransformerBlock(dim, hidden_dim, key=block_key_i)
             for block_key_i in jr.split(block_key, depth)
@@ -126,13 +136,20 @@ class TinyVisionTransformer(eqx.Module):
         self.norm = eqx.nn.LayerNorm(dim)
         self.head = eqx.nn.Linear(dim, num_classes, key=head_key)
 
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def features(self, x: jax.Array) -> jax.Array:
         x = _map_tokens(self.patch_embed, x)
-        x = jnp.concatenate([self.cls_token, x], axis=0)
+        prefix = [self.cls_token]
+        if self.reg_tokens is not None:
+            prefix.append(self.reg_tokens)
+        x = jnp.concatenate([*prefix, x], axis=0)
         x = x + self.pos_embed[: x.shape[0]]
         for block in self.blocks:
             x = block(x)
-        return self.head(self.norm(x[0]))
+        return _map_tokens(self.norm, x)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        x = self.features(x)
+        return self.head(x[0])
 
 
 class TinyASTLikeEncoder(eqx.Module):
@@ -175,14 +192,18 @@ class TinyASTLikeEncoder(eqx.Module):
         self.norm = eqx.nn.LayerNorm(dim)
         self.head = eqx.nn.Linear(dim, num_classes, key=head_key)
 
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def features(self, x: jax.Array) -> jax.Array:
         x = _map_tokens(self.patch_embed, x)
         x = jnp.concatenate([self.cls_token, self.dist_token, x], axis=0)
         x = x + self.pos_embed[: x.shape[0]]
         for block in self.blocks:
             x = block(x)
+        return _map_tokens(self.norm, x)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        x = self.features(x)
         pooled = jnp.mean(x[:2], axis=0)
-        return self.head(self.norm(pooled))
+        return self.head(pooled)
 
 
 class TinyConvNeXtBlock(eqx.Module):
@@ -310,12 +331,16 @@ class TinyTextEncoder(eqx.Module):
         self.norm = eqx.nn.LayerNorm(dim)
         self.head = eqx.nn.Linear(dim, vocab_size, key=head_key)
 
-    def __call__(self, token_ids: jax.Array) -> jax.Array:
+    def features(self, token_ids: jax.Array) -> jax.Array:
         x = jax.vmap(self.token_embed)(token_ids)
         x = x + self.pos_embed[: x.shape[0]]
         for block in self.blocks:
             x = block(x)
-        return self.head(self.norm(x[0]))
+        return _map_tokens(self.norm, x)
+
+    def __call__(self, token_ids: jax.Array) -> jax.Array:
+        x = self.features(token_ids)
+        return self.head(x[0])
 
 
 class TinyLinearMLP(eqx.Module):

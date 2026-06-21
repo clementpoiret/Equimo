@@ -1,3 +1,5 @@
-"""Tabular fine-tuning namespace reserved for selector adapters and recipes."""
+"""Tabular fine-tuning recipes."""
 
-__all__: tuple[str, ...] = ()
+from . import recipes
+
+__all__ = ("recipes",)

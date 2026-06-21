@@ -1,5 +1,5 @@
-"""Audio fine-tuning namespace reserved for selector adapters and recipes."""
+"""Audio fine-tuning selectors and recipes."""
 
-from . import selectors
+from . import recipes, selectors
 
-__all__ = ("selectors",)
+__all__ = ("recipes", "selectors")
