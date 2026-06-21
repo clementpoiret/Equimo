@@ -1,4 +1,4 @@
-"""LoRA plan with optional Rollfast integration."""
+"""LoRA plan with optional Rollfast grouped AdamW integration."""
 
 import equinox as eqx
 import jax.random as jr
@@ -18,11 +18,21 @@ plan = eqft.prepare_finetune(
 )
 
 try:
-    import rollfast
+    import rollfast.finetune as rfft
 except ImportError:
-    rollfast = None
+    rfft = None
 
-if rollfast is None:
+if rfft is None:
     print(plan.report)
 else:
-    print("Build a Rollfast optimizer from plan.trainable, plan.labels, and plan.group_specs.")
+    optim = rfft.adamw_from_plan(
+        plan,
+        total_steps=1_000,
+        base_lr=2e-4,
+        schedule="warmup_cosine",
+        weight_decay=0.0,
+        lora_b_lr_ratio=16.0,
+    )
+    opt_state = optim.init(plan.trainable)
+    del opt_state
+    print(optim.report.group_table())

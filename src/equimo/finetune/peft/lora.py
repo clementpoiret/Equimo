@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -229,9 +230,12 @@ class LoRALinear(eqx.Module):
         if self.merged:
             return y
         x_drop = _dropout(x, self.dropout, key) if self.dropout > 0.0 else x
+        lora_B = self.lora_B
+        if self.rank_mask is not None:
+            lora_B = lora_B * self.rank_mask[None, :]
         if self.fan_in_fan_out:
             return y + x_drop @ self.delta_weight()
-        update = self.lora_B @ (self.lora_A @ x_drop)
+        update = lora_B @ (self.lora_A @ x_drop)
         return y + update * self.scaling
 
     def delta_weight(self) -> jax.Array:
@@ -506,6 +510,60 @@ def iter_lora_modules(model: PyTree) -> tuple[tuple[Path, LoRALinear], ...]:
     )
 
 
+def lora_rank_groups(model: PyTree) -> dict[str, int]:
+    """Return canonical LoRA path strings and their static maximum ranks."""
+
+    return {
+        path_to_str(path): module.rank
+        for path, module in iter_lora_modules(model)
+    }
+
+
+def apply_lora_rank_pattern(
+    model: PyTree,
+    rank_pattern: Mapping[str, Any],
+    *,
+    strict: bool = True,
+) -> PyTree:
+    """Apply fixed-shape rank masks to LoRA modules by canonical path string."""
+
+    modules = {
+        path_to_str(path): (path, module)
+        for path, module in iter_lora_modules(model)
+    }
+    if strict:
+        unknown = sorted(set(rank_pattern) - set(modules))
+        if unknown:
+            raise ValueError(
+                "Rank pattern contains unknown LoRA module paths: "
+                f"{', '.join(unknown)}."
+            )
+
+    updated = model
+    for name, value in rank_pattern.items():
+        if name not in modules:
+            continue
+        path, module = modules[name]
+        if module.merged:
+            raise ValueError(
+                f"Cannot apply rank mask for merged LoRA module {name!r}; "
+                "unmerge the module before changing rank masks."
+            )
+        mask = jnp.asarray(value, dtype=jnp.bool_)
+        if mask.shape != (module.rank,):
+            raise ValueError(
+                f"Rank mask for {name!r} must have shape ({module.rank},), "
+                f"got {mask.shape}."
+            )
+        updated = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p),
+            updated,
+            _replace_lora_rank_mask(module, mask),
+        )
+
+    return updated
+
+
 def architecture_hash(model: PyTree) -> str:
     """Hash parameter paths, shapes, and dtypes for compatibility checks."""
 
@@ -728,6 +786,28 @@ def _map_lora_modules(model: PyTree, fn) -> PyTree:
     return updated
 
 
+def _replace_lora_rank_mask(
+    module: LoRALinear,
+    rank_mask: jax.Array | None,
+) -> LoRALinear:
+    return module.__class__(
+        module.base,
+        rank=module.rank,
+        alpha=module.alpha,
+        scaling=module.scaling_mode,
+        dropout=module.dropout,
+        train_base=module.train_base,
+        mergeable=module.mergeable,
+        fan_in_fan_out=module.fan_in_fan_out,
+        key=jr.PRNGKey(0),
+        lora_A=module.lora_A,
+        lora_B=module.lora_B,
+        rank_mask=rank_mask,
+        base_weight_delta=module.base_weight_delta,
+        merged=module.merged,
+    )
+
+
 def lora_config_to_dict(config: LoRAConfig) -> dict[str, Any]:
     """Serialize a LoRA config without callable selector fields."""
 
@@ -756,12 +836,14 @@ __all__ = (
     "QuantizedLinearCompatibilityConfig",
     "RankMaskedLoRAConfig",
     "RsLoRAConfig",
+    "apply_lora_rank_pattern",
     "apply_lora",
     "architecture_hash",
     "extract_lora_delta",
     "iter_lora_modules",
     "load_lora_delta",
     "lora_config_to_dict",
+    "lora_rank_groups",
     "merge_lora",
     "strip_lora",
     "unmerge_lora",

@@ -200,6 +200,48 @@ Frozen leaves are absent from `plan.trainable`; they are not assigned a zero
 learning rate. `plan.labels` and `plan.group_specs` are ready for an external
 optimizer partition.
 
+Rollfast example:
+
+```python
+import rollfast.finetune as rfft
+
+optim = rfft.adamw_from_plan(
+    plan,
+    total_steps=20_000,
+    base_lr=5e-4,
+    schedule="warmup_cosine",
+    weight_decay=0.05,
+    clip_global_norm=1.0,
+    accumulation_steps=4,
+)
+opt_state = optim.init(plan.trainable)
+```
+
+For Rollfast Schedule-Free optimizers, combine `optim.eval_params(trainable,
+opt_state)` with `plan.frozen` for validation or checkpointing.
+For EMA/SWA, request named views such as `view="ema"` or `view="swa"` from the
+same method.
+For optimizer-state memory savings, `rfft.adamw8_from_plan` can quantize large,
+eligible AdamW moment groups while Equimo still emits the same plan metadata.
+For sharpness-aware updates, `rfft.make_sam_step` and `rfft.SAMConfig` wrap a
+Rollfast base optimizer with an explicit two-pass SAM/ASAM step.
+For AdaLoRA-style runs, `rfft.make_adalora_controller` emits fixed-shape rank
+masks for Equimo rank-masked adapters; use `eqft.lora_rank_groups` to build
+controller groups and `eqft.apply_lora_rank_pattern` to apply emitted masks.
+For LP-FT or gradual unfreezing, `rfft.reconfigure_optimizer` can migrate
+compatible optimizer state between two Equimo plans and report what changed.
+After optimizer initialization, `rfft.optimizer_state_memory_summary` reports
+measured state bytes, including 8-bit state and Kron preconditioner factors.
+Before initialization, `rfft.estimate_optimizer_state_memory` can estimate
+optimizer-family moment state and Kron preconditioner factors from the Equimo
+plan without materializing optimizer state.
+Structured Rollfast optimizers use the same plan:
+`rfft.hybrid_aurora_adam_from_plan`, `rfft.hybrid_prism_adam_from_plan`, and
+`rfft.hybrid_kron_adam_from_plan` compile Aurora/PRISM/Kron groups without
+adding a Rollfast dependency to Equimo core.
+Use `rfft.make_state_checkpoint(...)` for Rollfast optimizer state; Equimo model
+and delta serialization remain separate.
+
 PEFT example:
 
 ```python
