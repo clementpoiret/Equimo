@@ -264,11 +264,14 @@ class BlockChunk(eqx.Module):
     through dedicated dicts, keeping the constructor explicit and composable.
 
     Conventions:
-    - All blocks receive ``dim`` as their primary dimension (via ``module_kwargs``).
+    - Blocks receive the width key that matches their domain via
+      ``module_kwargs``: transformer-style blocks use ``dim``, preserving
+      convolution blocks use ``channels``.
     - Downsamplers using the channel convention (CNN-style) receive
       ``in_channels`` / ``out_channels`` injected from the top-level params.
     - Downsamplers using the token convention (transformer-style, e.g.
-      ``PatchMerging``) should have ``dim`` set in ``downsampler_kwargs``.
+      ``PatchMerging``) should have ``in_dim`` / ``out_dim`` set in
+      ``downsampler_kwargs``.
     - Any list-valued entry in ``module_kwargs`` whose length equals ``depth``
       is automatically spread across blocks (e.g. per-block attention types).
 

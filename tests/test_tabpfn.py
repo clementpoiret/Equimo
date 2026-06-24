@@ -193,12 +193,8 @@ def test_context_drop_path_schedule():
     model = _tiny(depths=(1, 1, 3), drop_path_rate=0.3)
     blocks = model.blocks[0].blocks
 
-    assert [block.drop_path1.p for block in blocks] == pytest.approx(
-        [0.0, 0.15, 0.3]
-    )
-    assert [block.drop_path2.p for block in blocks] == pytest.approx(
-        [0.0, 0.15, 0.3]
-    )
+    assert [block.drop_path1.p for block in blocks] == pytest.approx([0.0, 0.15, 0.3])
+    assert [block.drop_path2.p for block in blocks] == pytest.approx([0.0, 0.15, 0.3])
 
     uniform = _tiny(depths=(1, 1, 3), drop_path_rate=0.3, drop_path_uniform=True)
     assert [block.drop_path1.p for block in uniform.blocks[0].blocks] == pytest.approx(

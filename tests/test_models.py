@@ -10,7 +10,7 @@ import pytest
 
 import equimo.tabular.models as tm
 import equimo.vision.models as em
-from equimo.serialization import load_model, save_model
+from equimo.serialization import load_weights, save_model
 from equimo.core.layers.activation import get_act
 from equimo.vision.models.attnet import attnet_xxs
 from equimo.vision.models.fastervit import FasterViT
@@ -619,8 +619,14 @@ def test_save_load_model_compressed():
 
         save_model(save_path, model, model_config, torch_hub_cfg, compression=True)
 
-        loaded_model = load_model(
-            cls="vit", path=save_path.with_suffix(".tar.lz4"), dynamic_img_size=True
+        loaded_model = em.VisionTransformer(
+            **model_config,
+            dynamic_img_size=True,
+            key=key,
+        )
+        loaded_model = load_weights(
+            loaded_model,
+            path=save_path.with_suffix(".tar.lz4"),
         )
 
         loaded_output = loaded_model.features(x, key=key)
@@ -659,7 +665,12 @@ def test_save_load_model_uncompressed():
 
         save_model(save_path, model, model_config, torch_hub_cfg, compression=False)
 
-        loaded_model = load_model(cls="vit", path=save_path, dynamic_img_size=True)
+        loaded_model = em.VisionTransformer(
+            **model_config,
+            dynamic_img_size=True,
+            key=key,
+        )
+        loaded_model = load_weights(loaded_model, path=save_path)
         loaded_output = loaded_model.features(x, key=key)
 
         assert jnp.allclose(original_output, loaded_output, atol=1e-5)
@@ -786,10 +797,9 @@ def test_tabpfn_v3_classifier_default_matches_torch():
     ref = np.load(
         Path(__file__).parent / "data" / "tabpfn_v3_classifier_default_reference.npz"
     )
-    archive = (
-        Path("~/.cache/equimo/tabpfn/tabpfn_v3_classifier_default.tar.lz4")
-        .expanduser()
-    )
+    archive = Path(
+        "~/.cache/equimo/tabpfn/tabpfn_v3_classifier_default.tar.lz4"
+    ).expanduser()
     if not archive.exists():
         pytest.skip("TabPFN v3 converted weights are not cached locally.")
 

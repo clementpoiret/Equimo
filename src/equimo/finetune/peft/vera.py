@@ -228,11 +228,15 @@ def strip_vera(model: PyTree) -> PyTree:
 
     stripped = model
     for path, module in iter_vera_modules(stripped):
-        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, module.base)
+        stripped = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), stripped, module.base
+        )
     return stripped
 
 
-def _target_linear_paths(model: PyTree, target: TargetSpec, *, tagger: Tagger) -> tuple[Path, ...]:
+def _target_linear_paths(
+    model: PyTree, target: TargetSpec, *, tagger: Tagger
+) -> tuple[Path, ...]:
     paths = {
         info.path[:-1]
         for info in resolve_target(model, target, tagger=tagger)

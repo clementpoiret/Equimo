@@ -23,6 +23,7 @@ def make_trainable_filter(
     """Build an Equinox filter PyTree for the requested trainability policy."""
 
     trainable_paths = resolve_trainable_paths(model, spec, tagger=tagger)
+
     def is_trainable(key_path: tuple[Any, ...], leaf: Any) -> bool:
         if not eqx.is_inexact_array(leaf):
             return False
@@ -97,7 +98,9 @@ def _base_trainable_paths(
     if mode == "partial":
         selected = _paths_in_depth_range(infos, spec.depth_range)
         if spec.target is not None:
-            selected.intersection_update(_target_paths(model, spec.target, tagger=tagger))
+            selected.intersection_update(
+                _target_paths(model, spec.target, tagger=tagger)
+            )
         return selected
     if mode == "surgical":
         if spec.target is not None:
@@ -188,7 +191,8 @@ def _surgical_paths(
         return {
             info.path
             for info in infos
-            if info.depth == first_depth and ("norm" in info.tags or "block" in info.tags)
+            if info.depth == first_depth
+            and ("norm" in info.tags or "block" in info.tags)
         }
     if shift in {"feature", "subpopulation"}:
         return {info.path for info in infos if info.depth == middle_depth}

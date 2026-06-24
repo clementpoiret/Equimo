@@ -44,7 +44,6 @@ def test_required_public_api_exports():
         "FineTuneRecipe",
         "GlobalAveragePool",
         "GreedySoupConfig",
-        "HeadOnlyModel",
         "HeadPlusNormConfig",
         "HeadSpec",
         "LinearProbeConfig",

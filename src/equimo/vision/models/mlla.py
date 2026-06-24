@@ -137,7 +137,9 @@ class Mlla(eqx.Module):
                     "eps": eps,
                 },
                 downsampler="patchmerging" if (i < n_chunks - 1) else None,
-                downsampler_kwargs={"dim": int(dim * 2**i)} if i < n_chunks - 1 else {},
+                downsampler_kwargs={"in_dim": int(dim * 2**i)}
+                if i < n_chunks - 1
+                else {},
                 downsample_last=True,
                 drop_path=dpr[sum(depths[:i]) : sum(depths[: i + 1])],
                 key=block_subkeys[i],

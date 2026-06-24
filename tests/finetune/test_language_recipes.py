@@ -9,7 +9,9 @@ from equimo.finetune.language import recipes
 
 def test_language_recipes_work_on_tiny_text(tiny_text_encoder):
     lora = recipes.lora_encoder(tiny_text_encoder, key=jr.PRNGKey(0), rank=2)
-    prefix = recipes.prefix_encoder(tiny_text_encoder, key=jr.PRNGKey(1), num_prefix_tokens=2)
+    prefix = recipes.prefix_encoder(
+        tiny_text_encoder, key=jr.PRNGKey(1), num_prefix_tokens=2
+    )
     head = recipes.projection_head(4, 3, key=jr.PRNGKey(2))
     frozen = recipes.locked_tower(tiny_text_encoder)
 

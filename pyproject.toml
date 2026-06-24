@@ -14,7 +14,6 @@ dependencies = [
   "loguru>=0.7.3",
   "lz4>=4.4.3",
   "requests>=2.32.3",
-  "semver>=3.0.4",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",

@@ -130,16 +130,6 @@ def test_linear_probe_trainable_only_head(tiny_vision_transformer):
     assert plan.report.trainable_params == 15
 
 
-def test_head_only_model_public_alias(tiny_vision_transformer):
-    model = eqft.HeadOnlyModel(
-        tiny_vision_transformer,
-        eqft.LinearHead(4, 3, key=jr.PRNGKey(0)),
-        pool="cls",
-    )
-
-    assert model(jnp.ones((2, 3))).shape == (3,)
-
-
 def test_feature_extractor_filter_jit(tiny_vision_transformer):
     extractor = eqft.FeatureExtractor(tiny_vision_transformer, pool="cls")
     x = jnp.ones((2, 3))

@@ -97,8 +97,7 @@ class HeadPlusNormConfig:
                 return True
             if self.include_embeddings:
                 return any(
-                    tag.startswith("embedding.")
-                    and tag != "embedding.position"
+                    tag.startswith("embedding.") and tag != "embedding.position"
                     for tag in tags
                 )
             return False
@@ -216,7 +215,9 @@ def partial_ft_last_k_blocks(
 ) -> FineTunePlan:
     """Prepare a partial fine-tuning plan over the last ``k`` blocks."""
 
-    depths = sorted({info.depth for info in iter_param_infos(model) if info.depth is not None})
+    depths = sorted(
+        {info.depth for info in iter_param_infos(model) if info.depth is not None}
+    )
     if not depths:
         depth_range = None
     else:
@@ -248,8 +249,12 @@ def partial_unfreeze(
     config = PartialUnfreezeConfig() if config is None else config
     if config.span != "last":
         raise ValueError("PartialUnfreezeConfig currently supports span='last'.")
-    depths = sorted({info.depth for info in iter_param_infos(model) if info.depth is not None})
-    selected_depths = frozenset(_last_fraction_depths(depths, config.fraction, config.min_blocks))
+    depths = sorted(
+        {info.depth for info in iter_param_infos(model) if info.depth is not None}
+    )
+    selected_depths = frozenset(
+        _last_fraction_depths(depths, config.fraction, config.min_blocks)
+    )
 
     def predicate(path: Path, leaf: Any) -> bool:
         tags = canonical_tags_for_path(path, leaf)

@@ -301,7 +301,6 @@ from .surgery import (
 )
 from .feature_extraction import (
     FeatureExtractor,
-    HeadOnlyModel,
     LinearProbe,
     extract_features,
     make_linear_probe,
@@ -365,7 +364,6 @@ __all__ = (
     "GlobalAveragePool",
     "GreedySoupConfig",
     "GroupSpec",
-    "HeadOnlyModel",
     "HeadPlusNormConfig",
     "HeadSpec",
     "IdentityHead",

@@ -36,7 +36,10 @@ def test_finetune_bundle_has_required_lora_metadata(tiny_vision_transformer):
     assert bundle.lineage.architecture_hash == bundle.architecture_hash
     assert bundle.lineage.base_value_hash == bundle.base_checkpoint_id
     assert bundle.lineage.logical_id_table_hash
-    assert bundle.lineage.model_revision == bundle.equimo_version or bundle.equimo_version == ""
+    assert (
+        bundle.lineage.model_revision == bundle.equimo_version
+        or bundle.equimo_version == ""
+    )
     assert bundle.architecture_hash
     assert bundle.selector_spec["paths"] == (
         "blocks.0.attn.proj",
@@ -73,10 +76,15 @@ def test_delta_spec_order_and_bundle_roundtrip(tmp_path, tiny_vision_transformer
 
     assert loaded_bundle.method == bundle.method
     assert bundle.selector_spec["target"]["tags_any"] == ("attention.proj",)
-    assert loaded_model.blocks[0].attn.proj.lora_A.shape == model.blocks[0].attn.proj.lora_A.shape
+    assert (
+        loaded_model.blocks[0].attn.proj.lora_A.shape
+        == model.blocks[0].attn.proj.lora_A.shape
+    )
 
 
-def test_bundle_carries_model_state_snapshot_and_hash(tmp_path, tiny_vision_transformer):
+def test_bundle_carries_model_state_snapshot_and_hash(
+    tmp_path, tiny_vision_transformer
+):
     spec = eqft.LoRAConfig(
         rank=2,
         alpha=4.0,
@@ -118,7 +126,9 @@ def test_bundle_carries_model_state_snapshot_and_hash(tmp_path, tiny_vision_tran
     assert loaded.model_state["updates"] == 7
 
 
-def test_bundle_records_recalibration_marker_without_model_state(tmp_path, tiny_vision_transformer):
+def test_bundle_records_recalibration_marker_without_model_state(
+    tmp_path, tiny_vision_transformer
+):
     spec = eqft.LoRAConfig(
         rank=2,
         alpha=4.0,
@@ -171,7 +181,10 @@ def test_delta_spec_keyword_model_form_roundtrip(tmp_path, tiny_vision_transform
     loaded_model = eqft.load_delta(path, tiny_vision_transformer)
 
     assert bundle.selector_spec["target"]["tags_any"] == ("attention.proj",)
-    assert loaded_model.blocks[0].attn.proj.lora_A.shape == model.blocks[0].attn.proj.lora_A.shape
+    assert (
+        loaded_model.blocks[0].attn.proj.lora_A.shape
+        == model.blocks[0].attn.proj.lora_A.shape
+    )
 
 
 def test_delta_rejects_same_architecture_different_base_checkpoint(
@@ -232,7 +245,9 @@ def test_bundle_schema_version_is_validated(tmp_path):
         eqft.save_finetune_bundle(path, bundle)
 
 
-def test_lora_bundle_missing_path_raises_bundle_error(tmp_path, tiny_vision_transformer):
+def test_lora_bundle_missing_path_raises_bundle_error(
+    tmp_path, tiny_vision_transformer
+):
     model = eqft.apply_lora(
         tiny_vision_transformer,
         eqft.LoRAConfig(
@@ -248,11 +263,15 @@ def test_lora_bundle_missing_path_raises_bundle_error(tmp_path, tiny_vision_tran
     entries[0]["path"] = "blocks.99.attn.proj"
     bad_bundle = replace(bundle, adapter_config={"entries": entries})
 
-    with pytest.raises(eqft.FineTuneBundleError, match="logical-ID table mismatch|no matching leaf"):
+    with pytest.raises(
+        eqft.FineTuneBundleError, match="logical-ID table mismatch|no matching leaf"
+    ):
         eqft.load_delta(tiny_vision_transformer, bad_bundle)
 
 
-def test_adapter_bundle_missing_path_raises_bundle_error(tmp_path, tiny_vision_transformer):
+def test_adapter_bundle_missing_path_raises_bundle_error(
+    tmp_path, tiny_vision_transformer
+):
     model = eqft.apply_adapters(
         tiny_vision_transformer,
         eqft.AdapterConfig(bottleneck=3),
@@ -264,5 +283,7 @@ def test_adapter_bundle_missing_path_raises_bundle_error(tmp_path, tiny_vision_t
     entries[0]["path"] = "blocks.99"
     bad_bundle = replace(bundle, adapter_config={"entries": entries})
 
-    with pytest.raises(eqft.FineTuneBundleError, match="logical-ID table mismatch|no matching leaf"):
+    with pytest.raises(
+        eqft.FineTuneBundleError, match="logical-ID table mismatch|no matching leaf"
+    ):
         eqft.load_delta(tiny_vision_transformer, bad_bundle)

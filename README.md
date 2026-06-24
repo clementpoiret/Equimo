@@ -59,10 +59,9 @@ entrypoints are intentionally removed.
 | ---------- | ---------- |
 | `import equimo.models as em` | `import equimo.vision.models as em` |
 | `from equimo.layers import ...` | `from equimo.vision.layers import ...` for vision layers, or `from equimo.core.layers import ...` for shared layers |
-| `from equimo.io import load_model, save_model, load_weights` | `from equimo.serialization import load_model, save_model, load_weights` |
+| `from equimo.io import save_model, load_weights` | `from equimo.serialization import save_model, load_weights` |
 | `from equimo.io import load_image` | `from equimo.vision.io import load_image` |
 | `from equimo.experimental.text import Tokenizer` | `from equimo.language import SentencePieceTokenizer` |
-| `load_model("experimental.textencoder", ...)` | `load_model("text_transformer_encoder", ..., modality="language")` |
 
 ## Implemented Vision Models
 
@@ -533,9 +532,10 @@ Zero-shot classification example using TIPS:
 import jax
 from einops import rearrange
 
-from equimo.language import SentencePieceTokenizer
-from equimo.serialization import load_model
+from equimo.language import SentencePieceTokenizer, TextTransformerEncoder
+from equimo.serialization import load_weights
 from equimo.vision.io import load_image
+from equimo.vision.models import tips_vits14_hr
 from equimo.utils import PCAVisualizer, normalize, plot_image_and_feature_map
 
 key = jax.random.PRNGKey(42)
@@ -545,12 +545,19 @@ text = [
     "A computer",
 ]
 
-image_encoder = load_model("vit", "tips_vits14_hr", modality="vision")
-text_encoder = load_model(
-    "text_transformer_encoder",
-    "tips_vits14_hr_text",
-    modality="language",
+image_encoder = tips_vits14_hr(pretrained=True)
+text_encoder = TextTransformerEncoder(
+    dim=384,
+    mlp_ratio=4.0,
+    depth=12,
+    num_heads=6,
+    vocab_size=32000,
+    scale_sqrt_depth=True,
+    act_layer="relu",
+    temperature=0.005497702397406101,
+    key=key,
 )
+text_encoder = load_weights(text_encoder, identifier="tips_vits14_hr_text")
 
 ids, paddings = SentencePieceTokenizer(identifier="sentencepiece_tips").encode(
     text, max_length=64
@@ -619,42 +626,42 @@ save_model(
 )
 ```
 
-### Loading Models
+### Loading Weights
 
 ```python
-from equimo.serialization import load_model
+from equimo.serialization import load_weights
+from equimo.vision.models import dinov2_vits14_reg, siglip2_vitb16_256
 
-# Load a pre-trained vision model from the official repository
-model = load_model(cls="vit", identifier="dinov2_vits14_reg", modality="vision")
+# Load a pre-trained vision model from the official repository.
+model = dinov2_vits14_reg(pretrained=True, dynamic_img_size=True)
 
-# Load a local model (compressed)
-model = load_model(cls="vit", path=Path("path/to/model.tar.lz4"), modality="vision")
+# Load a local model (compressed).
+model = dinov2_vits14_reg(pretrained=False, dynamic_img_size=True)
+model = load_weights(model, path=Path("path/to/model.tar.lz4"))
 
-# Load a local model (uncompressed directory)
-model = load_model(cls="vit", path=Path("path/to/model/"), modality="vision")
+# Load a local model (uncompressed directory).
+model = dinov2_vits14_reg(pretrained=False, dynamic_img_size=True)
+model = load_weights(model, path=Path("path/to/model/"))
 ```
 
-Constructor parameters can be overridden at load time:
+Constructor parameters are controlled when building the target model:
 
 ```python
-model = load_model(
-    cls="vit",
-    identifier="siglip2_vitb16_256",
-    modality="vision",
+model = siglip2_vitb16_256(
+    pretrained=False,
     dynamic_img_size=True,  # forwarded to VisionTransformer.__init__
 )
+model = load_weights(model, identifier="siglip2_vitb16_256")
 ```
 
-Custom models registered with `register_model` can also be loaded by name:
+Custom models are restored the same way:
 
 ```python
-from equimo.vision.models import register_model
-
-@register_model("mynet", modality="vision")
 class MyNet(eqx.Module):
     ...
 
-model = load_model("mynet", path=Path("mynet.tar.lz4"), modality="vision")
+model = MyNet(..., key=key)
+model = load_weights(model, path=Path("mynet.tar.lz4"))
 ```
 
 ## List of Pretrained Models

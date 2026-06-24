@@ -264,13 +264,10 @@ def greedy_soup(
         )
         if config.sort_by != "validation_score_desc":
             raise ValueError(
-                "GreedySoupConfig.sort_by currently supports "
-                "'validation_score_desc'."
+                "GreedySoupConfig.sort_by currently supports 'validation_score_desc'."
             )
         if config.start != "best_model":
-            raise ValueError(
-                "GreedySoupConfig.start currently supports 'best_model'."
-            )
+            raise ValueError("GreedySoupConfig.start currently supports 'best_model'.")
         return _greedy_soup_from_best(
             models,
             score_fn,
@@ -329,7 +326,9 @@ def task_vector(
     return TaskVector(
         delta=delta,
         include_head=include_head,
-        base_architecture_hash=_architecture_hash(base_model, include_head=include_head),
+        base_architecture_hash=_architecture_hash(
+            base_model, include_head=include_head
+        ),
         base_checkpoint_hash=_checkpoint_hash(base_model, include_head=include_head),
         logical_id_table_hash=_logical_id_table_hash(
             base_model,
@@ -351,9 +350,11 @@ def apply_task_vector(
         scale = config.scale
     _check_task_vector_base(base_model, vector)
     return jtu.tree_map(
-        lambda base, delta: base + delta * scale
-        if eqx.is_inexact_array(base) and eqx.is_inexact_array(delta)
-        else base,
+        lambda base, delta: (
+            base + delta * scale
+            if eqx.is_inexact_array(base) and eqx.is_inexact_array(delta)
+            else base
+        ),
         base_model,
         vector.delta,
     )
@@ -486,13 +487,15 @@ def breadcrumbs_task_vector(
     _validate_breadcrumbs_fractions(bottom_fraction, top_fraction)
     return TaskVector(
         jtu.tree_map(
-            lambda leaf: _breadcrumbs_leaf(
-                leaf,
-                bottom_fraction=bottom_fraction,
-                top_fraction=top_fraction,
-            )
-            if eqx.is_inexact_array(leaf)
-            else leaf,
+            lambda leaf: (
+                _breadcrumbs_leaf(
+                    leaf,
+                    bottom_fraction=bottom_fraction,
+                    top_fraction=top_fraction,
+                )
+                if eqx.is_inexact_array(leaf)
+                else leaf
+            ),
             vector.delta,
         ),
         include_head=vector.include_head,
@@ -610,7 +613,9 @@ def knots_task_vector(
     if config.orientation != "out_in":
         raise ValueError("KnOTSConfig.orientation currently supports 'out_in'.")
     if config.basis_policy != "shared_left_svd":
-        raise ValueError("KnOTSConfig.basis_policy currently supports 'shared_left_svd'.")
+        raise ValueError(
+            "KnOTSConfig.basis_policy currently supports 'shared_left_svd'."
+        )
     _check_vector_compatibility(
         vectors,
         require_same_base_hash=config.require_same_base_hash,
@@ -898,7 +903,9 @@ def _interpolate_leaf(
     return (1.0 - alpha) * base + alpha * tuned
 
 
-def _soup_leaf(path, leaves, weights, *, include_head: bool, strict_shapes: bool = True):
+def _soup_leaf(
+    path, leaves, weights, *, include_head: bool, strict_shapes: bool = True
+):
     first = leaves[0]
     if not eqx.is_inexact_array(first) or (not include_head and _is_head_path(path)):
         return first
@@ -918,7 +925,9 @@ def _delta_leaf(path, base, tuned, *, include_head: bool):
     return tuned - base
 
 
-def _mergeable(path, base, tuned, *, include_head: bool, strict_shapes: bool = True) -> bool:
+def _mergeable(
+    path, base, tuned, *, include_head: bool, strict_shapes: bool = True
+) -> bool:
     if not eqx.is_inexact_array(base) or not eqx.is_inexact_array(tuned):
         return False
     if not include_head and _is_head_path(path):
@@ -1002,7 +1011,9 @@ def _ties_leaf(
         )[0]
         consensus = jnp.where(consensus == 0, jnp.sign(largest), consensus)
     elif zero_sign != "zero":
-        raise ValueError("TIES zero_sign must be 'zero', 'positive', or 'largest_magnitude'.")
+        raise ValueError(
+            "TIES zero_sign must be 'zero', 'positive', or 'largest_magnitude'."
+        )
     agree = jnp.logical_and(stacked != 0, jnp.sign(stacked) == consensus[None, ...])
     numerator = jnp.sum(jnp.where(agree, stacked, 0), axis=0)
     denominator = jnp.sum(agree.astype(jnp.float32), axis=0)
@@ -1126,7 +1137,9 @@ def _regmean_leaf(
         system = covariance_sum + ridge * eye
         return _solve_regmean_system(system, weighted_sum, solver=solver)
     if first.ndim == 2 and non_matrix_policy == "error":
-        raise ValueError("RegMean requires covariance leaves shaped (input_dim, input_dim).")
+        raise ValueError(
+            "RegMean requires covariance leaves shaped (input_dim, input_dim)."
+        )
     return _non_matrix_leaf(model_leaves, non_matrix_policy)
 
 
@@ -1141,9 +1154,7 @@ def _solve_regmean_system(system, weighted_sum, *, solver: str):
     if solver == "svd":
         left, singular_values, right = jnp.linalg.svd(system, full_matrices=False)
         cutoff = (
-            jnp.finfo(system.dtype).eps
-            * max(system.shape)
-            * jnp.max(singular_values)
+            jnp.finfo(system.dtype).eps * max(system.shape) * jnp.max(singular_values)
         )
         inv_singular_values = jnp.where(
             singular_values > cutoff,
@@ -1157,8 +1168,7 @@ def _solve_regmean_system(system, weighted_sum, *, solver: str):
 def _all_input_covariances(first, covariance_leaves) -> bool:
     input_dim = first.shape[1]
     return all(
-        eqx.is_inexact_array(covariance)
-        and covariance.shape == (input_dim, input_dim)
+        eqx.is_inexact_array(covariance) and covariance.shape == (input_dim, input_dim)
         for covariance in covariance_leaves
     )
 
@@ -1168,9 +1178,13 @@ def _check_same_architecture(
     *,
     include_head: bool,
 ) -> None:
-    hashes = tuple(_architecture_hash(model, include_head=include_head) for model in models)
+    hashes = tuple(
+        _architecture_hash(model, include_head=include_head) for model in models
+    )
     if len(set(hashes)) > 1:
-        raise ValueError("Models must have the same architecture for this merge operation.")
+        raise ValueError(
+            "Models must have the same architecture for this merge operation."
+        )
 
 
 def _check_same_base_metadata(
@@ -1204,7 +1218,9 @@ def _check_task_vector_base(base_model: PyTree, vector: TaskVector) -> None:
                 f"{vector.base_architecture_hash}, got {actual_architecture}."
             )
     if vector.base_checkpoint_hash:
-        actual_checkpoint = _checkpoint_hash(base_model, include_head=vector.include_head)
+        actual_checkpoint = _checkpoint_hash(
+            base_model, include_head=vector.include_head
+        )
         if actual_checkpoint != vector.base_checkpoint_hash:
             raise ValueError(
                 "Task vector base checkpoint mismatch: expected "
@@ -1249,9 +1265,7 @@ def _check_vector_compatibility(
     if not require_same_base_hash:
         return
     checkpoint_hashes = {
-        vector.base_checkpoint_hash
-        for vector in vectors
-        if vector.base_checkpoint_hash
+        vector.base_checkpoint_hash for vector in vectors if vector.base_checkpoint_hash
     }
     if len(checkpoint_hashes) > 1:
         raise ValueError("Task vectors must share the same base checkpoint.")
@@ -1313,7 +1327,11 @@ def _base_hash_metadata(model: PyTree) -> str | None:
                 return value
         metadata = model.get("metadata")
         if isinstance(metadata, Mapping):
-            for name in ("base_checkpoint_id", "base_checkpoint_hash", "base_model_hash"):
+            for name in (
+                "base_checkpoint_id",
+                "base_checkpoint_hash",
+                "base_model_hash",
+            ):
                 value = metadata.get(name)
                 if isinstance(value, str) and value:
                     return value

@@ -8,7 +8,9 @@ import pytest
 import equimo.finetune as eqft
 
 
-def test_continued_ssl_default_applies_lora_and_unfreezes_last_block(tiny_vision_transformer):
+def test_continued_ssl_default_applies_lora_and_unfreezes_last_block(
+    tiny_vision_transformer,
+):
     ssl_plan = eqft.continued_ssl_adaptation(
         tiny_vision_transformer,
         key=jr.PRNGKey(0),
@@ -53,7 +55,9 @@ def test_supervised_after_ssl_uses_existing_delta_and_head(tiny_vision_transform
     assert supervised.plan.trainable.head.weight is not None
 
 
-def test_supervised_after_ssl_requires_key_when_not_reusing_delta(tiny_vision_transformer):
+def test_supervised_after_ssl_requires_key_when_not_reusing_delta(
+    tiny_vision_transformer,
+):
     with pytest.raises(ValueError, match="PRNG key"):
         eqft.supervised_after_ssl(
             tiny_vision_transformer,

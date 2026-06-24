@@ -50,9 +50,13 @@ def test_semantic_tags_for_tiny_vit(tiny_vision_transformer):
     assert "embedding.patch" in infos["patch_embed.proj.weight"].tags
     assert "embedding.position" in infos["pos_embed"].tags
     assert "embedding.class_token" in infos["cls_token"].tags
-    assert {"block", "block.0", "attention", "block.attention", "attention.qkv"} <= infos[
-        "blocks.0.attn.qkv.weight"
-    ].tags
+    assert {
+        "block",
+        "block.0",
+        "attention",
+        "block.attention",
+        "attention.qkv",
+    } <= infos["blocks.0.attn.qkv.weight"].tags
     assert infos["blocks.0.attn.qkv.weight"].depth == 0
     assert "attention.proj" in infos["blocks.1.attn.proj.bias"].tags
     assert {"mlp", "block.mlp", "mlp.hidden", "mlp.fc1"} <= infos[

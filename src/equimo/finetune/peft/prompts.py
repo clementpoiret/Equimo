@@ -157,9 +157,7 @@ class PromptedModel(eqx.Module):
                 )
                 return self.base.head(x)
             token_index = (
-                self.config.num_tokens
-                if _prepends_before_all(self.config)
-                else 0
+                self.config.num_tokens if _prepends_before_all(self.config) else 0
             )
             return self.base.head(features[token_index])
         return _call_model(self.base, *args, key=key, inference=inference, **kwargs)
@@ -197,7 +195,9 @@ def _infer_dim(model: PyTree) -> int:
         return int(model.pos_embed.shape[-1])
     if hasattr(model, "token_embed") and hasattr(model.token_embed, "weight"):
         return int(model.token_embed.weight.shape[-1])
-    raise ValueError("Could not infer prompt dimension; pass a model with dim metadata.")
+    raise ValueError(
+        "Could not infer prompt dimension; pass a model with dim metadata."
+    )
 
 
 def _init_prompts(
@@ -279,7 +279,9 @@ def _equimo_vit_features(
             dynamic_img_size=model.dynamic_img_size,
         )
     else:
-        prefix = [token for token in (model.cls_token, model.reg_tokens) if token is not None]
+        prefix = [
+            token for token in (model.cls_token, model.reg_tokens) if token is not None
+        ]
         if model.dynamic_img_size:
             x = jnp.moveaxis(x, 0, -1).reshape((-1, x.shape[0]))
         x = jnp.concatenate([*prefix, x], axis=0) if prefix else x
@@ -324,7 +326,11 @@ def _simple_token_features(
     x = jnp.concatenate([*prefix, x], axis=0) if prefix else x
     if hasattr(model, "pos_embed"):
         x = x + model.pos_embed[: x.shape[0]]
-    block_keys = jr.split(key, len(model.blocks)) if key is not None else (None,) * len(model.blocks)
+    block_keys = (
+        jr.split(key, len(model.blocks))
+        if key is not None
+        else (None,) * len(model.blocks)
+    )
     x = _run_prompted_blocks(
         model.blocks,
         x,
@@ -486,9 +492,8 @@ def _is_equimo_vit_like(model) -> bool:
 
 
 def _is_simple_token_model(model) -> bool:
-    return (
-        hasattr(model, "blocks")
-        and (hasattr(model, "patch_embed") or hasattr(model, "token_embed"))
+    return hasattr(model, "blocks") and (
+        hasattr(model, "patch_embed") or hasattr(model, "token_embed")
     )
 
 
@@ -520,7 +525,9 @@ def _map_tokens(fn, x: jax.Array) -> jax.Array:
 def _call_features(model, *args, key, inference, **kwargs):
     if not hasattr(model, "features"):
         raise ValueError("PromptedModel requires the base model to expose features().")
-    return _call_with_optional_key(model.features, *args, key=key, inference=inference, **kwargs)
+    return _call_with_optional_key(
+        model.features, *args, key=key, inference=inference, **kwargs
+    )
 
 
 def _call_model(model, *args, key, inference, **kwargs):

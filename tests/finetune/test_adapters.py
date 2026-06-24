@@ -29,7 +29,9 @@ def test_adapter_after_mlp_trainable_leaves(tiny_vision_transformer):
     )
     plan = eqft.prepare_finetune(
         adapted,
-        trainable=eqft.TrainableSpec(mode="peft", method_name="adapter", train_head=True),
+        trainable=eqft.TrainableSpec(
+            mode="peft", method_name="adapter", train_head=True
+        ),
     )
 
     assert plan.trainable.blocks[0].mlp.adapters[0].down.weight is not None
@@ -154,7 +156,9 @@ def test_adapter_delta_roundtrip(tmp_path, tiny_vision_transformer):
 
     assert jnp.allclose(adapted(x), loaded(x), atol=1e-6)
     assert isinstance(loaded.blocks[0].mlp.adapters[0].down, eqx.nn.Linear)
-    assert jnp.array_equal(loaded.blocks[0].mlp.adapters[0].up.weight, adapter.up.weight)
+    assert jnp.array_equal(
+        loaded.blocks[0].mlp.adapters[0].up.weight, adapter.up.weight
+    )
     assert jnp.array_equal(
         loaded.blocks[0].mlp.adapters[0].residual_scale,
         adapter.residual_scale,
@@ -234,7 +238,9 @@ def test_named_adapter_bank_switches_active_adapter(tiny_vision_transformer):
         eqft.set_active_adapter(model, "missing")
 
 
-def test_adapter_bank_config_supports_policy_and_multiple_active(tiny_vision_transformer):
+def test_adapter_bank_config_supports_policy_and_multiple_active(
+    tiny_vision_transformer,
+):
     model = eqft.add_adapter(
         tiny_vision_transformer,
         name="dataset_a",

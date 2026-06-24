@@ -42,7 +42,9 @@ def test_rank_masked_lora_delta_roundtrip(tmp_path, tiny_vision_transformer):
     )
 
 
-def test_rank_masked_lora_default_starts_all_initial_ranks_active(tiny_vision_transformer):
+def test_rank_masked_lora_default_starts_all_initial_ranks_active(
+    tiny_vision_transformer,
+):
     model = eqft.apply_lora(
         tiny_vision_transformer,
         eqft.StaticRankMaskedLoRAConfig(
@@ -110,7 +112,7 @@ def test_apply_lora_rank_pattern_validates_paths_and_shapes():
         key=jr.PRNGKey(0),
     )
 
-    with pytest.raises(ValueError, match="unknown LoRA module paths"):
+    with pytest.raises(ValueError, match="unknown LoRA/AdaLoRA module paths"):
         eqft.apply_lora_rank_pattern(
             model,
             {"missing": jnp.ones((4,), dtype=jnp.bool_)},

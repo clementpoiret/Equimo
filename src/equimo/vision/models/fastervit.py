@@ -15,12 +15,29 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from equimo.core.layers.activation import get_act
 from equimo.vision.layers.attention import HATBlock
+from equimo.vision.layers.convolution import DoubleConvBlock
 from equimo.core.layers.ffn import get_ffn
 from equimo.core.layers.generic import _resolve_layer
 from equimo.core.layers.norm import get_norm
 from equimo.vision.layers.patch import ConvPatchEmbed
 from equimo.registry import register_model
 from equimo.utils import pool_sd, to_list
+
+_DOUBLE_CONV_CONFIG_KEYS = frozenset(
+    (
+        "channels",
+        "hidden_channels",
+        "kernel_size",
+        "stride",
+        "padding",
+        "use_bias",
+        "act_layer",
+        "norm_max_group",
+        "dropout",
+        "drop_path",
+        "init_values",
+    )
+)
 
 
 class TokenInitializer(eqx.Module):
@@ -134,6 +151,11 @@ class BlockChunk(eqx.Module):
         blocks = []
         for i in range(depth):
             config = kwargs | {k: kwargs[k][i] for k in keys_to_spread}
+            if block is DoubleConvBlock:
+                config = config | {"channels": config["dim"]}
+                config = {
+                    k: v for k, v in config.items() if k in _DOUBLE_CONV_CONFIG_KEYS
+                }
 
             if self.is_hat:
                 config = config | {
@@ -318,9 +340,9 @@ class FasterViT(eqx.Module):
         self.global_pool = global_pool
 
         self.patch_embed = ConvPatchEmbed(
-            in_channels,
-            in_dim,
-            dim,
+            in_channels=in_channels,
+            hidden_channels=in_dim,
+            embed_dim=dim,
             key=key_patchemb,
         )
 

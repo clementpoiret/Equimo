@@ -87,7 +87,7 @@ class BasicBlock(eqx.Module):
             else eqx.nn.Identity()
         )
         self.ffn = DoubleConvBlock(
-            dim=dim,
+            channels=dim,
             hidden_channels=int(dim**2),
             act_layer=act_layer,
             drop_path=drop_path,

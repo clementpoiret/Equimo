@@ -1237,7 +1237,7 @@ class SHMABlock(eqx.Module):
             key=key_attn,
         )
         self.ffn = DoubleConvBlock(
-            in_channels=dim,
+            channels=dim,
             hidden_channels=int(dim * ffn_ratio),
             kernel_size=1,
             stride=1,
@@ -1245,7 +1245,6 @@ class SHMABlock(eqx.Module):
             act_layer=act_layer,
             dropout=dropout,
             drop_path=0.0,
-            residual=False,
             init_values=None,  # handle in this block explicitely
             key=key_ffn,
         )
@@ -2581,7 +2580,7 @@ class ConvAttentionBlock(eqx.Module):
         )
 
         self.mlp = DoubleConvBlock(
-            in_channels=dim,
+            channels=dim,
             hidden_channels=int(dim * mlp_ratio),
             kernel_size=1,
             stride=1,

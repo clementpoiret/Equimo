@@ -9,7 +9,9 @@ from equimo.finetune.audio import recipes
 
 def test_audio_recipes_work_on_tiny_ast(tiny_ast_like_encoder):
     lora = recipes.lora_ast(tiny_ast_like_encoder, key=jr.PRNGKey(0), rank=2)
-    adapter = recipes.adapter_ast(tiny_ast_like_encoder, key=jr.PRNGKey(1), bottleneck=3)
+    adapter = recipes.adapter_ast(
+        tiny_ast_like_encoder, key=jr.PRNGKey(1), bottleneck=3
+    )
     head = recipes.multilabel_tagging_head(4, 6, key=jr.PRNGKey(2))
     ctc = recipes.ctc_head(4, 8, key=jr.PRNGKey(3))
 

@@ -234,7 +234,9 @@ class FourierFTConfig:
     num_coefficients: int
     frequency_selection: Literal["random", "low_frequency", "explicit"] = "random"
     coefficient_dtype: str = "float32"
-    reconstruction: Literal["conjugate_symmetric", "real_projection"] = "conjugate_symmetric"
+    reconstruction: Literal["conjugate_symmetric", "real_projection"] = (
+        "conjugate_symmetric"
+    )
     scale: float = 1.0
     seed: int | None = None
     frequency_indices: tuple[int, ...] = ()
@@ -437,7 +439,9 @@ class LoRAFALinear(eqx.Module):
         if rank < 1:
             raise ValueError("LoRA-FA rank must be >= 1.")
         if gradient_mode not in {"frozen_A", "corrected_v3"}:
-            raise ValueError("LoRAFAConfig.gradient_mode must be 'frozen_A' or 'corrected_v3'.")
+            raise ValueError(
+                "LoRAFAConfig.gradient_mode must be 'frozen_A' or 'corrected_v3'."
+            )
         weight = _linear_weight(base)
         out_features, in_features = weight.shape
         self.base = base
@@ -670,7 +674,9 @@ class RandLoRALinear(eqx.Module):
             self.random_B,
             self.random_A,
         )
-        delta = _mask_projection_segments(delta * self.scaling, self.projection_segments)
+        delta = _mask_projection_segments(
+            delta * self.scaling, self.projection_segments
+        )
         return delta.astype(_linear_weight(self.base).dtype)
 
     def merge(self):
@@ -729,8 +735,12 @@ class FourierFTLinear(eqx.Module):
     coefficients_imag: jax.Array
     weight_shape: tuple[int, int] = eqx.field(static=True)
     scale: float = eqx.field(static=True)
-    reconstruction: Literal["conjugate_symmetric", "real_projection"] = eqx.field(static=True)
-    frequency_selection: Literal["random", "low_frequency", "explicit"] = eqx.field(static=True)
+    reconstruction: Literal["conjugate_symmetric", "real_projection"] = eqx.field(
+        static=True
+    )
+    frequency_selection: Literal["random", "low_frequency", "explicit"] = eqx.field(
+        static=True
+    )
     seed: int | None = eqx.field(static=True)
     transform_normalization: str = eqx.field(static=True)
     reshape_convention: str = eqx.field(static=True)
@@ -794,7 +804,9 @@ class FourierFTLinear(eqx.Module):
         indices = self.frequency_indices % size
         if self.reconstruction == "conjugate_symmetric":
             self_conjugate = (indices == 0) | ((size % 2 == 0) & (indices == size // 2))
-            coeffs = jnp.where(self_conjugate, self.coefficients_real.astype(coeffs.dtype), coeffs)
+            coeffs = jnp.where(
+                self_conjugate, self.coefficients_real.astype(coeffs.dtype), coeffs
+            )
             spectrum = spectrum.at[indices].add(coeffs)
             conjugate_indices = (-indices) % size
             mirrored = jnp.where(self_conjugate, 0, jnp.conj(coeffs))
@@ -802,7 +814,9 @@ class FourierFTLinear(eqx.Module):
         elif self.reconstruction == "real_projection":
             spectrum = spectrum.at[indices].add(coeffs)
         else:
-            raise ValueError(f"Unsupported FourierFT reconstruction {self.reconstruction!r}.")
+            raise ValueError(
+                f"Unsupported FourierFT reconstruction {self.reconstruction!r}."
+            )
         delta = jnp.fft.ifft(spectrum, n=size).real.reshape(self.weight_shape)
         return (delta * self.scale).astype(_linear_weight(self.base).dtype)
 
@@ -943,7 +957,9 @@ def apply_lora(
                 f"LoRA target {path_to_str(module_path)!r} is "
                 f"{type(module).__name__}, expected a linear-like module."
             )
-        wrapper_type = LoRAMergedLinear if _is_fused_qkv_path(module_path) else LoRALinear
+        wrapper_type = (
+            LoRAMergedLinear if _is_fused_qkv_path(module_path) else LoRALinear
+        )
         lora_A = lora_B = None
         base_weight_delta = None
         metadata: tuple[tuple[str, str], ...] = ()
@@ -1046,7 +1062,9 @@ def apply_lora_fa(
                 f"{type(module).__name__}, expected a linear-like module."
             )
         if config.fan_in_fan_out:
-            raise ValueError("LoRA-FA currently requires canonical out_in weight layout.")
+            raise ValueError(
+                "LoRA-FA currently requires canonical out_in weight layout."
+            )
         updated = eqx.tree_at(
             lambda tree, path=module_path: get_path(tree, path),
             updated,
@@ -1090,7 +1108,9 @@ def apply_randlora(
                 f"{type(module).__name__}, expected a linear-like module."
             )
         if config.fan_in_fan_out:
-            raise ValueError("RandLoRA currently requires canonical out_in weight layout.")
+            raise ValueError(
+                "RandLoRA currently requires canonical out_in weight layout."
+            )
         updated = eqx.tree_at(
             lambda tree, path=module_path: get_path(tree, path),
             updated,
@@ -1105,7 +1125,9 @@ def apply_randlora(
                 mergeable=config.mergeable,
                 key=subkey,
                 seed=config.seed,
-                projection_segments=_projection_segments_for_target(module, config.target),
+                projection_segments=_projection_segments_for_target(
+                    module, config.target
+                ),
                 metadata=(
                     ("method", "randlora"),
                     ("basis_count", str(config.basis_count)),
@@ -1167,7 +1189,9 @@ def apply_eva_lora(
             center=config.activation_centering,
             fallback_key=subkey,
         )
-        lora_B = jnp.zeros((_linear_weight(module).shape[0], rank), dtype=_linear_weight(module).dtype)
+        lora_B = jnp.zeros(
+            (_linear_weight(module).shape[0], rank), dtype=_linear_weight(module).dtype
+        )
         updated = eqx.tree_at(
             lambda tree, path=module_path: get_path(tree, path),
             updated,
@@ -1182,7 +1206,10 @@ def apply_eva_lora(
                 key=subkey,
                 lora_A=lora_A,
                 lora_B=lora_B,
-                metadata=(("method", "eva"), *_eva_artifact_metadata(activation_artifacts[path_name])),
+                metadata=(
+                    ("method", "eva"),
+                    *_eva_artifact_metadata(activation_artifacts[path_name]),
+                ),
             ),
         )
     return updated
@@ -1456,11 +1483,14 @@ def load_lora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
             module = eqx.tree_at(
                 lambda linear: linear.weight,
                 module,
-                _linear_weight(module) + base_weight_delta.astype(_linear_weight(module).dtype),
+                _linear_weight(module)
+                + base_weight_delta.astype(_linear_weight(module).dtype),
             )
 
         entry_metadata = _entry_metadata(entry)
-        wrapper_type = LoRAMergedLinear if entry["class"] == "LoRAMergedLinear" else LoRALinear
+        wrapper_type = (
+            LoRAMergedLinear if entry["class"] == "LoRAMergedLinear" else LoRALinear
+        )
         lora_module = wrapper_type(
             module,
             rank=int(entry["rank"]),
@@ -1489,7 +1519,9 @@ def load_lora_delta(base_model: PyTree, bundle: FineTuneBundle) -> PyTree:
         )
         if entry["merged"]:
             lora_module = lora_module.merge()
-        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, lora_module)
+        updated = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), updated, lora_module
+        )
 
     return updated
 
@@ -1503,7 +1535,9 @@ def strip_lora(model: PyTree) -> PyTree:
         base = _restore_base_weight(module)
         stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, base)
     for path, module in iter_randlora_modules(stripped):
-        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, module.base)
+        stripped = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), stripped, module.base
+        )
     return stripped
 
 
@@ -1576,8 +1610,7 @@ def lora_rank_groups(model: PyTree) -> dict[str, int]:
     """Return canonical LoRA/AdaLoRA path strings and static maximum ranks."""
 
     groups = {
-        path_to_str(path): module.rank
-        for path, module in iter_lora_modules(model)
+        path_to_str(path): module.rank for path, module in iter_lora_modules(model)
     }
     groups.update(
         {
@@ -1634,8 +1667,7 @@ def apply_lora_rank_pattern(
         rank = module.rank if kind == "lora" else module.singular.shape[0]
         if mask.shape != (rank,):
             raise ValueError(
-                f"Rank mask for {name!r} must have shape ({rank},), "
-                f"got {mask.shape}."
+                f"Rank mask for {name!r} must have shape ({rank},), got {mask.shape}."
             )
         replacement = (
             _replace_lora_rank_mask(module, mask)
@@ -1728,7 +1760,10 @@ def _is_fused_qkv_path(path: Path) -> bool:
 def _target_mentions_qkv_segment(target: TargetSpec) -> bool:
     tags = set(target.tags_all) | set(target.tags_any)
     suffixes = (".q", ".k", ".v")
-    return any(tag in {"attention.q", "attention.k", "attention.v"} or tag.endswith(suffixes) for tag in tags)
+    return any(
+        tag in {"attention.q", "attention.k", "attention.v"} or tag.endswith(suffixes)
+        for tag in tags
+    )
 
 
 def _projection_segments_for_target(
@@ -1742,11 +1777,15 @@ def _projection_segments_for_target(
         return ()
     weight = _linear_weight(module)
     if weight.shape[0] % 3 != 0:
-        raise ValueError("QKV projection segments require an output dimension divisible by 3.")
+        raise ValueError(
+            "QKV projection segments require an output dimension divisible by 3."
+        )
     width = weight.shape[0] // 3
     starts = {"q": 0, "k": width, "v": 2 * width}
     return tuple(
-        ProjectionSegment(name=name, axis=0, start=starts[name], stop=starts[name] + width)
+        ProjectionSegment(
+            name=name, axis=0, start=starts[name], stop=starts[name] + width
+        )
         for name in ("q", "k", "v")
         if name in selected
     )
@@ -1770,7 +1809,9 @@ def _mask_projection_segments(
     mask = jnp.zeros((delta.shape[0],), dtype=delta.dtype)
     for segment in segments:
         if segment.axis != 0:
-            raise ValueError("LoRA projection segments currently use logical output axis 0.")
+            raise ValueError(
+                "LoRA projection segments currently use logical output axis 0."
+            )
         mask = mask.at[segment.start : segment.stop].set(1)
     return delta * mask[:, None]
 
@@ -1804,7 +1845,9 @@ def _init_lora(
 def _pissa_prepare(
     base: eqx.Module,
     config: LoRAConfig,
-) -> tuple[eqx.Module, jax.Array, jax.Array, jax.Array | None, tuple[tuple[str, str], ...]]:
+) -> tuple[
+    eqx.Module, jax.Array, jax.Array, jax.Array | None, tuple[tuple[str, str], ...]
+]:
     if not isinstance(config, PiSSAConfig):
         config = PiSSAConfig(
             rank=config.rank,
@@ -1914,11 +1957,7 @@ def _scaling(mode: ScalingMode, alpha: float, rank: int) -> float:
 
 def _is_linear_like(module: Any) -> bool:
     weight = getattr(module, "weight", None)
-    return (
-        callable(module)
-        and eqx.is_inexact_array(weight)
-        and weight.ndim == 2
-    )
+    return callable(module) and eqx.is_inexact_array(weight) and weight.ndim == 2
 
 
 def _linear_weight(module: Any) -> jax.Array:
@@ -1943,7 +1982,8 @@ def _restore_base_weight(module: LoRALinear) -> eqx.Module:
     return eqx.tree_at(
         lambda linear: linear.weight,
         module.base,
-        _linear_weight(module.base) - module.base_weight_delta.astype(_linear_weight(module.base).dtype),
+        _linear_weight(module.base)
+        - module.base_weight_delta.astype(_linear_weight(module.base).dtype),
     )
 
 
@@ -1960,9 +2000,7 @@ def _rank_mask(config: LoRAConfig, dtype) -> jax.Array | None:
     elif config.rank_mask_init == "target_rank":
         active_rank = min(config.target_rank, config.rank)
     else:
-        raise ValueError(
-            "rank_mask_init must be either 'all_active' or 'target_rank'."
-        )
+        raise ValueError("rank_mask_init must be either 'all_active' or 'target_rank'.")
     values = jnp.arange(config.rank) < active_rank
     return values.astype(jnp.bool_)
 
@@ -1983,9 +2021,13 @@ def _init_lora_fa_A(
     init: Literal["gaussian", "orthonormal_rows"],
 ) -> jax.Array:
     if init == "gaussian":
-        return (jr.normal(key, (rank, in_features), dtype=dtype) / jnp.sqrt(in_features)).astype(dtype)
+        return (
+            jr.normal(key, (rank, in_features), dtype=dtype) / jnp.sqrt(in_features)
+        ).astype(dtype)
     if init != "orthonormal_rows":
-        raise ValueError("LoRAFAConfig.A_init must be 'gaussian' or 'orthonormal_rows'.")
+        raise ValueError(
+            "LoRAFAConfig.A_init must be 'gaussian' or 'orthonormal_rows'."
+        )
     matrix = jr.normal(key, (in_features, rank), dtype=jnp.float32)
     q, _ = jnp.linalg.qr(matrix, mode="reduced")
     return q.T.astype(dtype)
@@ -2082,12 +2124,16 @@ def _fourier_frequency_indices(
         raise ValueError("FourierFT num_coefficients must be >= 1.")
     if selection == "explicit":
         if len(explicit) != count:
-            raise ValueError("Explicit FourierFT frequencies must match num_coefficients.")
+            raise ValueError(
+                "Explicit FourierFT frequencies must match num_coefficients."
+            )
         indices = jnp.asarray(explicit, dtype=jnp.int32) % size
     elif selection == "low_frequency":
         indices = jnp.arange(min(count, size), dtype=jnp.int32)
     elif selection == "random":
-        indices = jr.choice(key, size, shape=(min(count, size),), replace=False).astype(jnp.int32)
+        indices = jr.choice(key, size, shape=(min(count, size),), replace=False).astype(
+            jnp.int32
+        )
     else:
         raise ValueError(f"Unsupported FourierFT frequency_selection {selection!r}.")
     canonical = jnp.minimum(indices, (-indices) % size)
@@ -2156,7 +2202,9 @@ def _svd_statistics_matrix(
         return right_singular_vectors
     singular_values = jnp.asarray(singular_values, dtype=jnp.float32)
     count = min(int(right_singular_vectors.shape[0]), int(singular_values.shape[0]))
-    return singular_values[:count, None] * right_singular_vectors[:count].astype(jnp.float32)
+    return singular_values[:count, None] * right_singular_vectors[:count].astype(
+        jnp.float32
+    )
 
 
 def _validate_eva_calibration_artifact(
@@ -2171,21 +2219,32 @@ def _validate_eva_calibration_artifact(
             f"expected one of {tuple(sorted(allowed_kinds))!r}."
         )
     if not artifact.base_checkpoint_hash:
-        raise ValueError(f"EVA calibration artifact {logical_id!r} is missing base_checkpoint_hash.")
-    if artifact.logical_parameter_ids and logical_id not in artifact.logical_parameter_ids:
+        raise ValueError(
+            f"EVA calibration artifact {logical_id!r} is missing base_checkpoint_hash."
+        )
+    if (
+        artifact.logical_parameter_ids
+        and logical_id not in artifact.logical_parameter_ids
+    ):
         raise ValueError(
             f"EVA calibration artifact for {logical_id!r} does not include that logical ID."
         )
     if artifact.sample_count <= 0:
-        raise ValueError(f"EVA calibration artifact {logical_id!r} must have sample_count > 0.")
+        raise ValueError(
+            f"EVA calibration artifact {logical_id!r} must have sample_count > 0."
+        )
     if artifact.accumulation_dtype not in {"float32", "fp32", "float64", "fp64"}:
         raise ValueError(
             f"EVA calibration artifact {logical_id!r} must accumulate statistics in fp32 or fp64."
         )
     if not artifact.data_fingerprint:
-        raise ValueError(f"EVA calibration artifact {logical_id!r} is missing data_fingerprint.")
+        raise ValueError(
+            f"EVA calibration artifact {logical_id!r} is missing data_fingerprint."
+        )
     if not artifact.distributed_reduction:
-        raise ValueError(f"EVA calibration artifact {logical_id!r} is missing distributed_reduction.")
+        raise ValueError(
+            f"EVA calibration artifact {logical_id!r} is missing distributed_reduction."
+        )
     if config.calibration is None:
         return
     if artifact.kind != config.calibration.artifact_kind:
@@ -2249,10 +2308,14 @@ def _eva_rank_allocation(
     allocation = {name: min(per_layer_min_rank, max_rank) for name in names}
     remaining = rank_budget - sum(allocation.values())
     if remaining < 0:
-        raise ValueError("EVA rank_budget is smaller than the requested per-layer minimum.")
+        raise ValueError(
+            "EVA rank_budget is smaller than the requested per-layer minimum."
+        )
     scores: list[tuple[float, str, int]] = []
     for name in names:
-        activations = _activation_matrix(activation_artifacts[name], center=activation_centering)
+        activations = _activation_matrix(
+            activation_artifacts[name], center=activation_centering
+        )
         _, s, _ = jnp.linalg.svd(activations.astype(jnp.float32), full_matrices=False)
         width = int(s.shape[0])
         for index in range(allocation[name], min(width, max_rank)):
@@ -2287,34 +2350,44 @@ def _eva_lora_A(
         _, _, vh = jnp.linalg.svd(matrix, full_matrices=False)
         return vh[:rank].astype(dtype)
     except Exception:
-        return _init_lora_fa_A(rank, int(matrix.shape[-1]), fallback_key, dtype, "orthonormal_rows")
+        return _init_lora_fa_A(
+            rank, int(matrix.shape[-1]), fallback_key, dtype, "orthonormal_rows"
+        )
 
 
 def _map_lora_modules(model: PyTree, fn) -> PyTree:
     updated = model
     for path, module in iter_lora_modules(updated):
-        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, fn(module))
+        updated = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), updated, fn(module)
+        )
     return updated
 
 
 def _map_lora_fa_modules(model: PyTree, fn) -> PyTree:
     updated = model
     for path, module in iter_lora_fa_modules(updated):
-        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, fn(module))
+        updated = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), updated, fn(module)
+        )
     return updated
 
 
 def _map_fourierft_modules(model: PyTree, fn) -> PyTree:
     updated = model
     for path, module in iter_fourierft_modules(updated):
-        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, fn(module))
+        updated = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), updated, fn(module)
+        )
     return updated
 
 
 def _map_randlora_modules(model: PyTree, fn) -> PyTree:
     updated = model
     for path, module in iter_randlora_modules(updated):
-        updated = eqx.tree_at(lambda tree, p=path: get_path(tree, p), updated, fn(module))
+        updated = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), updated, fn(module)
+        )
     return updated
 
 

@@ -157,7 +157,7 @@ class SingleConvBlock(eqx.Module):
         x: Float[Array, "channels height width"],
         key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
-    ) -> Float[Array, "dim height width"]:
+    ) -> Float[Array, "channels height width"]:
         if key is None:
             key = jr.PRNGKey(0)
         return self.dropout(
@@ -171,8 +171,8 @@ class DoubleConvBlock(eqx.Module):
 
     This block implements a residual connection with two convolution layers,
     group normalization, activation, layer scaling, and drop path regularization.
-    The block maintains the input dimension while allowing for an optional
-    intermediate hidden dimension.
+    The block preserves the input channel count while allowing for an optional
+    intermediate hidden channel count.
 
     Attributes:
         conv1: First convolution layer
@@ -194,11 +194,8 @@ class DoubleConvBlock(eqx.Module):
     def __init__(
         self,
         *,
-        # NOTE: for interop with module requiring the `dim` arg
-        dim: int | None = None,
-        in_channels: int | None = None,
+        channels: int,
         hidden_channels: int | None = None,
-        out_channels: int | None = None,
         kernel_size: int = 3,
         stride: int = 1,
         padding: str | int = "SAME",
@@ -209,15 +206,12 @@ class DoubleConvBlock(eqx.Module):
         drop_path: float = 0.0,
         init_values: float | None = None,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         """Initialize the ConvBlock.
 
         Args:
-            dim: Input and output channel dimension (alias for in_channels when in==out)
-            in_channels: Number of input channels
-            hidden_channels: Optional intermediate channel dimension (defaults to in_channels)
-            out_channels: Number of output channels (defaults to in_channels)
+            channels: Number of input/output channels.
+            hidden_channels: Optional intermediate channel count (defaults to ``channels``).
             key: PRNG key for initialization
             kernel_size: Size of the convolutional kernel (default: 3)
             stride: Stride of the convolution (default: 1)
@@ -226,23 +220,18 @@ class DoubleConvBlock(eqx.Module):
             norm_max_group: Maximum number of groups for GroupNorm (default: 32)
             drop_path: Drop path rate (default: 0.0)
             init_values: Initial value for layer scaling (default: None)
-            **kwargs: Additional arguments passed to Conv layers
         """
         if act_layer is not None:
             act_layer = get_act(act_layer)
 
         key_conv1, key_conv2 = jr.split(key, 2)
 
-        # handle interop / backward compat
-        assert dim is not None or in_channels is not None
-        in_channels: int = in_channels or dim
-        hidden_channels: int = hidden_channels or in_channels
-        out_channels: int = out_channels or in_channels
+        hidden_channels: int = hidden_channels or channels
 
-        self.residual = in_channels == out_channels
+        self.residual = stride == 1
 
         self.conv1 = SingleConvBlock(
-            in_channels,
+            channels,
             hidden_channels,
             kernel_size=kernel_size,
             stride=stride,
@@ -255,7 +244,7 @@ class DoubleConvBlock(eqx.Module):
         )
         self.conv2 = SingleConvBlock(
             hidden_channels,
-            out_channels,
+            channels,
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
@@ -282,7 +271,7 @@ class DoubleConvBlock(eqx.Module):
         self.drop_path1 = DropPathAdd(dr1)
 
         self.ls1 = (
-            LayerScale(out_channels, init_values=init_values)
+            LayerScale(channels, init_values=init_values)
             if init_values
             else eqx.nn.Identity()
         )
@@ -1306,7 +1295,7 @@ class IFormerBlock(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        channels: int,
         *,
         kernel_size: int = 7,
         expand_ratio: float = 3.0,
@@ -1323,19 +1312,19 @@ class IFormerBlock(eqx.Module):
 
         act_layer = get_act(act_layer)
 
-        mid_channels = int(dim * expand_ratio)
+        mid_channels = int(channels * expand_ratio)
         self.conv1 = SingleConvBlock(
-            in_channels=dim,
-            out_channels=dim,
+            in_channels=channels,
+            out_channels=channels,
             kernel_size=kernel_size,
             stride=1,
-            groups=dim,
+            groups=channels,
             act_layer=None,
             use_bias=False,
             key=key_conv1,
         )
         self.conv2 = SingleConvBlock(
-            in_channels=dim,
+            in_channels=channels,
             out_channels=mid_channels,
             kernel_size=1,
             stride=1,
@@ -1345,7 +1334,7 @@ class IFormerBlock(eqx.Module):
         )
         self.conv3 = SingleConvBlock(
             in_channels=mid_channels,
-            out_channels=dim,
+            out_channels=channels,
             kernel_size=1,
             stride=1,
             act_layer=None,
@@ -1353,7 +1342,7 @@ class IFormerBlock(eqx.Module):
             key=key_conv3,
         )
         self.ls = (
-            LayerScale(dim, axis=0, init_values=init_values)
+            LayerScale(channels, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
@@ -1382,7 +1371,7 @@ class IFormerBlock(eqx.Module):
 
 @register_conv()
 class ConvNeXtBlock(eqx.Module):
-    """ConvNeXt block: DwConv7x7 -> LayerNorm2d -> PwConv1(dim->4*dim) -> GELU -> PwConv2(4*dim->dim).
+    """ConvNeXt block: DwConv7x7 -> LayerNorm2d -> PwConv1(C->4*C) -> GELU -> PwConv2(4*C->C).
 
     Uses depthwise convolution followed by channel-wise LayerNorm and two
     pointwise convolutions (implemented as 1x1 Conv2d). This matches the
@@ -1401,7 +1390,7 @@ class ConvNeXtBlock(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        channels: int,
         *,
         kernel_size: int = 7,
         mlp_ratio: float = 4.0,
@@ -1415,18 +1404,18 @@ class ConvNeXtBlock(eqx.Module):
 
         act_layer = get_act(act_layer)
 
-        mid_channels = int(dim * mlp_ratio)
+        mid_channels = int(channels * mlp_ratio)
         self.dwconv = eqx.nn.Conv2d(
-            in_channels=dim,
-            out_channels=dim,
+            in_channels=channels,
+            out_channels=channels,
             kernel_size=kernel_size,
             padding=kernel_size // 2,
-            groups=dim,
+            groups=channels,
             key=key_dw,
         )
-        self.norm = LayerNorm2d(dim, eps=1e-6)
+        self.norm = LayerNorm2d(channels, eps=1e-6)
         self.pwconv1 = eqx.nn.Conv2d(
-            in_channels=dim,
+            in_channels=channels,
             out_channels=mid_channels,
             kernel_size=1,
             key=key_pw1,
@@ -1434,12 +1423,12 @@ class ConvNeXtBlock(eqx.Module):
         self.act = act_layer
         self.pwconv2 = eqx.nn.Conv2d(
             in_channels=mid_channels,
-            out_channels=dim,
+            out_channels=channels,
             kernel_size=1,
             key=key_pw2,
         )
         self.ls = (
-            LayerScale(dim, axis=0, init_values=init_values)
+            LayerScale(channels, axis=0, init_values=init_values)
             if init_values is not None
             else eqx.nn.Identity()
         )
@@ -2185,7 +2174,7 @@ class PartialConv2d(eqx.Module):
            Networks" [arXiv:2303.03667](https://arxiv.org/abs/2303.03667).
 
     Implementation details:
-    - Let `C` be `in_channels` and `c = C // n_dim`. Only the first `c`
+    - Let `C` be `channels` and `c = C // n_dim`. Only the first `c`
       channels are convolved with a `Conv2d(c, c, ...)`. The remaining
       `C - c` channels are forwarded unchanged.
     - The forward pass uses a functional "update-slice" pattern
@@ -2198,8 +2187,9 @@ class PartialConv2d(eqx.Module):
       fail with a shape error.
 
     Attributes
-    - dim: Number of channels to be convolved, computed as `in_channels // n_dim`.
-           This is treated as a static field for compilation stability.
+    - partial_channels: Number of channels to be convolved, computed as
+            `channels // n_dim`. This is treated as a static field for
+            compilation stability.
     - conv: The underlying `eqx.nn.Conv2d(c, c, ...)` applied to the first `c`
             channels.
 
@@ -2208,13 +2198,13 @@ class PartialConv2d(eqx.Module):
       convolution with the same kernel.
     """
 
-    dim: int = eqx.field(static=True)
+    partial_channels: int = eqx.field(static=True)
 
     conv: eqx.nn.Conv2d
 
     def __init__(
         self,
-        in_channels: int,
+        channels: int,
         n_dim: int,
         *,
         key: PRNGKeyArray,
@@ -2227,7 +2217,7 @@ class PartialConv2d(eqx.Module):
         Initialize a PartialConv2d layer.
 
         Parameters
-        - in_channels: Total number of input channels `C`.
+        - channels: Total number of input/output channels `C`.
         - n_dim: Divisor used to determine the number of convolved channels.
                  The layer will convolve `C // n_dim` channels and leave the
                  remaining channels untouched. Must be > 0, and
@@ -2241,9 +2231,9 @@ class PartialConv2d(eqx.Module):
         - use_bias: Whether to include a bias term in the underlying convolution.
         - **kwargs: Forwarded to `eqx.nn.Conv2d` (e.g., `dilation`, `groups`).
         """
-        self.dim = in_channels // n_dim
-        assert self.dim >= 1, "in_channels // n_dim must be >= 1"
-        assert self.dim <= in_channels, (
+        self.partial_channels = channels // n_dim
+        assert self.partial_channels >= 1, "channels // n_dim must be >= 1"
+        assert self.partial_channels <= channels, (
             "Computed convolved channels exceed total channels"
         )
 
@@ -2279,8 +2269,8 @@ class PartialConv2d(eqx.Module):
             )
 
         self.conv = eqx.nn.Conv2d(
-            in_channels=self.dim,
-            out_channels=self.dim,
+            in_channels=self.partial_channels,
+            out_channels=self.partial_channels,
             kernel_size=kernel_size,
             stride=1,
             padding=padding,
@@ -2295,7 +2285,7 @@ class PartialConv2d(eqx.Module):
         key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> Float[Array, "channels height width"]:
-        c = self.dim
+        c = self.partial_channels
         y1 = self.conv(x[:c, :, :])
         return x.at[:c, :, :].set(y1)
 
@@ -2349,9 +2339,8 @@ class FasterNetBlock(eqx.Module):
 
     def __init__(
         self,
-        dim: int | None = None,
+        channels: int,
         *,
-        in_channels: int | None = None,
         key: PRNGKeyArray,
         n_dim: int = 4,
         mlp_ratio: int = 3,
@@ -2362,18 +2351,15 @@ class FasterNetBlock(eqx.Module):
         act_layer: str | Callable | None = "relu",
         dropout: float = 0.0,
         drop_path: float = 0.0,
-        norm_kwargs: dict = {},
+        norm_kwargs: dict | None = None,
         residual: bool = True,
         init_values: float | None = None,
-        **kwargs,
     ):
         """
         Initialize a FasterNetBlock.
 
         Parameters
-        - dim: Number of input/output channels `C` (canonical name for modern blocks).
-               ``in_channels`` is accepted as a backward-compatible alias.
-        - in_channels: Backward-compatible alias for ``dim``.
+        - channels: Number of input/output channels `C`.
         - key: PRNG key used to initialize submodules. Internally split for
           spatial mixing and pointwise convolutions.
         - n_dim: Divisor determining the fraction of channels convolved by
@@ -2396,7 +2382,6 @@ class FasterNetBlock(eqx.Module):
         - norm_kwargs: Extra keyword arguments forwarded to the normalization
           layer constructor.
         - residual: Whether to add the residual connection (with DropPath).
-        - **kwargs: Reserved for future extensions; forwarded where applicable.
 
         Notes
         - The block preserves `[H, W]`. Ensure `PartialConv2d` is configured
@@ -2405,20 +2390,16 @@ class FasterNetBlock(eqx.Module):
           count as its first argument.
         - The same input/output channel count `C` is used throughout the block.
         """
-
-        assert dim is not None or in_channels is not None, (
-            "Provide either `dim` or `in_channels`."
-        )
-        dim = dim if dim is not None else in_channels
+        norm_kwargs = {} if norm_kwargs is None else norm_kwargs
 
         key_sm, key_pw1, key_pw2 = jr.split(key, 3)
         self.residual = residual
 
-        self.spatial_mixing = PartialConv2d(in_channels=dim, n_dim=n_dim, key=key_sm)
+        self.spatial_mixing = PartialConv2d(channels=channels, n_dim=n_dim, key=key_sm)
 
-        hidden_channels = mlp_ratio * dim
+        hidden_channels = mlp_ratio * channels
         self.pw_conv1 = eqx.nn.Conv2d(
-            dim,
+            channels,
             hidden_channels,
             kernel_size=1,
             stride=1,
@@ -2428,7 +2409,7 @@ class FasterNetBlock(eqx.Module):
         )
         self.pw_conv2 = eqx.nn.Conv2d(
             hidden_channels,
-            dim,
+            channels,
             kernel_size=1,
             stride=1,
             padding="SAME",
@@ -2449,7 +2430,7 @@ class FasterNetBlock(eqx.Module):
         self.dropout = eqx.nn.Dropout(dropout)
         self.drop_path = DropPathAdd(drop_path)
         self.ls = (
-            LayerScale(dim, axis=0, init_values=init_values)
+            LayerScale(channels, axis=0, init_values=init_values)
             if init_values is not None and self.residual
             else eqx.nn.Identity()
         )
@@ -2490,7 +2471,7 @@ class GLUConv(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        channels: int,
         hidden_channels: int,
         *,
         glu_norm: bool = True,
@@ -2503,7 +2484,7 @@ class GLUConv(eqx.Module):
         key_conv1, key_conv2, key_dwconv = jr.split(key, 3)
 
         self.conv1 = eqx.nn.Conv2d(
-            in_channels=in_channels,
+            in_channels=channels,
             out_channels=hidden_channels * 2,
             kernel_size=1,
             stride=1,
@@ -2513,7 +2494,7 @@ class GLUConv(eqx.Module):
         )
         self.conv2 = eqx.nn.Conv2d(
             in_channels=hidden_channels,
-            out_channels=in_channels,
+            out_channels=channels,
             kernel_size=1,
             stride=1,
             padding=0,
@@ -2592,7 +2573,7 @@ class ATConv(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        channels: int,
         *,
         kernel_size: int = 3,
         act_layer: str | Callable = "gelu",
@@ -2607,8 +2588,8 @@ class ATConv(eqx.Module):
         self.padding = kernel_size // 2
 
         self.x_proj = eqx.nn.Conv2d(
-            in_channels,
-            in_channels,
+            channels,
+            channels,
             kernel_size=1,
             stride=1,
             padding=0,
@@ -2616,8 +2597,8 @@ class ATConv(eqx.Module):
             key=key_xproj,
         )
         self.proj = eqx.nn.Conv2d(
-            in_channels,
-            in_channels,
+            channels,
+            channels,
             kernel_size=1,
             stride=1,
             padding=0,
@@ -2625,8 +2606,8 @@ class ATConv(eqx.Module):
             key=key_proj,
         )
         self.kernel_proj = eqx.nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=in_channels,
+            in_channels=channels,
+            out_channels=channels,
             kernel_size=1,
             stride=1,
             padding=0,
@@ -2636,7 +2617,7 @@ class ATConv(eqx.Module):
         self.kernel_act = act_layer
         self.kernel_gen = eqx.nn.Linear(k2, k2, use_bias=use_bias, key=key_kg)
         self.pool = eqx.nn.AdaptiveAvgPool1d(target_shape=k2)
-        self.difference_control = jnp.zeros((1, 1, 1, in_channels))
+        self.difference_control = jnp.zeros((1, 1, 1, channels))
 
     def _generate_kernels(
         self, x: Float[Array, "channels height width"]
@@ -2701,9 +2682,8 @@ class ATConvBlock(eqx.Module):
 
     def __init__(
         self,
-        dim: int | None = None,
+        channels: int,
         *,
-        in_channels: int | None = None,
         kernel_size: int = 3,
         exp_rate: float = 4.0,
         act_layer: str | Callable = "gelu",
@@ -2717,24 +2697,22 @@ class ATConvBlock(eqx.Module):
         key: PRNGKeyArray,
         **kwargs,
     ):
-        assert dim is not None or in_channels is not None
-        dim = dim if dim is not None else in_channels
         key_tm, key_cm = jr.split(key, 2)
         self.residual = residual
 
-        hidden_features = int(dim * exp_rate)
+        hidden_features = int(channels * exp_rate)
         # NOTE: slightly different from the original paper
         glu_hidden_features = 32 * round(int(2 * hidden_features / 3) / 32)
 
         self.token_mixer = ATConv(
-            dim,
+            channels,
             kernel_size=kernel_size,
             act_layer=act_layer,
             use_bias=use_bias,
             key=key_tm,
         )
         self.channel_mixer = GLUConv(
-            dim,
+            channels,
             hidden_channels=glu_hidden_features,
             glu_norm=glu_norm,
             glu_dwconv=glu_dwconv,
@@ -2743,11 +2721,11 @@ class ATConvBlock(eqx.Module):
             key=key_cm,
         )
 
-        self.ls1 = LayerScale(dim) if use_layer_scale else eqx.nn.Identity()
-        self.ls2 = LayerScale(dim) if use_layer_scale else eqx.nn.Identity()
+        self.ls1 = LayerScale(channels) if use_layer_scale else eqx.nn.Identity()
+        self.ls2 = LayerScale(channels) if use_layer_scale else eqx.nn.Identity()
 
-        self.norm1 = LayerNorm2d(dim)
-        self.norm2 = LayerNorm2d(dim)
+        self.norm1 = LayerNorm2d(channels)
+        self.norm2 = LayerNorm2d(channels)
 
         if isinstance(drop_path, list):
             if (_l := len(drop_path)) == 1:
@@ -2818,7 +2796,7 @@ class S2Mixer(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        channels: int,
         *,
         key: PRNGKeyArray,
         sampling_ratio: float = 0.125,
@@ -2827,19 +2805,19 @@ class S2Mixer(eqx.Module):
     ):
         """
         Args:
-            in_channels: Input channel dimension.
+            channels: Input/output channel count.
             sampling_ratio: Ratio of channels used for each mixing branch.
             kernel_sizes: Kernel sizes for the SWConvs (default: [5, 7]).
             dilations: Dilation rates for the SWConvs (default: [2, 2]).
         """
-        mix_channels = int(in_channels * sampling_ratio)
+        mix_channels = int(channels * sampling_ratio)
         num_branches = len(kernel_sizes)
 
         # Calculate split indices: [mix_dim, mix_dim*2, ...]
         # The remainder will be the identity branch.
         self.split_indices = [mix_channels * (i + 1) for i in range(num_branches)]
 
-        if self.split_indices[-1] > in_channels:
+        if self.split_indices[-1] > channels:
             raise ValueError(
                 "Sampling ratio and number of branches exceed total channels."
             )
@@ -2898,7 +2876,7 @@ class ShiftNeck(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        channels: int,
         *,
         key: PRNGKeyArray,
         reduction_ratio: int = 8,
@@ -2906,16 +2884,16 @@ class ShiftNeck(eqx.Module):
     ):
         """
         Args:
-            in_channels: Input channel dimension (usually 2c in ShiftFFN).
+            channels: Input/output channel count (usually 2c in ShiftFFN).
             reduction_ratio: Reduction factor for the bottleneck (default 8).
         """
         act_layer = get_act(act_layer)
         key_r, key_e = jr.split(key, 2)
 
-        hidden_channels = max(1, in_channels // reduction_ratio)
+        hidden_channels = max(1, channels // reduction_ratio)
 
         self.reduce = eqx.nn.Conv2d(
-            in_channels=in_channels,
+            in_channels=channels,
             out_channels=hidden_channels,
             kernel_size=1,
             use_bias=True,
@@ -2926,7 +2904,7 @@ class ShiftNeck(eqx.Module):
 
         self.expand = eqx.nn.Conv2d(
             in_channels=hidden_channels,
-            out_channels=in_channels,
+            out_channels=channels,
             kernel_size=1,
             use_bias=True,
             key=key_e,
@@ -2969,7 +2947,7 @@ class ShiftFFN(eqx.Module):
 
     def __init__(
         self,
-        in_channels: int,
+        channels: int,
         *,
         key: PRNGKeyArray,
         expansion_ratio_first: int = 2,
@@ -2979,10 +2957,10 @@ class ShiftFFN(eqx.Module):
         act_layer = get_act(act_layer)
         key_c1, key_sn, key_c2 = jr.split(key, 3)
 
-        mid_channels = in_channels * expansion_ratio_first
+        mid_channels = channels * expansion_ratio_first
 
         self.conv1 = eqx.nn.Conv2d(
-            in_channels=in_channels,
+            in_channels=channels,
             out_channels=mid_channels,
             kernel_size=1,
             use_bias=True,
@@ -2990,7 +2968,7 @@ class ShiftFFN(eqx.Module):
         )
 
         self.shift_neck = ShiftNeck(
-            in_channels=mid_channels,
+            channels=mid_channels,
             reduction_ratio=neck_reduction_ratio,
             act_layer=act_layer,
             key=key_sn,
@@ -3000,7 +2978,7 @@ class ShiftFFN(eqx.Module):
 
         self.conv2 = eqx.nn.Conv2d(
             in_channels=mid_channels * 2,
-            out_channels=in_channels,
+            out_channels=channels,
             kernel_size=1,
             use_bias=True,
             key=key_c2,
@@ -3052,9 +3030,8 @@ class FreeNetBlock(eqx.Module):
 
     def __init__(
         self,
-        dim: int | None = None,
+        channels: int,
         *,
-        in_channels: int | None = None,
         key: PRNGKeyArray,
         mixer_ratio: float = 0.125,
         mixer_kernel_sizes: Sequence[int] = [5, 7],
@@ -3068,8 +3045,6 @@ class FreeNetBlock(eqx.Module):
         residual: bool = True,
         **kwargs,
     ):
-        assert dim is not None or in_channels is not None
-        dim = dim if dim is not None else in_channels
         act_layer = get_act(act_layer)
         if norm_layer is not None:
             norm_layer = get_norm(norm_layer)
@@ -3077,7 +3052,7 @@ class FreeNetBlock(eqx.Module):
         self.residual = residual
 
         self.mixer = S2Mixer(
-            in_channels=dim,
+            channels=channels,
             sampling_ratio=mixer_ratio,
             kernel_sizes=mixer_kernel_sizes,
             dilations=mixer_dilations,
@@ -3085,22 +3060,22 @@ class FreeNetBlock(eqx.Module):
         )
 
         if norm_layer == eqx.nn.GroupNorm:
-            num_groups = nearest_power_of_2_divisor(dim, 32)
-            self.norm = eqx.nn.GroupNorm(num_groups, dim, **norm_kwargs)
+            num_groups = nearest_power_of_2_divisor(channels, 32)
+            self.norm = eqx.nn.GroupNorm(num_groups, channels, **norm_kwargs)
         elif norm_layer is not None:
-            self.norm = norm_layer(dim, **norm_kwargs)
+            self.norm = norm_layer(channels, **norm_kwargs)
         else:
             self.norm = eqx.nn.Identity()
 
         self.ffn = ShiftFFN(
-            in_channels=dim,
+            channels=channels,
             expansion_ratio_first=ffn_expansion,
             act_layer=act_layer,
             key=key_ffn,
         )
 
         self.ls = (
-            LayerScale(dim, axis=0, init_values=init_values)
+            LayerScale(channels, axis=0, init_values=init_values)
             if init_values is not None and self.residual
             else eqx.nn.Identity()
         )

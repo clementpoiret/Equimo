@@ -113,11 +113,24 @@ class BlockChunk(eqx.Module):
             block_out = out_channels
 
         if module is not None:
+            module_axis = (
+                "channels"
+                if module.__name__.lower()
+                in {
+                    "atconvblock",
+                    "convnextblock",
+                    "doubleconvblock",
+                    "fasternetblock",
+                    "freenetblock",
+                    "iformerblock",
+                }
+                else "dim"
+            )
             if block_type == "normal":
                 blocks = []
                 for i in range(depth):
                     config = (
-                        {"dim": block_out}
+                        {module_axis: block_out}
                         | module_kwargs
                         | {k: module_kwargs[k][i] for k in keys_to_spread}
                     )
@@ -164,7 +177,7 @@ class BlockChunk(eqx.Module):
                     depth=depth,
                     module=module,
                     module_kwargs={
-                        "dim": block_out,
+                        module_axis: block_out,
                         "in_channels": block_in,
                         "out_channels": block_out,
                     }

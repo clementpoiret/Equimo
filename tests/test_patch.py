@@ -33,7 +33,11 @@ class TestPatchEmbedding:
     def test_output_shape_flattened(self):
         """flatten=True → (num_patches, dim)."""
         layer = PatchEmbedding(
-            self.IN_CHANNELS, self.DIM, self.PATCH_SIZE, key=KEY, flatten=True
+            in_channels=self.IN_CHANNELS,
+            embed_dim=self.DIM,
+            patch_size=self.PATCH_SIZE,
+            key=KEY,
+            flatten=True,
         )
         x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE))
         expected_patches = (self.IMG_SIZE // self.PATCH_SIZE) ** 2
@@ -42,7 +46,11 @@ class TestPatchEmbedding:
     def test_output_shape_spatial(self):
         """flatten=False → (dim, grid_h, grid_w)."""
         layer = PatchEmbedding(
-            self.IN_CHANNELS, self.DIM, self.PATCH_SIZE, key=KEY, flatten=False
+            in_channels=self.IN_CHANNELS,
+            embed_dim=self.DIM,
+            patch_size=self.PATCH_SIZE,
+            key=KEY,
+            flatten=False,
         )
         x = jr.normal(KEY, (self.IN_CHANNELS, self.IMG_SIZE, self.IMG_SIZE))
         grid = self.IMG_SIZE // self.PATCH_SIZE
@@ -207,7 +215,10 @@ class TestConvPatchEmbed:
     def test_output_shape(self):
         """Two stride-2 convs reduce H and W by 4× each."""
         layer = ConvPatchEmbed(
-            self.IN_CHANNELS, self.HIDDEN_CHANNELS, self.OUT_CHANNELS, key=KEY
+            in_channels=self.IN_CHANNELS,
+            hidden_channels=self.HIDDEN_CHANNELS,
+            embed_dim=self.OUT_CHANNELS,
+            key=KEY,
         )
         x = jr.normal(KEY, (self.IN_CHANNELS, self.H, self.W))
         assert layer(x).shape == (self.OUT_CHANNELS, self.H // 4, self.W // 4)
@@ -287,14 +298,14 @@ class TestPatchMerging:
 
     def test_default_output_shape_doubles_channels(self):
         """Default: output channels = 2 × input dim."""
-        layer = PatchMerging(self.DIM, key=KEY)
+        layer = PatchMerging(in_dim=self.DIM, key=KEY)
         x = jr.normal(KEY, (self.SEQLEN, self.DIM))
         assert layer(x).shape == (self.SEQLEN // 4, self.DIM * 2)
 
     def test_custom_out_dim(self):
         """out_dim overrides the default channel doubling."""
         out_dim = 48
-        layer = PatchMerging(self.DIM, out_dim=out_dim, key=KEY)
+        layer = PatchMerging(in_dim=self.DIM, out_dim=out_dim, key=KEY)
         x = jr.normal(KEY, (self.SEQLEN, self.DIM))
         assert layer(x).shape == (self.SEQLEN // 4, out_dim)
 

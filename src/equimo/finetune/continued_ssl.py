@@ -66,7 +66,9 @@ def continued_ssl_trainable_spec(
     if config.peft is None and config.unfreeze_blocks <= 0 and not config.train_norm:
         return TrainableSpec(mode="head" if config.train_head else "frozen")
 
-    active_depths = _selected_depths(model, config.unfreeze_blocks, config.unfreeze_policy)
+    active_depths = _selected_depths(
+        model, config.unfreeze_blocks, config.unfreeze_policy
+    )
     peft_tag = _peft_tag(config.peft)
 
     def predicate(path: Path, leaf: Any) -> bool:
@@ -163,7 +165,9 @@ def _selected_depths(
 ) -> frozenset[int]:
     if count <= 0:
         return frozenset()
-    depths = sorted({info.depth for info in iter_param_infos(model) if info.depth is not None})
+    depths = sorted(
+        {info.depth for info in iter_param_infos(model) if info.depth is not None}
+    )
     if not depths:
         return frozenset()
     count = min(count, len(depths))
@@ -205,7 +209,9 @@ def _continued_ssl_metadata(config: ContinuedSSLAdaptationConfig) -> Mapping[str
     }
 
 
-def _supervised_after_ssl_metadata(config: SupervisedAfterSSLConfig) -> Mapping[str, Any]:
+def _supervised_after_ssl_metadata(
+    config: SupervisedAfterSSLConfig,
+) -> Mapping[str, Any]:
     return {
         "stage": "supervised_after_ssl",
         "peft": _peft_metadata(config.peft),

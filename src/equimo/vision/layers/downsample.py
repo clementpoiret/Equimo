@@ -248,7 +248,7 @@ class PWSEDownsampler(eqx.Module):
             drop_path=drop_path,
         )
         self.conv2 = DoubleConvBlock(
-            in_channels=in_channels,
+            channels=in_channels,
             hidden_channels=in_channels * 2,
             act_layer=None,
             drop_path=drop_path,
@@ -276,7 +276,7 @@ class PWSEDownsampler(eqx.Module):
             drop_path=drop_path,
         )
         self.conv4 = DoubleConvBlock(
-            in_channels=out_channels,
+            channels=out_channels,
             hidden_channels=out_channels * 2,
             act_layer=None,
             drop_path=drop_path,

@@ -11,7 +11,7 @@ import jax.random as jr
 import pytest
 
 from equimo.registry import _MODEL_REGISTRY, get_model_cls, register_model
-from equimo.serialization import _validate_identifier, load_model, save_model
+from equimo.serialization import _validate_identifier, load_weights, save_model
 from equimo.vision.io import _center_crop_square
 
 KEY = jr.PRNGKey(0)
@@ -212,7 +212,7 @@ class TestGetModelCls:
             assert issubclass(cls, eqx.Module), f"{name} not an eqx.Module subclass"
 
 
-# save_model / load_model round-trip
+# save_model / load_weights round-trip
 
 
 class _TinyModel(eqx.Module):
@@ -229,10 +229,6 @@ class _TinyModel(eqx.Module):
 
     def __call__(self, x):
         return jax.vmap(self.linear)(x)
-
-
-# Register for load_model string-based tests
-register_model("_tinymodel_test")(_TinyModel)
 
 
 class TestSaveLoadRoundTrip:
@@ -302,71 +298,50 @@ class TestSaveLoadRoundTrip:
             meta = json.load(f)
         assert meta["timm"] == []
 
-    def test_load_roundtrip_compressed(self, tmp_path):
+    def test_load_weights_roundtrip_compressed(self, tmp_path):
         model = self._make_model()
         path = tmp_path / "model"
         save_model(path, model, self._model_config())
-        loaded = load_model(_TinyModel, path=tmp_path / "model.tar.lz4")
+        loaded = load_weights(self._make_model(), path=tmp_path / "model.tar.lz4")
         x = jr.normal(KEY, (4, 8))
         assert jnp.allclose(model(x), loaded(x), atol=1e-5)
 
-    def test_load_roundtrip_uncompressed(self, tmp_path):
+    def test_load_weights_roundtrip_uncompressed(self, tmp_path):
         model = self._make_model()
         path = tmp_path / "model_dir"
         save_model(path, model, self._model_config(), compression=False)
-        loaded = load_model(_TinyModel, path=path)
+        loaded = load_weights(self._make_model(), path=path)
         x = jr.normal(KEY, (4, 8))
         assert jnp.allclose(model(x), loaded(x), atol=1e-5)
 
-    def test_load_string_cls(self, tmp_path):
-        model = self._make_model()
-        path = tmp_path / "model"
-        save_model(path, model, self._model_config())
-        loaded = load_model("_tinymodel_test", path=tmp_path / "model.tar.lz4")
-        assert isinstance(loaded, _TinyModel)
-
-    def test_load_inference_mode_default(self, tmp_path):
+    def test_load_weights_inference_mode_default(self, tmp_path):
         model = self._make_model()
         path = tmp_path / "model_dir"
         save_model(path, model, self._model_config(), compression=False)
-        loaded = load_model(_TinyModel, path=path, inference_mode=True)
+        loaded = load_weights(self._make_model(), path=path, inference_mode=True)
         # inference_mode=True means no training state — model must still be callable
         x = jr.normal(KEY, (4, 8))
         assert loaded(x).shape == (4, 4)
 
-    def test_load_model_kwargs_override(self, tmp_path):
-        """model_kwargs must override non-structural stored model_config values."""
-        model = self._make_model()
-        path = tmp_path / "model_dir"
-        save_model(
-            path,
-            model,
-            {"in_features": 8, "out_features": 4, "label": "saved"},
-            compression=False,
-        )
-        # Override label (non-structural) at load time
-        loaded = load_model(_TinyModel, path=path, label="overridden")
-        assert loaded.label == "overridden"
-
-    def test_load_requires_identifier_or_path(self):
+    def test_load_weights_requires_identifier_or_path(self):
         with pytest.raises(ValueError, match="Both.*None"):
-            load_model(_TinyModel)
+            load_weights(self._make_model())
 
-    def test_load_exclusive_identifier_path(self, tmp_path):
+    def test_load_weights_exclusive_identifier_path(self, tmp_path):
         with pytest.raises(ValueError, match="Both.*defined"):
-            load_model(_TinyModel, identifier="some_id", path=tmp_path / "x")
+            load_weights(self._make_model(), identifier="some_id", path=tmp_path / "x")
 
-    def test_load_compressed_cached_decompression(self, tmp_path):
+    def test_load_weights_compressed_cached_decompression(self, tmp_path):
         """Loading a compressed model twice must reuse the cached decompression dir."""
         model = self._make_model()
         path = tmp_path / "model"
         save_model(path, model, self._model_config())
         archive = tmp_path / "model.tar.lz4"
-        load_model(_TinyModel, path=archive)
+        load_weights(self._make_model(), path=archive)
         decompressed = archive.with_suffix("").with_suffix("")
         assert decompressed.exists()
         # Second load must not fail
-        load_model(_TinyModel, path=archive)
+        load_weights(self._make_model(), path=archive)
 
 
 # download (identifier validation; no network calls)

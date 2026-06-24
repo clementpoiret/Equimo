@@ -22,11 +22,7 @@ def test_dependency_free_integration_group_metadata(tiny_vision_transformer):
 def test_rollfast_metadata_exposes_structural_compiler_fields(tiny_vision_transformer):
     plan = eqft.full_ft_llrd(tiny_vision_transformer)
     groups = rollfast.rollfast_group_metadata(plan)
-    labels = {
-        label
-        for label in jtu.tree_leaves(plan.labels)
-        if label is not None
-    }
+    labels = {label for label in jtu.tree_leaves(plan.labels) if label is not None}
     group_labels = {group["label"] for group in groups}
 
     assert labels <= group_labels

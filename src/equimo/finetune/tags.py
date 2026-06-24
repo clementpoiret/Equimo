@@ -103,7 +103,10 @@ def canonical_tags_for_path(path: Path, leaf: Any | None = None) -> frozenset[st
         tags.update(("embedding", "embedding.position"))
     if "cls_token" in parts:
         tags.update(("embedding", "embedding.class_token"))
-    if any(part in {"reg_token", "reg_tokens", "register_token", "register_tokens"} for part in parts):
+    if any(
+        part in {"reg_token", "reg_tokens", "register_token", "register_tokens"}
+        for part in parts
+    ):
         tags.update(("embedding", "embedding.register_token"))
     if "dist_token" in parts:
         tags.update(("embedding", "embedding.distillation_token"))
@@ -350,8 +353,10 @@ def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
         tags.update(("adapter", "adapter_fusion"))
     if "prompt" in parts or "prompts" in parts:
         tags.add("prompt")
-    if "prefix" in parts or "prefixes" in parts or any(
-        part.startswith("prefix_") for part in parts
+    if (
+        "prefix" in parts
+        or "prefixes" in parts
+        or any(part.startswith("prefix_") for part in parts)
     ):
         tags.add("prefix")
     if "ia3" in parts:

@@ -78,7 +78,7 @@ class AttNet(eqx.Module):
                     out_channels=dims[i],
                     module="atconvblock",
                     module_kwargs={
-                        "dim": dims[i],
+                        "channels": dims[i],
                         "kernel_size": kernel_sizes[i],
                         "exp_rate": exp_rates[i],
                         "act_layer": act_layer,

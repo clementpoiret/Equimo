@@ -240,12 +240,6 @@ def main():
             compression=True,
         )
 
-        # Ensure the serialization is okay
-        # loaded_model = load_model(cls="vit", path=save_path.with_suffix(".tar.lz4"))
-        # a = dinov3.features(jax_arr, inference=True, key=key)
-        # b = loaded_model.features(jax_arr, inference=True, key=key)
-        # jnp.mean((a - b) ** 2)
-
 
 if __name__ == "__main__":
     main()

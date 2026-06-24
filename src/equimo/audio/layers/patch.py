@@ -76,7 +76,7 @@ class SpectrogramPatchEmbedding(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        embed_dim: int,
         patch_size: int | Tuple[int, int],
         *,
         input_fdim: int,
@@ -101,7 +101,7 @@ class SpectrogramPatchEmbedding(eqx.Module):
         self.proj = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=1,
-            out_channels=dim,
+            out_channels=embed_dim,
             kernel_size=self.patch_size,
             stride=self.stride,
             key=key,

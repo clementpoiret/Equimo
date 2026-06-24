@@ -18,7 +18,9 @@ def test_prefix_trainable_only_prefixes(tiny_vision_transformer):
     )
     plan = eqft.prepare_finetune(
         prefixed,
-        trainable=eqft.TrainableSpec(mode="peft", method_name="prefix", train_head=False),
+        trainable=eqft.TrainableSpec(
+            mode="peft", method_name="prefix", train_head=False
+        ),
     )
 
     assert plan.trainable.prefixes[0] is not None

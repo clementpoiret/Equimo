@@ -1,36 +1,22 @@
 import json
 import os
-import re
 import shutil
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any, cast
 
 import equinox as eqx
 import jax
 import lz4.frame
 import requests
 from loguru import logger
-from semver import Version
 
 from equimo import __version__
-from equimo.registry import _SAFE_IDENTIFIER_RE, get_model_cls
+from equimo.registry import _SAFE_IDENTIFIER_RE
 
 DEFAULT_REPOSITORY_URL = (
     "https://huggingface.co/poiretclement/equimo/resolve/main/models/default"
 )
-
-
-def _parse_version(v: str) -> Version:
-    """Parse a version string, with a fallback for PEP 440-style pre-releases."""
-    try:
-        return Version.parse(v)
-    except ValueError:
-        # Try to normalize PEP 440 alpha/beta/rc to SemVer
-        # e.g., 1.1.1a1 -> 1.1.1-a1
-        v = re.sub(r"(?<=\d)(?=[a-z])", "-", v)
-        return Version.parse(v)
 
 
 def _validate_identifier(identifier: str) -> None:
@@ -235,9 +221,9 @@ def load_weights(
     """Deserialise saved weights into an already-constructed model.
 
     This is the preferred loading path when using factory functions that
-    already know the model configuration.  Unlike :func:`load_model`, no
-    ``metadata.json`` is read — the caller is responsible for building the
-    model tree with the correct architecture.
+    already know the model configuration. No ``metadata.json`` is read; the
+    caller is responsible for building the model tree with the correct
+    architecture.
 
     Args:
         model: A freshly-constructed model whose leaf shapes match the
@@ -262,72 +248,4 @@ def load_weights(
     model = eqx.nn.inference_mode(model, inference_mode)
 
     logger.info("Weights loaded successfully.")
-    return model
-
-
-def load_model(
-    cls: str | type[eqx.Module],
-    identifier: str | None = None,
-    path: Path | None = None,
-    repository: str = DEFAULT_REPOSITORY_URL,
-    inference_mode: bool = True,
-    modality: str | None = None,
-    **model_kwargs,
-) -> eqx.Module:
-    """Load an Equinox model from a local path or remote repository.
-
-    .. deprecated::
-        Prefer factory functions (e.g. ``dinov2_vits14(pretrained=True)``)
-        combined with :func:`load_weights`.  This function is kept for
-        backward compatibility with archives that embed ``metadata.json``.
-
-    Args:
-        cls: Model class or registered name (case-insensitive). Use
-            :func:`register_model` to add custom models.
-        identifier: Remote model identifier for downloading. Mutually
-            exclusive with *path*.
-        path: Local path to load the model from. Mutually exclusive
-            with *identifier*.
-        repository: Base URL for model download.
-            Defaults to :data:`DEFAULT_REPOSITORY_URL`.
-        inference_mode: Pass ``True`` (default) to disable dropout for
-            evaluation; ``False`` to keep training behaviour.
-        modality: Optional registry namespace, e.g. ``"vision"`` or
-            ``"language"``. Required only when a model name is ambiguous.
-        **model_kwargs: Extra keyword arguments merged into the saved
-            ``model_config``, overriding stored values.
-
-    Returns:
-        Loaded model with weights deserialised. Dtype is whatever was
-        stored (bf16 models are loaded as bf16).
-
-    Raises:
-        ValueError: If both or neither of *identifier*/*path* are given,
-            or if *cls* is not a registered model name.
-    """
-    model_cls = cast(Any, get_model_cls(cls, modality=modality))
-    logger.info(f"Loading a {model_cls.__name__} model...")
-
-    load_path = _resolve_weights_dir(identifier, path, repository)
-
-    with open(load_path / "metadata.json", "r") as f:
-        metadata = json.load(f)
-
-    logger.debug(f"Metadata: {metadata}")
-
-    model_eqm_version = metadata.get("equimo_version", "0.2.0")
-    if _parse_version(model_eqm_version) > _parse_version(__version__):
-        logger.warning(
-            f"The model you are importing was packaged with equimo "
-            f"v{model_eqm_version}, but you have equimo v{__version__}. "
-            "You may face unexpected errors. Please consider updating equimo."
-        )
-
-    kwargs = metadata["model_config"] | model_kwargs
-    model = model_cls(**kwargs, key=jax.random.PRNGKey(42))
-
-    model = eqx.tree_deserialise_leaves(load_path / "weights.eqx", model)
-    model = eqx.nn.inference_mode(model, inference_mode)
-
-    logger.info("Model loaded successfully.")
     return model

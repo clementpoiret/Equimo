@@ -127,7 +127,9 @@ class MLPHead(eqx.Module):
         key: jax.Array | None = None,
         inference: bool | None = True,
     ) -> jax.Array:
-        dropout_keys = jr.split(key, max(len(self.layers) - 1, 1)) if key is not None else ()
+        dropout_keys = (
+            jr.split(key, max(len(self.layers) - 1, 1)) if key is not None else ()
+        )
         for index, layer in enumerate(self.layers):
             x = _apply_last_axis(layer, x)
             if index == len(self.layers) - 1:
@@ -135,7 +137,9 @@ class MLPHead(eqx.Module):
             x = _activation(self.activation)(x)
             if self.dropout > 0.0 and not inference:
                 if key is None:
-                    raise ValueError("A PRNG key is required when MLPHead dropout is active.")
+                    raise ValueError(
+                        "A PRNG key is required when MLPHead dropout is active."
+                    )
                 x = _dropout(x, self.dropout, dropout_keys[index])
         return x
 
@@ -343,7 +347,9 @@ def _init_linear(
     return linear
 
 
-def _apply_last_axis(module: Callable[[jax.Array], jax.Array], x: jax.Array) -> jax.Array:
+def _apply_last_axis(
+    module: Callable[[jax.Array], jax.Array], x: jax.Array
+) -> jax.Array:
     if x.ndim == 1:
         return module(x)
     leading_shape = x.shape[:-1]

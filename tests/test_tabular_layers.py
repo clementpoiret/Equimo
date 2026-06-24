@@ -20,7 +20,9 @@ def test_default_tabular_layer_registries():
         layers.get_attn_block("incontextattentionblock")
         is layers.InContextAttentionBlock
     )
-    assert layers.get_attn_block("inducedattentionblock") is layers.InducedAttentionBlock
+    assert (
+        layers.get_attn_block("inducedattentionblock") is layers.InducedAttentionBlock
+    )
 
     assert layers.Mlp is CoreMlp
     assert layers.get_ffn("mlp") is CoreMlp
@@ -61,8 +63,7 @@ def test_tabular_family_registration_adds_global_layer_lookup():
         pass
 
     assert (
-        layers.register_ffn("custom_tabular_ffn")(CustomTabularFfn)
-        is CustomTabularFfn
+        layers.register_ffn("custom_tabular_ffn")(CustomTabularFfn) is CustomTabularFfn
     )
     assert layers.get_ffn("custom_tabular_ffn") is CustomTabularFfn
     assert layers.get_layer("custom_tabular_ffn") is CustomTabularFfn

@@ -116,7 +116,7 @@ class PatchEmbedding(eqx.Module):
     def __init__(
         self,
         in_channels: int,
-        dim: int,
+        embed_dim: int,
         patch_size: int | Tuple[int, int],
         *,
         key: PRNGKeyArray,
@@ -132,17 +132,17 @@ class PatchEmbedding(eqx.Module):
 
         Args:
             in_channels: Number of input image channels (e.g. 3 for RGB).
-            dim: Output patch embedding dimension (token latent width).
+            embed_dim: Output patch embedding dimension (token latent width).
             patch_size: Size of each patch; scalar or (H, W) tuple.
             key: PRNG key for initialization.
             img_size: Expected input image size for shape validation.
                       None disables validation.
-            flatten: If True, output shape is (num_patches, dim).
-                     If False, output shape is (dim, grid_h, grid_w).
+            flatten: If True, output shape is (num_patches, embed_dim).
+                     If False, output shape is (embed_dim, grid_h, grid_w).
             dynamic_img_size: Allow images of different sizes than img_size.
             dynamic_img_pad: Pad images whose sides are not divisible by patch_size.
             norm_layer: Optional norm class or registry name called as
-                        norm_layer(dim, eps=eps). Defaults to no normalization.
+                        norm_layer(embed_dim, eps=eps). Defaults to no normalization.
             eps: Epsilon passed to norm_layer.
         """
         if norm_layer is not None:
@@ -169,13 +169,15 @@ class PatchEmbedding(eqx.Module):
         self.proj = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=in_channels,
-            out_channels=dim,
+            out_channels=embed_dim,
             kernel_size=patch_size,
             stride=patch_size,
             key=key,
         )
         self.norm = (
-            norm_layer(dim, eps=eps) if norm_layer is not None else eqx.nn.Identity()
+            norm_layer(embed_dim, eps=eps)
+            if norm_layer is not None
+            else eqx.nn.Identity()
         )
 
     def dynamic_feat_size(self, img_size: Tuple[int, int]) -> Tuple[int, int]:
@@ -253,7 +255,7 @@ class ConvPatchEmbed(eqx.Module):
         self,
         in_channels: int,
         hidden_channels: int,
-        out_channels: int,
+        embed_dim: int,
         *,
         key: PRNGKeyArray,
         act_layer: str | Callable = "relu",
@@ -266,7 +268,7 @@ class ConvPatchEmbed(eqx.Module):
         Args:
             in_channels: Number of input channels.
             hidden_channels: Number of intermediate channels after conv1.
-            out_channels: Number of output channels after conv2.
+            embed_dim: Output patch embedding dimension after conv2.
             key: PRNG key for initialization.
             act_layer: Activation function or registry name applied after each norm.
             norm_layer: Norm class or registry name called as norm_layer(channels, eps=eps).
@@ -291,14 +293,14 @@ class ConvPatchEmbed(eqx.Module):
         self.conv2 = eqx.nn.Conv(
             num_spatial_dims=2,
             in_channels=hidden_channels,
-            out_channels=out_channels,
+            out_channels=embed_dim,
             kernel_size=(3, 3),
             stride=2,
             padding=1,
             use_bias=False,
             key=key_conv2,
         )
-        self.norm2 = norm_layer(out_channels, eps=eps)
+        self.norm2 = norm_layer(embed_dim, eps=eps)
 
     def _to_tokens(
         self, x: Float[Array, "channels height width"]
@@ -315,14 +317,14 @@ class ConvPatchEmbed(eqx.Module):
 
     def __call__(
         self, x: Float[Array, "channels height width"]
-    ) -> Float[Array, "out_channels new_height new_width"]:
+    ) -> Float[Array, "embed_dim new_height new_width"]:
         """Apply two conv-norm-act stages, each halving spatial resolution.
 
         Args:
             x: Input tensor of shape (channels, height, width).
 
         Returns:
-            Output tensor of shape (out_channels, height // 4, width // 4),
+            Output tensor of shape (embed_dim, height // 4, width // 4),
             same dtype as input.
         """
         c, h, w = x.shape
@@ -350,7 +352,7 @@ class PatchMerging(eqx.Module):
     3. 1×1 conv to set the final channel dimension
 
     The module follows an inverted bottleneck architecture. By default the
-    output channel count is doubled (``out_dim = 2 * dim``), matching the
+    output channel count is doubled (``out_dim = 2 * in_dim``), matching the
     standard hierarchical ViT convention where each stage doubles width.
 
     Attributes:
@@ -365,7 +367,7 @@ class PatchMerging(eqx.Module):
 
     def __init__(
         self,
-        dim: int,
+        in_dim: int,
         *,
         key: PRNGKeyArray,
         out_dim: Optional[int] = None,
@@ -375,20 +377,20 @@ class PatchMerging(eqx.Module):
         """Initialize PatchMerging.
 
         Args:
-            dim: Input token embedding dimension.
+            in_dim: Input token embedding dimension.
             key: PRNG key for initialization.
-            out_dim: Output token embedding dimension. Defaults to 2 * dim,
+            out_dim: Output token embedding dimension. Defaults to 2 * in_dim,
                      following the standard hierarchical doubling convention.
             ratio: Expansion ratio for the hidden (intermediate) dimension.
                    hidden_dim = out_dim * ratio.
         """
         key_conv1, key_conv2, key_conv3 = jr.split(key, 3)
 
-        out_dim = out_dim or int(dim * 2)
+        out_dim = out_dim or int(in_dim * 2)
         hidden_dim = int(out_dim * ratio)
 
         self.conv1 = SingleConvBlock(
-            in_channels=dim,
+            in_channels=in_dim,
             out_channels=hidden_dim,
             kernel_size=1,
             stride=1,
@@ -420,7 +422,7 @@ class PatchMerging(eqx.Module):
         )
 
     def __call__(
-        self, x: Float[Array, "seqlen dim"]
+        self, x: Float[Array, "seqlen in_dim"]
     ) -> Float[Array, "new_seqlen out_dim"]:
         """Apply spatial downsampling on a token sequence.
 
@@ -428,7 +430,7 @@ class PatchMerging(eqx.Module):
         (i.e. seqlen must be a perfect square).
 
         Args:
-            x: Token sequence of shape (seqlen, dim).
+            x: Token sequence of shape (seqlen, in_dim).
 
         Returns:
             Downsampled token sequence of shape (seqlen // 4, out_dim),

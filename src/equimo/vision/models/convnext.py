@@ -104,7 +104,7 @@ class ConvNeXt(eqx.Module):
                     out_channels=dims[i],
                     module="convnextblock",
                     module_kwargs={
-                        "dim": dims[i],
+                        "channels": dims[i],
                         "act_layer": act_layer,
                     },
                     downsampler=downsamplers[i],

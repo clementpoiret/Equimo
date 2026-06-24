@@ -116,7 +116,9 @@ def test_prompt_trainable_only_prompts_and_head(tiny_vision_transformer):
     )
     plan = eqft.prepare_finetune(
         prompted,
-        trainable=eqft.TrainableSpec(mode="peft", method_name="prompt", train_head=True),
+        trainable=eqft.TrainableSpec(
+            mode="peft", method_name="prompt", train_head=True
+        ),
     )
 
     assert plan.trainable.prompts[0] is not None
@@ -144,7 +146,9 @@ def test_soft_prompt_uses_text_embedding_initialization(tiny_text_encoder):
         ),
     )
 
-    assert jnp.array_equal(prompted.prompts[0], tiny_text_encoder.token_embed.weight[:2])
+    assert jnp.array_equal(
+        prompted.prompts[0], tiny_text_encoder.token_embed.weight[:2]
+    )
     assert features.shape == (5, tiny_text_encoder.dim)
     assert logits.shape == (tiny_text_encoder.token_embed.weight.shape[0],)
     assert "prompt_decay" in plan.report.trainable_by_label

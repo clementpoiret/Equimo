@@ -82,7 +82,12 @@ class IFormer(eqx.Module):
             block_dim = _bc_dim[i] if (has_ds and downsample_last) else dims[i]
             mod_kw = universal_kwargs | module_kwargs[i]
             if modules[i] is not None:
-                mod_kw = mod_kw | {"dim": block_dim}
+                axis_key = (
+                    "channels"
+                    if modules[i].__name__.lower() == "iformerblock"
+                    else "dim"
+                )
+                mod_kw = mod_kw | {axis_key: block_dim}
             ds_kw = universal_kwargs | downsampler_kwargs[i]
             blocks.append(
                 BlockChunk(

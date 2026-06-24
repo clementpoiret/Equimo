@@ -107,7 +107,7 @@ class BlockChunk(eqx.Module):
             )
         self.blocks = tuple(blocks)
 
-        self.downsample = downsampler(dim=dim, **downsampler_kwargs, key=key_ds)
+        self.downsample = downsampler(in_dim=dim, **downsampler_kwargs, key=key_ds)
         self.qa_proj = (
             eqx.nn.Sequential(
                 [

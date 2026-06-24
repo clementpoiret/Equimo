@@ -48,7 +48,7 @@ class TestConvolutionLayers:
                 SingleConvBlock,
                 {"in_channels": IN_CHANNELS, "out_channels": OUT_CHANNELS},
             ),
-            (DoubleConvBlock, {"dim": IN_CHANNELS}),
+            (DoubleConvBlock, {"channels": IN_CHANNELS}),
             (
                 Stem,
                 {
@@ -75,7 +75,7 @@ class TestConvolutionLayers:
                 },
             ),
             (IFormerStem, {"in_channels": 3, "out_channels": IN_CHANNELS}),
-            (IFormerBlock, {"dim": IN_CHANNELS}),
+            (IFormerBlock, {"channels": IN_CHANNELS}),
             (
                 GenericGhostModule,
                 {"in_channels": IN_CHANNELS, "out_channels": OUT_CHANNELS},
@@ -88,15 +88,15 @@ class TestConvolutionLayers:
                     "out_channels": OUT_CHANNELS,
                 },
             ),
-            (PartialConv2d, {"in_channels": IN_CHANNELS, "n_dim": 4}),
-            (FasterNetBlock, {"dim": IN_CHANNELS}),
-            (GLUConv, {"in_channels": IN_CHANNELS, "hidden_channels": IN_CHANNELS * 2}),
-            (ATConv, {"in_channels": IN_CHANNELS}),
-            (ATConvBlock, {"dim": IN_CHANNELS}),
-            (S2Mixer, {"in_channels": IN_CHANNELS}),
-            (ShiftNeck, {"in_channels": IN_CHANNELS}),
-            (ShiftFFN, {"in_channels": IN_CHANNELS}),
-            (FreeNetBlock, {"dim": IN_CHANNELS}),
+            (PartialConv2d, {"channels": IN_CHANNELS, "n_dim": 4}),
+            (FasterNetBlock, {"channels": IN_CHANNELS}),
+            (GLUConv, {"channels": IN_CHANNELS, "hidden_channels": IN_CHANNELS * 2}),
+            (ATConv, {"channels": IN_CHANNELS}),
+            (ATConvBlock, {"channels": IN_CHANNELS}),
+            (S2Mixer, {"channels": IN_CHANNELS}),
+            (ShiftNeck, {"channels": IN_CHANNELS}),
+            (ShiftFFN, {"channels": IN_CHANNELS}),
+            (FreeNetBlock, {"channels": IN_CHANNELS}),
         ],
     )
     def test_output_shape_and_finite(self, cls, kwargs):
@@ -109,7 +109,12 @@ class TestConvolutionLayers:
         elif cls == PartialConv2d:
             x = jr.normal(key, (IN_CHANNELS, H, W))
         else:
-            in_c = kwargs.get("in_channels") or kwargs.get("dim") or IN_CHANNELS
+            in_c = (
+                kwargs.get("in_channels")
+                or kwargs.get("channels")
+                or kwargs.get("dim")
+                or IN_CHANNELS
+            )
             x = jr.normal(key, (in_c, H, W))
 
         out = model(x, key=key, inference=True)

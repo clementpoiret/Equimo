@@ -872,9 +872,9 @@ class VisionParcae(eqx.Module):
         act_layer = get_act(act_layer)
 
         self.patch_embed = PatchEmbedding(
-            in_channels,
-            dim,
-            patch_size,
+            in_channels=in_channels,
+            embed_dim=dim,
+            patch_size=patch_size,
             img_size=img_size,
             flatten=not dynamic_img_size,
             dynamic_img_size=dynamic_img_size,

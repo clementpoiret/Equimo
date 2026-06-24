@@ -116,7 +116,7 @@ class AudioSpectrogramTransformer(eqx.Module):
         act_layer = get_act(act_layer)
 
         self.patch_embed = SpectrogramPatchEmbedding(
-            dim=dim,
+            embed_dim=dim,
             patch_size=patch_size,
             input_fdim=input_fdim,
             input_tdim=input_tdim,

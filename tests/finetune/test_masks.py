@@ -143,7 +143,9 @@ def test_frozen_patch_embed_does_not_change_after_one_step(tiny_vision_transform
 
     assert before.patch_embed.proj.weight is not None
     assert after.patch_embed.proj.weight is not None
-    assert jnp.array_equal(before.patch_embed.proj.weight, after.patch_embed.proj.weight)
+    assert jnp.array_equal(
+        before.patch_embed.proj.weight, after.patch_embed.proj.weight
+    )
     assert jnp.array_equal(before.patch_embed.proj.bias, after.patch_embed.proj.bias)
 
 

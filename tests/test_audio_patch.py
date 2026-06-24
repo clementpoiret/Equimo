@@ -23,7 +23,7 @@ class TestSpectrogramPatchEmbedding:
 
     def test_output_shape(self):
         layer = SpectrogramPatchEmbedding(
-            dim=self.DIM,
+            embed_dim=self.DIM,
             patch_size=self.PATCH_SIZE,
             input_fdim=self.INPUT_FDIM,
             input_tdim=self.INPUT_TDIM,
@@ -37,7 +37,7 @@ class TestSpectrogramPatchEmbedding:
 
     def test_metadata(self):
         layer = SpectrogramPatchEmbedding(
-            dim=self.DIM,
+            embed_dim=self.DIM,
             patch_size=(8, 16),
             input_fdim=self.INPUT_FDIM,
             input_tdim=self.INPUT_TDIM,
@@ -54,7 +54,7 @@ class TestSpectrogramPatchEmbedding:
 
     def test_output_finite(self):
         layer = SpectrogramPatchEmbedding(
-            dim=self.DIM,
+            embed_dim=self.DIM,
             patch_size=self.PATCH_SIZE,
             input_fdim=self.INPUT_FDIM,
             input_tdim=self.INPUT_TDIM,
@@ -68,7 +68,7 @@ class TestSpectrogramPatchEmbedding:
 
     def test_dtype_preserved_bfloat16(self):
         layer = SpectrogramPatchEmbedding(
-            dim=self.DIM,
+            embed_dim=self.DIM,
             patch_size=self.PATCH_SIZE,
             input_fdim=self.INPUT_FDIM,
             input_tdim=self.INPUT_TDIM,
@@ -88,7 +88,7 @@ class TestSpectrogramPatchEmbedding:
 
     def test_wrong_time_raises(self):
         layer = SpectrogramPatchEmbedding(
-            dim=self.DIM,
+            embed_dim=self.DIM,
             patch_size=self.PATCH_SIZE,
             input_fdim=self.INPUT_FDIM,
             input_tdim=self.INPUT_TDIM,
@@ -102,7 +102,7 @@ class TestSpectrogramPatchEmbedding:
 
     def test_wrong_frequency_raises(self):
         layer = SpectrogramPatchEmbedding(
-            dim=self.DIM,
+            embed_dim=self.DIM,
             patch_size=self.PATCH_SIZE,
             input_fdim=self.INPUT_FDIM,
             input_tdim=self.INPUT_TDIM,
@@ -117,7 +117,7 @@ class TestSpectrogramPatchEmbedding:
     def test_patch_too_large_raises(self):
         with pytest.raises(ValueError, match="Patch size"):
             SpectrogramPatchEmbedding(
-                dim=self.DIM,
+                embed_dim=self.DIM,
                 patch_size=64,
                 input_fdim=self.INPUT_FDIM,
                 input_tdim=self.INPUT_TDIM,

@@ -10,7 +10,13 @@ import jax
 from ._typing import PyTree
 from .config import FeatureSpec
 from .heads import IdentityHead, LinearHead
-from .pooling import GlobalAveragePool, MeanPatchPool, MeanTokenPool, PoolName, pool_features
+from .pooling import (
+    GlobalAveragePool,
+    MeanPatchPool,
+    MeanTokenPool,
+    PoolName,
+    pool_features,
+)
 from .surgery import replace_head
 
 
@@ -32,7 +38,13 @@ class FeatureExtractor(eqx.Module):
         self.pool = pool
         self.feature_spec = feature_spec
 
-    def __call__(self, *args, key: jax.Array | None = None, inference: bool | None = True, **kwargs):
+    def __call__(
+        self,
+        *args,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+        **kwargs,
+    ):
         return extract_features(
             self.model,
             *args,
@@ -64,7 +76,13 @@ class LinearProbe(eqx.Module):
         self.pool = pool
         self.feature_spec = feature_spec
 
-    def __call__(self, *args, key: jax.Array | None = None, inference: bool | None = True, **kwargs):
+    def __call__(
+        self,
+        *args,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+        **kwargs,
+    ):
         features = extract_features(
             self.backbone,
             *args,
@@ -74,10 +92,6 @@ class LinearProbe(eqx.Module):
             **kwargs,
         )
         return _call_head(self.head, features, key=key, inference=inference)
-
-
-class HeadOnlyModel(LinearProbe):
-    """Backbone feature extractor plus a trainable replacement head."""
 
 
 def extract_features(
@@ -131,9 +145,7 @@ def make_linear_probe(
     """Build a linear-probe wrapper with an identity backbone head."""
 
     probe_head = (
-        LinearHead(in_features, out_features, key=key)
-        if head is None
-        else head
+        LinearHead(in_features, out_features, key=key) if head is None else head
     )
     try:
         backbone = replace_head(backbone, IdentityHead())
@@ -243,7 +255,9 @@ def _is_convnet_model(model: PyTree) -> bool:
 
 def _mean_patch_pool_for_model(model: PyTree) -> MeanPatchPool:
     return MeanPatchPool(
-        num_prefix_tokens=int(getattr(model, "num_prefix_tokens", _base_prefix_count(model))),
+        num_prefix_tokens=int(
+            getattr(model, "num_prefix_tokens", _base_prefix_count(model))
+        ),
         num_prompt_tokens=int(getattr(model, "num_prompt_tokens", 0)),
     )
 
@@ -253,14 +267,18 @@ def _base_prefix_count(model: PyTree) -> int:
     for name in ("cls_token", "dist_token"):
         token = getattr(model, name, None)
         if token is not None:
-            count += int(token.shape[0]) if hasattr(token, "shape") and token.ndim > 1 else 1
+            count += (
+                int(token.shape[0]) if hasattr(token, "shape") and token.ndim > 1 else 1
+            )
     reg_tokens = getattr(model, "reg_tokens", None)
     if reg_tokens is not None:
         count += int(reg_tokens.shape[0]) if hasattr(reg_tokens, "shape") else 1
     return count
 
 
-def _call_head(head: eqx.Module, x: Any, *, key: jax.Array | None, inference: bool | None):
+def _call_head(
+    head: eqx.Module, x: Any, *, key: jax.Array | None, inference: bool | None
+):
     try:
         return head(x, key=key, inference=inference)
     except TypeError as error:
@@ -271,7 +289,6 @@ def _call_head(head: eqx.Module, x: Any, *, key: jax.Array | None, inference: bo
 
 __all__ = (
     "FeatureExtractor",
-    "HeadOnlyModel",
     "LinearProbe",
     "extract_features",
     "make_linear_probe",

@@ -1259,7 +1259,9 @@ def _metadata_base_model(model: PyTree, method: str) -> PyTree:
 def _can_infer_exact_base_checkpoint(model: PyTree, method: str) -> bool:
     if method != "lora":
         return True
-    return all(module.base_weight_delta is None for _, module in iter_lora_modules(model))
+    return all(
+        module.base_weight_delta is None for _, module in iter_lora_modules(model)
+    )
 
 
 def _strip_wrappers(model: PyTree, wrapper_type: type) -> PyTree:

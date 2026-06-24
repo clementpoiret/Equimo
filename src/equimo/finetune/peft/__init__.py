@@ -34,7 +34,14 @@ from .adapters import (
     unmerge_orthogonal_adapters,
 )
 from .bitfit import BitFitConfig, bitfit_trainable_spec
-from .dora import DoRAConfig, DoRALinear, DoRAMergedLinear, DoRARecipe, apply_dora, merge_dora
+from .dora import (
+    DoRAConfig,
+    DoRALinear,
+    DoRAMergedLinear,
+    DoRARecipe,
+    apply_dora,
+    merge_dora,
+)
 from .ia3 import IA3Config, IA3Linear, apply_ia3, iter_ia3_modules, merge_ia3
 from .lora import (
     AdaLoRAConfig,
@@ -107,7 +114,14 @@ from .scale_shift import (
     iter_scale_shift_wrappers,
     merge_scale_shift,
 )
-from .vera import VeRAConfig, VeRALinear, apply_vera, iter_vera_modules, merge_vera, strip_vera
+from .vera import (
+    VeRAConfig,
+    VeRALinear,
+    apply_vera,
+    iter_vera_modules,
+    merge_vera,
+    strip_vera,
+)
 
 PEFTConfig = (
     LoRAConfig

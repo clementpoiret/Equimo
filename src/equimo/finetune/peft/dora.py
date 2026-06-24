@@ -117,9 +117,7 @@ class DoRALinear(eqx.Module):
         self.lora_A = lora_A
         self.lora_B = lora_B
         self.magnitude = (
-            _init_magnitude(base, magnitude_init)
-            if magnitude is None
-            else magnitude
+            _init_magnitude(base, magnitude_init) if magnitude is None else magnitude
         )
 
     @property
@@ -190,8 +188,7 @@ class DoRALinear(eqx.Module):
         direction_norm = self._direction_norm()
         x_drop = _dropout(x, self.dropout, key)
         projected = (
-            self.base.weight @ x
-            + (self.lora_B @ (self.lora_A @ x_drop)) * self.scaling
+            self.base.weight @ x + (self.lora_B @ (self.lora_A @ x_drop)) * self.scaling
         )
         return projected * self.magnitude / jnp.maximum(direction_norm, self.eps)
 
@@ -222,7 +219,11 @@ def apply_dora(
                 f"DoRA target {path_to_str(module_path)!r} is "
                 f"{type(module).__name__}, expected eqx.nn.Linear."
             )
-        wrapper_type = DoRAMergedLinear if "qkv" in {str(part) for part in module_path} else DoRALinear
+        wrapper_type = (
+            DoRAMergedLinear
+            if "qkv" in {str(part) for part in module_path}
+            else DoRALinear
+        )
         if config.init != "kaiming_A_zero_B":
             raise ValueError(
                 f"Unsupported DoRA init {config.init!r}; expected kaiming_A_zero_B."
@@ -277,7 +278,9 @@ def iter_dora_modules(model: PyTree) -> tuple[tuple[Path, DoRALinear], ...]:
     )
 
 
-def _target_linear_paths(model: PyTree, target: TargetSpec, *, tagger: Tagger) -> tuple[Path, ...]:
+def _target_linear_paths(
+    model: PyTree, target: TargetSpec, *, tagger: Tagger
+) -> tuple[Path, ...]:
     paths = {
         info.path[:-1]
         for info in resolve_target(model, target, tagger=tagger)

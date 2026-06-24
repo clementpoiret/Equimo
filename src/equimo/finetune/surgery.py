@@ -325,7 +325,9 @@ def _identities_from_param_info(param_info: PyTree, model: PyTree) -> PyTree:
     return jtu.tree_map(identity, param_info)
 
 
-def _alias_groups_by_path(model: PyTree, iter_param_leaves, path_to_str) -> dict[tuple[str | int, ...], str]:
+def _alias_groups_by_path(
+    model: PyTree, iter_param_leaves, path_to_str
+) -> dict[tuple[str | int, ...], str]:
     by_object: dict[int, list[tuple[str | int, ...]]] = {}
     for path, leaf in iter_param_leaves(model):
         if eqx.is_inexact_array(leaf):

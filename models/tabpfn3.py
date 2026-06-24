@@ -34,8 +34,7 @@ CHECKPOINTS = {
         "task_type": "classification",
     },
     "tabpfn_v3_classifier_multiclass": {
-        "path": CHECKPOINT_DIR
-        / "tabpfn-v3-classifier-v3_20260417_multiclass.ckpt",
+        "path": CHECKPOINT_DIR / "tabpfn-v3-classifier-v3_20260417_multiclass.ckpt",
         "factory": tm.tabpfn_v3_classifier_multiclass,
         "task_type": "classification",
     },
@@ -50,8 +49,7 @@ CHECKPOINTS = {
         "task_type": "regression",
     },
     "tabpfn_v3_regressor_mediumdata": {
-        "path": CHECKPOINT_DIR
-        / "tabpfn-v3-regressor-v3_20260417_mediumdata.ckpt",
+        "path": CHECKPOINT_DIR / "tabpfn-v3-regressor-v3_20260417_mediumdata.ckpt",
         "factory": tm.tabpfn_v3_regressor_mediumdata,
         "task_type": "regression",
     },
@@ -61,8 +59,7 @@ CHECKPOINTS = {
         "task_type": "regression",
     },
     "tabpfn_v3_regressor_timeseries": {
-        "path": CHECKPOINT_DIR
-        / "tabpfn-v3-regressor-v3_20260506_timeseries.ckpt",
+        "path": CHECKPOINT_DIR / "tabpfn-v3-regressor-v3_20260506_timeseries.ckpt",
         "factory": tm.tabpfn_v3_regressor_timeseries,
         "task_type": "regression",
     },
@@ -111,8 +108,7 @@ def _map_feature_encoder(name: str) -> str | None:
 
     layer, block, rest = match.groups()
     torch_name = _rename_common(
-        f"feature_distribution_embedder.layers.{layer}."
-        f"cross_attn_block{block}.{rest}"
+        f"feature_distribution_embedder.layers.{layer}.cross_attn_block{block}.{rest}"
     )
     torch_name = (
         torch_name.replace(".norm_q.", ".layernorm_q.")
@@ -203,9 +199,7 @@ def _array_name_for_path(name: str, *, task_type: str, readout_index: int) -> st
         return mapped
 
     if task_type == "classification" and name.startswith("head."):
-        return _rename_common(
-            name.replace("head.", "many_class_decoder.", 1)
-        )
+        return _rename_common(name.replace("head.", "many_class_decoder.", 1))
     if task_type == "regression" and name.startswith("head.fc1."):
         return name.replace("head.fc1.", "output_projection.0.", 1)
     if task_type == "regression" and name.startswith("head.fc2."):
@@ -243,7 +237,9 @@ def convert_torch_to_equimo(model, torch_model, *, task_type: str):
         converted.append(jnp.asarray(array))
         used.add(torch_name)
 
-    leftover = [key for key in state if key not in used and key not in IGNORED_TORCH_KEYS]
+    leftover = [
+        key for key in state if key not in used and key not in IGNORED_TORCH_KEYS
+    ]
     if leftover:
         raise KeyError(f"Unconverted Torch params: {leftover}")
 
@@ -305,7 +301,7 @@ def _model_config(identifier: str) -> dict:
 
 def main():
     try:
-        from tabpfn.model_loading import load_model
+        from tabpfn.model_loading import load_model as load_tabpfn_model
     except ImportError as exc:
         raise ImportError("`torch` and `tabpfn` are required") from exc
 
@@ -323,7 +319,7 @@ def main():
     for identifier in identifiers:
         info = CHECKPOINTS[identifier]
         print(f"Loading {info['path']}...")
-        torch_model, _, _, _ = load_model(path=info["path"])
+        torch_model, _, _, _ = load_tabpfn_model(path=info["path"])
         torch_model.eval()
 
         if identifier == REFERENCE_IDENTIFIER:

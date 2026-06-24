@@ -17,8 +17,12 @@ def test_vera_reproducible_frozen_random_bases(tiny_vision_transformer):
     first = eqft.apply_vera(tiny_vision_transformer, config, key=jr.PRNGKey(0))
     second = eqft.apply_vera(tiny_vision_transformer, config, key=jr.PRNGKey(0))
 
-    assert jnp.array_equal(first.blocks[0].attn.proj.vera_A, second.blocks[0].attn.proj.vera_A)
-    assert jnp.array_equal(first.blocks[0].attn.proj.vera_B, second.blocks[0].attn.proj.vera_B)
+    assert jnp.array_equal(
+        first.blocks[0].attn.proj.vera_A, second.blocks[0].attn.proj.vera_A
+    )
+    assert jnp.array_equal(
+        first.blocks[0].attn.proj.vera_B, second.blocks[0].attn.proj.vera_B
+    )
 
 
 def test_vera_shared_reuses_compatible_random_bases(tiny_vision_transformer):

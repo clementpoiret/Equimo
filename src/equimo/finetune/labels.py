@@ -66,11 +66,7 @@ def make_labeled_param_info_tree(
             if trainable
             else None
         )
-        label = (
-            _label_for_info(base, config, weight_decay)
-            if trainable
-            else None
-        )
+        label = _label_for_info(base, config, weight_decay) if trainable else None
 
         info = replace(
             base,
@@ -177,13 +173,17 @@ def _lr_multiplier(
         max_depth = max(all_depths)
 
     if info.depth is not None and max_depth is not None:
-        return float(config.top_block_lr_multiplier * config.decay ** (max_depth - info.depth))
+        return float(
+            config.top_block_lr_multiplier * config.decay ** (max_depth - info.depth)
+        )
 
     if any(tag.startswith("embedding.") for tag in info.tags):
         if config.embedding_lr_multiplier is not None:
             return float(config.embedding_lr_multiplier)
         if max_depth is not None:
-            return float(config.top_block_lr_multiplier * config.decay ** (max_depth + 1))
+            return float(
+                config.top_block_lr_multiplier * config.decay ** (max_depth + 1)
+            )
 
     return 1.0
 
@@ -239,9 +239,7 @@ def _depth_for_path(path: Path, config: LLRDConfig) -> int | None:
         return _indexed_depth(parts, {"stages", "stage"})
     if config.depth_axis == "module":
         return _first_numeric_part(parts)
-    raise ValueError(
-        "LLRDConfig.depth_axis must be 'block', 'stage', or 'module'."
-    )
+    raise ValueError("LLRDConfig.depth_axis must be 'block', 'stage', or 'module'.")
 
 
 def _indexed_depth(parts: tuple[str, ...], names: set[str]) -> int | None:

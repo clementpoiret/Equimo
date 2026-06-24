@@ -73,7 +73,9 @@ class PrefixTunedModel(eqx.Module):
     ):
         base = _sync_prefixes(self.base, self.prefixes, self.prefix_projections)
         if not hasattr(base, "features"):
-            raise ValueError("PrefixTunedModel requires the base model to expose features().")
+            raise ValueError(
+                "PrefixTunedModel requires the base model to expose features()."
+            )
         return _call_with_optional_key(
             base.features,
             *args,
@@ -82,7 +84,13 @@ class PrefixTunedModel(eqx.Module):
             **kwargs,
         )
 
-    def __call__(self, *args, key: jax.Array | None = None, inference: bool | None = True, **kwargs):
+    def __call__(
+        self,
+        *args,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+        **kwargs,
+    ):
         base = _sync_prefixes(self.base, self.prefixes, self.prefix_projections)
         return _call_with_optional_key(
             base,
@@ -135,7 +143,9 @@ class PrefixAttention(eqx.Module):
         prefix_k, prefix_v = self.state.astype(x.dtype)
         if self.prefix_dropout > 0.0 and not inference:
             if key_prefix is None:
-                raise ValueError("A PRNG key is required when prefix dropout is active.")
+                raise ValueError(
+                    "A PRNG key is required when prefix dropout is active."
+                )
             key_k, key_v = jr.split(key_prefix, 2)
             prefix_k = _dropout(prefix_k, self.prefix_dropout, key_k)
             prefix_v = _dropout(prefix_v, self.prefix_dropout, key_v)
@@ -153,7 +163,9 @@ class PrefixAttention(eqx.Module):
         else:
             attn = attn.astype(jnp.float32)
         attn = jax.nn.softmax(attn, axis=-1).astype(x.dtype)
-        attn = _call_dropout(getattr(self.base, "attn_drop", None), attn, inference, key1)
+        attn = _call_dropout(
+            getattr(self.base, "attn_drop", None), attn, inference, key1
+        )
 
         y = jnp.einsum("hqk,hkd->hqd", attn, v)
         y = jnp.transpose(y, (1, 0, 2)).reshape((x.shape[0], -1))
@@ -210,9 +222,7 @@ class PrefixProjection(eqx.Module):
     def __call__(self, prefix: jax.Array) -> jax.Array:
         hidden = jax.vmap(self.down)(prefix)
         state = jax.vmap(self.up)(jnp.tanh(hidden))
-        state = state.reshape(
-            (prefix.shape[0], 2, self.num_heads, self.head_dim)
-        )
+        state = state.reshape((prefix.shape[0], 2, self.num_heads, self.head_dim))
         return jnp.transpose(state, (1, 2, 0, 3))
 
 
@@ -236,7 +246,9 @@ def apply_prefixes(
 
     keys = jr.split(key, len(paths))
     prefixes = tuple(
-        _init_prefix(get_path(model, path), config.num_prefix_tokens, config.init_std, subkey)
+        _init_prefix(
+            get_path(model, path), config.num_prefix_tokens, config.init_std, subkey
+        )
         for path, subkey in zip(paths, keys, strict=True)
     )
     projection_keys = jr.split(jr.fold_in(key, 1), len(paths))
@@ -257,7 +269,9 @@ def strip_prefixes(model: PyTree) -> PyTree:
 
     stripped = model
     for path, wrapper in iter_prefix_attentions(stripped):
-        stripped = eqx.tree_at(lambda tree, p=path: get_path(tree, p), stripped, wrapper.base)
+        stripped = eqx.tree_at(
+            lambda tree, p=path: get_path(tree, p), stripped, wrapper.base
+        )
     return stripped
 
 
@@ -418,7 +432,9 @@ def _init_projection_linear(
     weight = jr.normal(key, linear.weight.shape, dtype=linear.weight.dtype) * init_std
     linear = eqx.tree_at(lambda layer: layer.weight, linear, weight)
     if linear.bias is not None:
-        linear = eqx.tree_at(lambda layer: layer.bias, linear, jnp.zeros_like(linear.bias))
+        linear = eqx.tree_at(
+            lambda layer: layer.bias, linear, jnp.zeros_like(linear.bias)
+        )
     return linear
 
 

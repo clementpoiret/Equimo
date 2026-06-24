@@ -6,7 +6,7 @@ import numpy as np
 
 import equimo.vision.models as em
 from equimo.conversion.utils import convert_torch_to_equinox
-from equimo.serialization import load_model, save_model
+from equimo.serialization import load_weights, save_model
 
 
 def compare(j, t) -> float:
@@ -99,7 +99,7 @@ def main():
         compression=True,
     )
 
-    _ = load_model(
-        cls="vit",
+    _ = load_weights(
+        em.VisionTransformer(**siglip2_config, key=key),
         path=Path(f"~/.cache/equimo/{mname}.tar.lz4").expanduser(),
     )
