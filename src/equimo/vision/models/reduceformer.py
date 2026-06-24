@@ -109,6 +109,8 @@ def _make_reduceformer_chunk(
 
 @register_model("reduceformer", modality="vision")
 class ReduceFormer(eqx.Module):
+    """ReduceFormer image classifier with convolutional and RF-attention stages."""
+
     conv_stem: SingleConvBlock
     block_stem: eqx.Module
     blocks: Tuple[eqx.Module, ...]

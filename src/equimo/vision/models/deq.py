@@ -472,4 +472,6 @@ def _build_deq(
 
 
 def deq_convnext_t(**kwargs) -> DEQ:
+    """Build the tiny ConvNeXt-style DEQ model variant."""
+
     return _build_deq("deq_convnext_t", **kwargs)

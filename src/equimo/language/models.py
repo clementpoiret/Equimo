@@ -20,6 +20,8 @@ def global_avg_pooling(
     pooling_dims: Sequence[int],
     epsilon: float = 1e-8,
 ):
+    """Average unpadded tokens over the requested pooling dimensions."""
+
     valid_mask = 1.0 - compatible_paddings
     masked_inputs = inputs * valid_mask
     inputs_sum = jnp.sum(masked_inputs, axis=pooling_dims)

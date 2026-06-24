@@ -9,6 +9,8 @@ from loguru import logger
 
 
 def stringify_name(path: Tuple) -> str:
+    """Convert a JAX tree path into a dot-separated parameter name."""
+
     stringified = []
     for p in path:
         if isinstance(p, GetAttrKey):
@@ -19,6 +21,8 @@ def stringify_name(path: Tuple) -> str:
 
 
 def expand_torch_tensor(tensor, pos: str, n: int):
+    """Add ``n`` singleton axes before or after a Torch tensor."""
+
     padding = [None] * n
     match pos:
         case "before":

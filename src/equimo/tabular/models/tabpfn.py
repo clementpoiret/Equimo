@@ -397,6 +397,8 @@ def tabpfn_regressor(
 
 
 def tabpfn_v3_classifier_default(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the default TabPFN-3 classifier variant."""
+
     return _build_tabpfn(
         "tabpfn_v3_classifier_default",
         pretrained=pretrained,
@@ -405,6 +407,8 @@ def tabpfn_v3_classifier_default(pretrained: bool = False, **kwargs) -> TabPFN:
 
 
 def tabpfn_v3_classifier_binary(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the TabPFN-3 classifier variant tuned for binary tasks."""
+
     return _build_tabpfn(
         "tabpfn_v3_classifier_binary",
         pretrained=pretrained,
@@ -413,6 +417,8 @@ def tabpfn_v3_classifier_binary(pretrained: bool = False, **kwargs) -> TabPFN:
 
 
 def tabpfn_v3_classifier_multiclass(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the TabPFN-3 classifier variant tuned for multiclass tasks."""
+
     return _build_tabpfn(
         "tabpfn_v3_classifier_multiclass",
         pretrained=pretrained,
@@ -421,6 +427,8 @@ def tabpfn_v3_classifier_multiclass(pretrained: bool = False, **kwargs) -> TabPF
 
 
 def tabpfn_v3_classifier_ood(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the TabPFN-3 classifier variant tuned for OOD robustness."""
+
     return _build_tabpfn(
         "tabpfn_v3_classifier_ood",
         pretrained=pretrained,
@@ -429,6 +437,8 @@ def tabpfn_v3_classifier_ood(pretrained: bool = False, **kwargs) -> TabPFN:
 
 
 def tabpfn_v3_regressor_default(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the default TabPFN-3 regressor variant."""
+
     return _build_tabpfn(
         "tabpfn_v3_regressor_default",
         pretrained=pretrained,
@@ -437,6 +447,8 @@ def tabpfn_v3_regressor_default(pretrained: bool = False, **kwargs) -> TabPFN:
 
 
 def tabpfn_v3_regressor_mediumdata(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the TabPFN-3 regressor variant for medium-data tasks."""
+
     return _build_tabpfn(
         "tabpfn_v3_regressor_mediumdata",
         pretrained=pretrained,
@@ -445,6 +457,8 @@ def tabpfn_v3_regressor_mediumdata(pretrained: bool = False, **kwargs) -> TabPFN
 
 
 def tabpfn_v3_regressor_ood(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the TabPFN-3 regressor variant tuned for OOD robustness."""
+
     return _build_tabpfn(
         "tabpfn_v3_regressor_ood",
         pretrained=pretrained,
@@ -453,6 +467,8 @@ def tabpfn_v3_regressor_ood(pretrained: bool = False, **kwargs) -> TabPFN:
 
 
 def tabpfn_v3_regressor_timeseries(pretrained: bool = False, **kwargs) -> TabPFN:
+    """Build the TabPFN-3 regressor variant for time-series tasks."""
+
     return _build_tabpfn(
         "tabpfn_v3_regressor_timeseries",
         pretrained=pretrained,

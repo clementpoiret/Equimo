@@ -77,6 +77,8 @@ def _rotate_half(x: jax.Array) -> jax.Array:
 
 @register_posemb()
 class LearnedPosEmbed(eqx.Module):
+    """Learned 2D positional embedding with optional prefix-token handling."""
+
     weight: jax.Array
 
     dim: int = eqx.field(static=True)

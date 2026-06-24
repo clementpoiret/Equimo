@@ -12,6 +12,8 @@ _ArrayLike = t.Union[np.ndarray, jnp.ndarray]
 
 
 def normalize(x, order: int = 2):
+    """Normalize vectors along the last axis with a minimum norm clamp."""
+
     return x / np.linalg.norm(x, ord=order, axis=-1, keepdims=True).clip(min=1e-3)
 
 
@@ -261,6 +263,8 @@ def pool_sd(
 
 
 def count_params(model: eqx.Module):
+    """Return the number of array parameters in a model, in millions."""
+
     num_params = sum(
         x.size for x in jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
     )

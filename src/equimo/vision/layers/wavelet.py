@@ -218,6 +218,8 @@ def inverse_haar_dwt_split(
 
 @register_wavelet()
 class HWDConv(eqx.Module):
+    """Haar wavelet downsampling followed by normalization and projection."""
+
     mode: Literal["h_discard", "band_grouped", "accurate"] = eqx.field(static=True)
 
     pre_norm: eqx.nn.GroupNorm

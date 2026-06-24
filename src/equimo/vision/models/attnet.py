@@ -30,6 +30,8 @@ from equimo.registry import register_model
 
 @register_model("attnet", modality="vision")
 class AttNet(eqx.Module):
+    """Attentive-convolution image classifier built from ATConv stages."""
+
     blocks: Tuple[BlockChunk, ...]
     norm: eqx.Module
     head: eqx.nn.Linear | eqx.nn.Identity

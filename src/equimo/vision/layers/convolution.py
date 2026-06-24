@@ -972,6 +972,8 @@ class MBConv(eqx.Module):
 
 @register_conv()
 class DSConv(eqx.Module):
+    """Depthwise-separable convolution block with optional residual drop path."""
+
     residual: bool = eqx.field(static=True)
 
     depth_conv: SingleConvBlock
@@ -1229,6 +1231,8 @@ class UIB(eqx.Module):
 
 @register_conv()
 class IFormerStem(eqx.Module):
+    """Two-step convolutional input stem used by iFormer variants."""
+
     conv1: SingleConvBlock
     fused_ib: MBConv
 
@@ -1284,6 +1288,8 @@ class IFormerStem(eqx.Module):
 
 @register_conv()
 class IFormerBlock(eqx.Module):
+    """iFormer convolutional mixing block with depthwise and pointwise convolutions."""
+
     residual: bool = eqx.field(static=True)
 
     conv1: SingleConvBlock
@@ -2461,6 +2467,8 @@ class FasterNetBlock(eqx.Module):
 
 @register_conv()
 class GLUConv(eqx.Module):
+    """Convolutional gated linear unit used as a channel mixer."""
+
     conv1: eqx.nn.Conv2d
     conv2: eqx.nn.Conv2d
     dwconv: eqx.nn.Conv2d | eqx.nn.Identity
@@ -2669,6 +2677,8 @@ class ATConv(eqx.Module):
 
 @register_conv()
 class ATConvBlock(eqx.Module):
+    """Attentive-convolution residual block with GLU channel mixing."""
+
     residual: bool = eqx.field(static=True)
 
     token_mixer: ATConv

@@ -147,9 +147,9 @@ class Residual(eqx.Module):
 
         Args:
             x: Input tensor of any shape
-            enable_dropout: Whether to enable dropout during training
+            inference: Whether wrapped stochastic layers should run in inference mode
             key: PRNG key for randomness
-            pass_args: Whether to pass enable_dropout and key to the wrapped module
+            pass_args: Whether to pass inference and key to the wrapped module
                       (default: False)
 
         Returns:
@@ -170,6 +170,8 @@ class Residual(eqx.Module):
 
 
 class WindowedSequence(eqx.Module):
+    """Apply image blocks independently over padded spatial windows."""
+
     blocks: Tuple[eqx.Module, ...]
     window_size: int = eqx.field(static=True)
 

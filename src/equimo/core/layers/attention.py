@@ -99,11 +99,15 @@ def get_attn_block(module: str | type[eqx.Module]) -> type[eqx.Module]:
 
 
 def rope_rotate_half(x: jax.Array) -> jax.Array:
+    """Rotate the last-dimension halves used by rotary embeddings."""
+
     x1, x2 = jnp.split(x, 2, axis=-1)
     return jnp.concatenate([-x2, x1], axis=-1)
 
 
 def rope_apply(x: jax.Array, sin: jax.Array, cos: jax.Array) -> jax.Array:
+    """Apply precomputed rotary sine/cosine factors to an array."""
+
     return (x * cos) + (rope_rotate_half(x) * sin)
 
 

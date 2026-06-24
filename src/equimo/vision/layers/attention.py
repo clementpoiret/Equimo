@@ -1175,6 +1175,8 @@ class SHMA(eqx.Module):
 
 @register_attn_block()
 class SHMABlock(eqx.Module):
+    """SHViT-style block with single-head mixed attention and a convolutional FFN."""
+
     posemb: PosCNN2D
     attn: SHMA
     ffn: DoubleConvBlock
@@ -2287,6 +2289,8 @@ class RFAttention(eqx.Module):
 
 @register_attn_block()
 class RFAttentionBlock(eqx.Module):
+    """ReduceFormer block combining RF attention with an MBConv local branch."""
+
     residual: bool = eqx.field(static=True)
 
     context_module: RFAttention
@@ -2515,6 +2519,8 @@ class ConvAttention(eqx.Module):
 
 @register_attn_block()
 class ConvAttentionBlock(eqx.Module):
+    """LowFormer convolutional-attention block with residual MLP mixing."""
+
     prenorm: eqx.Module
     postnorm: eqx.Module
     norm: eqx.Module
@@ -2643,6 +2649,8 @@ class ConvAttentionBlock(eqx.Module):
 
 @register_attn_block()
 class LowFormerBlock(eqx.Module):
+    """LowFormer stage block with context attention and local MBConv mixing."""
+
     context_module: ConvAttentionBlock
     local_module: MBConv
     drop_path1: DropPathAdd

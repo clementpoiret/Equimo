@@ -105,6 +105,8 @@ def _make_lowformer_chunk(
 
 @register_model("lowformer", modality="vision")
 class LowFormer(eqx.Module):
+    """LowFormer image classifier with convolution and low-resolution attention stages."""
+
     input_stem: eqx.nn.Sequential
     blocks: Tuple[eqx.Module, ...]
     head: eqx.nn.Linear | eqx.nn.Identity

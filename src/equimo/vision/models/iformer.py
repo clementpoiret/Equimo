@@ -29,6 +29,8 @@ from equimo.registry import register_model
 
 @register_model("iformer", modality="vision")
 class IFormer(eqx.Module):
+    """Inception Transformer image classifier assembled from staged chunks."""
+
     blocks: Tuple[BlockChunk, ...]
     dropout: eqx.nn.Dropout
     norm: type[eqx.Module]

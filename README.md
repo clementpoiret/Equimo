@@ -155,6 +155,20 @@ logits = model(x, key=key, inference=True)
 features = model.features(x, key=key, inference=True)
 ```
 
+## Examples
+
+See [`docs/usage.md`](./docs/usage.md) for a compact non-fine-tuning usage
+guide covering model construction, feature extraction, text encoders, TabPFN,
+serialization, and registries.
+
+Runnable examples live under [`examples/`](./examples):
+
+| Script | Covers |
+| ------ | ------ |
+| [`examples/vision_feature_extraction.py`](./examples/vision_feature_extraction.py) | Local ViT construction, inference logits, and feature extraction |
+| [`examples/language_encoder.py`](./examples/language_encoder.py) | Text transformer encoding from token IDs and padding masks |
+| [`examples/finetuning/`](./examples/finetuning) | Linear probing, LoRA, adapters, WiSE-FT, Optax, and Rollfast fine-tuning flows |
+
 ## Fine-Tuning
 
 `equimo.finetune` provides Equinox-native model-side fine-tuning primitives:

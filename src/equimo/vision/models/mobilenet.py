@@ -20,6 +20,8 @@ MNLayerConfig = tuple[int, int, int, int, bool, str]
 
 @register_model("mobilenetv3", modality="vision")
 class MobileNetv3(eqx.Module):
+    """MobileNetV3 image classifier built from MBConv layer configurations."""
+
     conv1: SingleConvBlock
     layers: tuple[MBConv, ...]
     dropout: eqx.nn.Dropout
