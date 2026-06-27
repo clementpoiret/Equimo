@@ -201,7 +201,9 @@ class VisionTransformer(eqx.Module):
         norm_layer: str | type[eqx.Module] = "layernorm",
         untie_global_and_local_cls_norm: bool = False,
         init_values: float | None = None,
-        global_pool: Literal["", "token", "avg", "avgmax", "max"] = "avg",
+        global_pool: Literal[
+            "", "token", "cls_patch_mean", "avg", "avgmax", "max"
+        ] = "avg",
         num_classes: int | None = 1000,
         interpolate_antialias: bool = False,
         eps: float = 1e-5,
@@ -351,8 +353,9 @@ class VisionTransformer(eqx.Module):
             norm_layer(dim, eps=eps) if untie_global_and_local_cls_norm else None
         )
 
+        head_in_features = 2 * dim if global_pool == "cls_patch_mean" else dim
         self.head = (
-            eqx.nn.Linear(dim, num_classes, key=key_head)
+            eqx.nn.Linear(head_in_features, num_classes, key=key_head)
             if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )

@@ -9,7 +9,7 @@ import pytest
 
 import equimo.finetune as eqft
 
-from fixtures import assert_tree_allclose
+from fixtures import TinyVisionTransformer, assert_tree_allclose
 
 
 class NoKwargFeatureModel(eqx.Module):
@@ -67,9 +67,27 @@ def test_extract_features_pool_cls_and_mean_patch(tiny_vision_transformer):
 
     cls = eqft.extract_features(tiny_vision_transformer, x, pool="cls")
     mean_patch = eqft.extract_features(tiny_vision_transformer, x, pool="mean_patch")
+    cls_patch_mean = eqft.extract_features(
+        tiny_vision_transformer,
+        x,
+        pool="cls_patch_mean",
+    )
 
     assert cls.shape == (4,)
     assert mean_patch.shape == (4,)
+    assert cls_patch_mean.shape == (8,)
+
+
+def test_extract_features_cls_patch_mean_excludes_register_tokens():
+    model = TinyVisionTransformer(num_reg_tokens=2, key=jr.PRNGKey(0))
+    x = jnp.ones((2, 3))
+
+    pooled = eqft.extract_features(model, x, pool="cls_patch_mean")
+    features = model.features(x)
+    expected = jnp.concatenate([features[0], jnp.mean(features[3:], axis=0)], axis=0)
+
+    assert pooled.shape == (8,)
+    assert jnp.allclose(pooled, expected)
 
 
 def test_extract_features_auto_pool_audio_uses_mean_frame(tiny_ast_like_encoder):
@@ -128,6 +146,22 @@ def test_linear_probe_trainable_only_head(tiny_vision_transformer):
     assert plan.trainable.backbone.patch_embed.proj.weight is None
     assert plan.trainable.backbone.blocks[0].attn.qkv.weight is None
     assert plan.report.trainable_params == 15
+
+
+def test_linear_probe_supports_cls_patch_mean(tiny_vision_transformer):
+    key = jr.PRNGKey(1)
+    probe = eqft.make_linear_probe(
+        tiny_vision_transformer,
+        in_features=8,
+        out_features=3,
+        key=key,
+        pool="cls_patch_mean",
+    )
+
+    y = probe(jnp.ones((2, 3)))
+
+    assert y.shape == (3,)
+    assert probe.head.linear.in_features == 8
 
 
 def test_feature_extractor_filter_jit(tiny_vision_transformer):

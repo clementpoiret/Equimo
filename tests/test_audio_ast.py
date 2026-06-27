@@ -41,6 +41,15 @@ def test_ast_forward():
     assert jnp.all(jnp.isfinite(y))
 
 
+def test_ast_cls_patch_mean_global_pool():
+    model = _small_ast(global_pool="cls_patch_mean", head_norm_layer="layernorm")
+    y = model(SPEC, key=KEY, inference=True)
+
+    assert model.head.in_features == 64
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+
+
 def test_ast_features_and_aux_shapes():
     model = _small_ast()
     features = model.features(SPEC, key=KEY, inference=True)

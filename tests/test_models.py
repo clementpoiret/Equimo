@@ -125,6 +125,26 @@ def test_vit_classification():
     assert jnp.all(jnp.isfinite(y))
 
 
+def test_vit_cls_patch_mean_global_pool():
+    key = jr.PRNGKey(0)
+    model = em.VisionTransformer(
+        img_size=64,
+        in_channels=3,
+        dim=64,
+        patch_size=8,
+        num_heads=[2],
+        depths=[2],
+        num_classes=NUM_CLASSES,
+        global_pool="cls_patch_mean",
+        key=key,
+    )
+    y = model(IMG_64, key=key, inference=True)
+
+    assert model.head.in_features == 128
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+
+
 def test_vit_rope():
     # RoPE requires dynamic_img_size=True so patch_embed returns (c, h, w)
     # allowing H and W to be read from spatial dims.

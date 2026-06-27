@@ -9,11 +9,14 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+from equimo.utils import pool_sd
+
 
 PoolName = Literal[
     "auto",
     "none",
     "cls",
+    "cls_patch_mean",
     "global_avg",
     "mean_token",
     "mean_patch",
@@ -77,6 +80,31 @@ class MeanPatchPool(eqx.Module):
         del kwargs
         start = self.num_prefix_tokens + self.num_prompt_tokens
         return jnp.mean(x[start:], axis=0)
+
+
+class CLSPatchMeanPool(eqx.Module):
+    """Concatenate the CLS token with the mean over patch tokens."""
+
+    num_prefix_tokens: int = eqx.field(static=True)
+    num_prompt_tokens: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        num_prefix_tokens: int = 1,
+        *,
+        num_prompt_tokens: int = 0,
+    ):
+        self.num_prefix_tokens = num_prefix_tokens
+        self.num_prompt_tokens = num_prompt_tokens
+
+    def __call__(self, x: jax.Array, **kwargs) -> jax.Array:
+        del kwargs
+        return pool_sd(
+            x,
+            pool_type="cls_patch_mean",
+            num_prefix_tokens=self.num_prefix_tokens + self.num_prompt_tokens,
+            reduce_include_prefix=False,
+        )
 
 
 class MeanFramePool(MeanTokenPool):
@@ -188,6 +216,18 @@ def _pool_feature_dict(
 ) -> jax.Array | dict:
     if pool in {"auto", "cls"} and "x_norm_cls_token" in features:
         return features["x_norm_cls_token"]
+    if pool == "cls_patch_mean" and (
+        "x_norm_cls_token" in features or "x_norm_patchtokens" in features
+    ):
+        cls_token = features.get("x_norm_cls_token")
+        if cls_token is None or "x_norm_patchtokens" not in features:
+            raise ValueError(
+                "pool='cls_patch_mean' requires CLS and patch-token features."
+            )
+        return jnp.concatenate(
+            [cls_token, jnp.mean(features["x_norm_patchtokens"], axis=0)],
+            axis=0,
+        )
     if pool == "mean_patch" and "x_norm_patchtokens" in features:
         return jnp.mean(features["x_norm_patchtokens"], axis=0)
     if pool == "mean_frame" and "x_norm_patchtokens" in features:
@@ -208,6 +248,8 @@ def _pool_module(pool: PoolName, features: jax.Array) -> eqx.Module:
         return CLSPool()
     if pool == "cls":
         return CLSPool()
+    if pool == "cls_patch_mean":
+        return CLSPatchMeanPool()
     if pool == "global_avg":
         return GlobalAveragePool()
     if pool == "mean_token":
@@ -233,6 +275,7 @@ class IdentityPool(eqx.Module):
 
 __all__ = (
     "AttentionPool",
+    "CLSPatchMeanPool",
     "CLSPool",
     "GeMPool",
     "GlobalAveragePool",

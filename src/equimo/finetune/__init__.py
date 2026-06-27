@@ -229,6 +229,7 @@ from .merging import (
 )
 from .pooling import (
     AttentionPool,
+    CLSPatchMeanPool,
     CLSPool,
     GeMPool,
     GlobalAveragePool,
@@ -334,6 +335,7 @@ __all__ = (
     "CANONICAL_TAGS",
     "CalibrationArtifact",
     "CalibrationSpec",
+    "CLSPatchMeanPool",
     "CLSPool",
     "CTCHead",
     "ContrastiveProjectionHead",

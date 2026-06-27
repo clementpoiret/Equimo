@@ -25,6 +25,24 @@ def test_pool_mean_patch_excludes_cls():
     assert jnp.array_equal(pooled, jnp.mean(tokens[1:], axis=0))
 
 
+def test_pool_cls_patch_mean_shape_and_values():
+    tokens = jnp.arange(20, dtype=jnp.float32).reshape(5, 4)
+    pooled = eqft.pool_features(tokens, pool="cls_patch_mean")
+
+    expected = jnp.concatenate([tokens[0], jnp.mean(tokens[1:], axis=0)], axis=0)
+    assert pooled.shape == (8,)
+    assert jnp.array_equal(pooled, expected)
+
+
+def test_pool_cls_patch_mean_excludes_prefix_tokens():
+    tokens = jnp.arange(24, dtype=jnp.float32).reshape(6, 4)
+    pooled = eqft.CLSPatchMeanPool(num_prefix_tokens=2)(tokens)
+
+    expected = jnp.concatenate([tokens[0], jnp.mean(tokens[2:], axis=0)], axis=0)
+    assert pooled.shape == (8,)
+    assert jnp.array_equal(pooled, expected)
+
+
 def test_pool_mean_token_mask():
     tokens = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
     mask = jnp.array([1, 1, 0])

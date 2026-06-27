@@ -91,7 +91,9 @@ class AudioSpectrogramTransformer(eqx.Module):
         norm_layer: str | type[eqx.Module] = "layernorm",
         head_norm_layer: str | type[eqx.Module] | None = None,
         init_values: float | None = None,
-        global_pool: Literal["token", "avg", "avgmax", "max"] = "token",
+        global_pool: Literal[
+            "token", "cls_patch_mean", "avg", "avgmax", "max"
+        ] = "token",
         num_classes: int | None = 527,
         eps: float = 1e-5,
         **kwargs,
@@ -170,13 +172,14 @@ class AudioSpectrogramTransformer(eqx.Module):
         )
 
         self.norm = norm_layer(dim, eps=eps)
+        head_in_features = 2 * dim if global_pool == "cls_patch_mean" else dim
         self.head_norm = (
-            get_norm(head_norm_layer)(dim, eps=eps)
+            get_norm(head_norm_layer)(head_in_features, eps=eps)
             if head_norm_layer is not None
             else eqx.nn.Identity()
         )
         self.head = (
-            eqx.nn.Linear(dim, num_classes, key=key_head)
+            eqx.nn.Linear(head_in_features, num_classes, key=key_head)
             if num_classes is not None and num_classes > 0
             else eqx.nn.Identity()
         )

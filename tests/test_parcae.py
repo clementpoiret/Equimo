@@ -593,6 +593,15 @@ def test_forward_features_aux_and_readout_shapes():
     assert jnp.all(jnp.isfinite(y))
 
 
+def test_cls_patch_mean_global_pool_forward_shape():
+    model = _tiny_parcae(global_pool="cls_patch_mean")
+    y = model(IMG_64, key=KEY, inference=True)
+
+    assert model.head.in_features == 2 * DIM
+    assert y.shape == (NUM_CLASSES,)
+    assert jnp.all(jnp.isfinite(y))
+
+
 def test_C_identity_init_sets_identity_weight_and_zero_bias():
     model = _tiny_parcae(C_init="identity", C_bias=True)
 

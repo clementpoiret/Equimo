@@ -11,6 +11,7 @@ from ._typing import PyTree
 from .config import FeatureSpec
 from .heads import IdentityHead, LinearHead
 from .pooling import (
+    CLSPatchMeanPool,
     GlobalAveragePool,
     MeanPatchPool,
     MeanTokenPool,
@@ -176,6 +177,10 @@ def _call_with_optional_key(fn, *args, key, inference, **kwargs):
 
 
 def _prompt_aware_pool(model: PyTree, pool: PoolName | eqx.Module | None):
+    if pool == "cls_patch_mean" and (
+        _is_vit_like(model) or _has_prefix_metadata(model)
+    ):
+        return _cls_patch_mean_pool_for_model(model)
     if (
         pool == "mean_patch"
         and getattr(model, "exclude_prompt_tokens_from_pool", False)
@@ -255,10 +260,36 @@ def _is_convnet_model(model: PyTree) -> bool:
 
 def _mean_patch_pool_for_model(model: PyTree) -> MeanPatchPool:
     return MeanPatchPool(
-        num_prefix_tokens=int(
-            getattr(model, "num_prefix_tokens", _base_prefix_count(model))
-        ),
+        num_prefix_tokens=_model_prefix_count(model),
         num_prompt_tokens=int(getattr(model, "num_prompt_tokens", 0)),
+    )
+
+
+def _cls_patch_mean_pool_for_model(model: PyTree) -> CLSPatchMeanPool:
+    return CLSPatchMeanPool(
+        num_prefix_tokens=_model_prefix_count(model),
+        num_prompt_tokens=int(getattr(model, "num_prompt_tokens", 0)),
+    )
+
+
+def _model_prefix_count(model: PyTree) -> int:
+    if hasattr(model, "num_base_prefix_tokens"):
+        return int(model.num_base_prefix_tokens)
+    if hasattr(model, "num_prefix_tokens"):
+        return int(model.num_prefix_tokens)
+    return _base_prefix_count(model)
+
+
+def _has_prefix_metadata(model: PyTree) -> bool:
+    return any(
+        hasattr(model, name)
+        for name in (
+            "num_base_prefix_tokens",
+            "num_prefix_tokens",
+            "cls_token",
+            "dist_token",
+            "reg_tokens",
+        )
     )
 
 
