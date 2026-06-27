@@ -20,6 +20,9 @@ plan = eqft.prepare_finetune(
 )
 ```
 
+Use `eqft.LLRDConfig.uniform()` when a recipe should keep a uniform backbone
+learning-rate multiplier while still emitting weight-decay labels.
+
 Patch embedding freeze means `patch_embed` leaves are absent from
 `plan.trainable`; they do not get a zero learning rate.
 

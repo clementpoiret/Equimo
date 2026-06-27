@@ -11,6 +11,13 @@ from equimo.finetune.vision import recipes as vision_recipes
 from fixtures import assert_tree_allclose
 
 
+def _head_weight_as_position_tagger(path, leaf):
+    tags = set(eqft.canonical_tags_for_path(path, leaf))
+    if path == ("head", "weight"):
+        tags.add("embedding.position")
+    return frozenset(tags)
+
+
 def test_lpft_stage_transition_preserves_head(tiny_vision_transformer):
     key = jr.PRNGKey(0)
     trained_like = eqft.replace_head(
@@ -36,6 +43,27 @@ def test_full_ft_llrd_recipe_freezes_patch_embed(tiny_vision_transformer):
 
     assert plan.trainable.patch_embed.proj.weight is None
     assert "block_01_decay" in plan.group_specs
+
+
+def test_full_ft_llrd_recipe_accepts_custom_tagger(tiny_vision_transformer):
+    plan = eqft.full_ft_llrd(
+        tiny_vision_transformer,
+        tagger=_head_weight_as_position_tagger,
+    )
+
+    assert "embedding.position" in plan.param_info.head.weight.tags
+    assert plan.param_info.head.weight.label == "head_no_decay"
+    assert plan.param_info.head.weight.weight_decay is False
+
+
+def test_full_ft_llrd_recipe_accepts_label_policy(tiny_vision_transformer):
+    plan = eqft.full_ft_llrd(
+        tiny_vision_transformer,
+        decay=0.1,
+        labels=eqft.LLRDConfig.uniform(),
+    )
+
+    assert plan.group_specs["block_00_decay"].lr_multiplier == pytest.approx(1.0)
 
 
 def test_head_plus_norm_recipe_accepts_config(tiny_vision_transformer):
@@ -80,6 +108,21 @@ def test_head_plus_norm_config_can_include_embeddings(tiny_vision_transformer):
     assert plan.trainable.head.weight is None
 
 
+def test_head_plus_norm_recipe_uses_custom_tagger(tiny_vision_transformer):
+    plan = eqft.head_plus_norm(
+        tiny_vision_transformer,
+        eqft.HeadPlusNormConfig(
+            train_head=False,
+            train_norm=False,
+            include_positional_parameters=True,
+        ),
+        tagger=_head_weight_as_position_tagger,
+    )
+
+    assert plan.trainable.head.weight is not None
+    assert plan.param_info.head.weight.label == "head_no_decay"
+
+
 def test_partial_unfreeze_config_controls_span_and_embeddings(tiny_vision_transformer):
     plan = eqft.partial_unfreeze(
         tiny_vision_transformer,
@@ -94,6 +137,55 @@ def test_partial_unfreeze_config_controls_span_and_embeddings(tiny_vision_transf
     assert plan.trainable.blocks[1].attn.qkv.weight is not None
     assert plan.trainable.patch_embed.proj.weight is not None
     assert plan.trainable.pos_embed is not None
+
+
+def test_partial_unfreeze_recipe_uses_custom_tagger(tiny_vision_transformer):
+    plan = eqft.partial_unfreeze(
+        tiny_vision_transformer,
+        eqft.PartialUnfreezeConfig(
+            fraction=0.5,
+            train_head=False,
+            train_norm=False,
+            train_positional_parameters=True,
+        ),
+        tagger=_head_weight_as_position_tagger,
+    )
+
+    assert plan.trainable.head.weight is not None
+    assert plan.param_info.head.weight.label == "head_no_decay"
+
+
+def test_partial_ft_last_k_blocks_accepts_custom_tagger(tiny_vision_transformer):
+    plan = eqft.partial_ft_last_k_blocks(
+        tiny_vision_transformer,
+        k=1,
+        tagger=_head_weight_as_position_tagger,
+    )
+
+    assert plan.trainable.head.weight is not None
+    assert plan.param_info.head.weight.label == "head_no_decay"
+
+
+def test_lpft_stage_plans_accept_custom_tagger(tiny_vision_transformer):
+    recipe = eqft.lpft()
+    direct_stage2 = eqft.prepare_finetune(
+        tiny_vision_transformer,
+        trainable=recipe.stage2,
+        labels=recipe.stage2_labels,
+        tagger=_head_weight_as_position_tagger,
+    )
+
+    stage1 = recipe.stage1_plan(
+        tiny_vision_transformer,
+        tagger=_head_weight_as_position_tagger,
+    )
+    stage2 = recipe.stage2_plan(
+        tiny_vision_transformer,
+        tagger=_head_weight_as_position_tagger,
+    )
+
+    assert stage1.param_info.head.weight.label == "head_no_decay"
+    assert stage2.param_info.head.weight.label == direct_stage2.param_info.head.weight.label
 
 
 def test_vision_partial_recipe_uses_last_blocks(tiny_vision_transformer):

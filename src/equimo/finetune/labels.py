@@ -76,20 +76,36 @@ def make_labeled_param_info_tree(
             label=label,
         )
         if trainable and label is not None and lr_multiplier is not None:
-            group_specs.setdefault(
-                label,
-                GroupSpec(
+            if label in group_specs:
+                group_specs[label] = _merge_group_spec(group_specs[label], info)
+            else:
+                group_specs[label] = GroupSpec(
                     label=label,
                     role=info.role,
                     depth=info.depth,
                     lr_multiplier=lr_multiplier,
                     weight_decay=weight_decay,
                     tags=tuple(sorted(info.tags)),
-                ),
-            )
+                    tags_all=tuple(sorted(info.tags)),
+                    roles=(info.role,) if info.role else (),
+                )
         return info
 
     return jtu.tree_map_with_path(make_info, filtered), group_specs
+
+
+def _merge_group_spec(group: GroupSpec, info: ParamInfo) -> GroupSpec:
+    tags_all = tuple(sorted(set(group.tags_all).union(info.tags)))
+    roles = set(group.roles)
+    if info.role:
+        roles.add(info.role)
+    sorted_roles = tuple(sorted(roles))
+    return replace(
+        group,
+        tags_all=tags_all,
+        roles=sorted_roles,
+        mixed_roles=len(sorted_roles) > 1,
+    )
 
 
 def _label_from_info(info: ParamInfo | None) -> str | None:

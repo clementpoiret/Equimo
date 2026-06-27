@@ -277,6 +277,12 @@ class LLRDConfig:
     embedding_label: str = "embed"
 
     @classmethod
+    def uniform(cls) -> "LLRDConfig":
+        """Return a preset with no layer-wise learning-rate decay."""
+
+        return cls(decay=1.0)
+
+    @classmethod
     def vit_base(cls, *, decay: float = 0.65) -> "LLRDConfig":
         """Return the ViT-B-style LLRD preset."""
 
@@ -324,6 +330,17 @@ class GroupSpec:
     lr_multiplier: float
     weight_decay: bool
     tags: tuple[str, ...] = ()
+    tags_all: tuple[str, ...] = ()
+    roles: tuple[str, ...] = ()
+    mixed_roles: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.tags_all and self.tags:
+            object.__setattr__(self, "tags_all", tuple(self.tags))
+        if not self.roles and self.role:
+            object.__setattr__(self, "roles", (self.role,))
+        if len(self.roles) > 1 and not self.mixed_roles:
+            object.__setattr__(self, "mixed_roles", True)
 
 
 @dataclass(frozen=True)

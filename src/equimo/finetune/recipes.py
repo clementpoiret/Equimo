@@ -24,7 +24,7 @@ from .peft.prompts import PromptedModel, VPTDeepConfig, apply_prompts
 from .pooling import PoolName
 from .selectors import is_linear
 from .surgery import prepare_finetune
-from .tags import canonical_tags_for_path, infer_depth, iter_param_infos
+from .tags import Tagger, canonical_tags_for_path, infer_depth, iter_param_infos
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,11 @@ class HeadPlusNormConfig:
     include_embeddings: bool = False
     include_positional_parameters: bool = False
 
-    def trainable_spec(self) -> TrainableSpec:
+    def trainable_spec(
+        self,
+        *,
+        tagger: Tagger = canonical_tags_for_path,
+    ) -> TrainableSpec:
         """Return a trainability mask matching this head-plus-norm preset."""
 
         if not any(
@@ -81,7 +85,7 @@ class HeadPlusNormConfig:
         def predicate(path: Path, leaf: Any) -> bool:
             if not eqx.is_inexact_array(leaf):
                 return False
-            tags = canonical_tags_for_path(path, leaf)
+            tags = frozenset(tagger(path, leaf))
             leaf_name = str(path[-1]) if path else ""
             if self.train_head and "head" in tags:
                 return True
@@ -134,12 +138,22 @@ class LPFTRecipe:
     stage2_labels: LLRDConfig = field(default_factory=LLRDConfig)
     external_ft_lr_scale_hint: tuple[float, float] = (0.2, 0.5)
 
-    def stage1_plan(self, model: PyTree) -> FineTunePlan:
+    def stage1_plan(
+        self,
+        model: PyTree,
+        *,
+        tagger: Tagger = canonical_tags_for_path,
+    ) -> FineTunePlan:
         """Prepare the linear-probe stage."""
 
-        return prepare_finetune(model, trainable=self.stage1)
+        return prepare_finetune(model, trainable=self.stage1, tagger=tagger)
 
-    def stage2_plan(self, model: PyTree) -> FineTunePlan:
+    def stage2_plan(
+        self,
+        model: PyTree,
+        *,
+        tagger: Tagger = canonical_tags_for_path,
+    ) -> FineTunePlan:
         """Prepare the fine-tuning stage without replacing the trained head."""
 
         if not self.preserve_trained_head:
@@ -151,6 +165,7 @@ class LPFTRecipe:
             model,
             trainable=self.stage2,
             labels=self.stage2_labels,
+            tagger=tagger,
         )
 
 
@@ -176,13 +191,18 @@ def linear_probe(
 def head_plus_norm(
     model: PyTree,
     config: HeadPlusNormConfig | None = None,
+    *,
+    labels: LLRDConfig | None = None,
+    tagger: Tagger = canonical_tags_for_path,
 ) -> FineTunePlan:
     """Prepare a head-plus-norm fine-tuning plan."""
 
     config = HeadPlusNormConfig() if config is None else config
     return prepare_finetune(
         model,
-        trainable=config.trainable_spec(),
+        trainable=config.trainable_spec(tagger=tagger),
+        labels=labels,
+        tagger=tagger,
     )
 
 
@@ -191,6 +211,8 @@ def full_ft_llrd(
     *,
     decay: float = 0.75,
     freeze_patch_embed: bool = True,
+    labels: LLRDConfig | None = None,
+    tagger: Tagger = canonical_tags_for_path,
 ) -> FineTunePlan:
     """Prepare a full fine-tuning plan with LLRD labels."""
 
@@ -200,7 +222,8 @@ def full_ft_llrd(
             mode="full",
             freeze=_patch_freeze(freeze_patch_embed),
         ),
-        labels=LLRDConfig(decay=decay),
+        labels=LLRDConfig(decay=decay) if labels is None else labels,
+        tagger=tagger,
     )
 
 
@@ -212,11 +235,17 @@ def partial_ft_last_k_blocks(
     train_head: bool = True,
     train_norm: bool = True,
     freeze_patch_embed: bool = True,
+    labels: LLRDConfig | None = None,
+    tagger: Tagger = canonical_tags_for_path,
 ) -> FineTunePlan:
     """Prepare a partial fine-tuning plan over the last ``k`` blocks."""
 
     depths = sorted(
-        {info.depth for info in iter_param_infos(model) if info.depth is not None}
+        {
+            info.depth
+            for info in iter_param_infos(model, tagger=tagger)
+            if info.depth is not None
+        }
     )
     if not depths:
         depth_range = None
@@ -234,7 +263,8 @@ def partial_ft_last_k_blocks(
             train_norm=train_norm,
             freeze=_patch_freeze(freeze_patch_embed),
         ),
-        labels=LLRDConfig(decay=decay),
+        labels=LLRDConfig(decay=decay) if labels is None else labels,
+        tagger=tagger,
     )
 
 
@@ -243,6 +273,7 @@ def partial_unfreeze(
     config: PartialUnfreezeConfig | None = None,
     *,
     labels: LLRDConfig | None = None,
+    tagger: Tagger = canonical_tags_for_path,
 ) -> FineTunePlan:
     """Prepare a partial-unfreeze plan from ``PartialUnfreezeConfig``."""
 
@@ -250,14 +281,18 @@ def partial_unfreeze(
     if config.span != "last":
         raise ValueError("PartialUnfreezeConfig currently supports span='last'.")
     depths = sorted(
-        {info.depth for info in iter_param_infos(model) if info.depth is not None}
+        {
+            info.depth
+            for info in iter_param_infos(model, tagger=tagger)
+            if info.depth is not None
+        }
     )
     selected_depths = frozenset(
         _last_fraction_depths(depths, config.fraction, config.min_blocks)
     )
 
     def predicate(path: Path, leaf: Any) -> bool:
-        tags = canonical_tags_for_path(path, leaf)
+        tags = frozenset(tagger(path, leaf))
         depth = _path_depth(path)
         if depth in selected_depths:
             return True
@@ -274,6 +309,7 @@ def partial_unfreeze(
             train_norm=config.train_norm,
         ),
         labels=LLRDConfig() if labels is None else labels,
+        tagger=tagger,
     )
 
 

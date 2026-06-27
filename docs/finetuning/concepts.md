@@ -25,5 +25,10 @@ from optimizer state entirely.
 - `param_info`: per-leaf path, tags, labels, and trainability.
 - `report`: parameter counts and selected target paths.
 
+`GroupSpec.role` and `GroupSpec.tags` preserve the first leaf's representative
+metadata for compatibility. Use `GroupSpec.roles`, `GroupSpec.tags_all`, and
+`GroupSpec.mixed_roles` when external tooling needs deterministic metadata for
+all leaves assigned to a label.
+
 Non-goals: optimizers, schedules, distributed training, dataloaders, feature
 caches, experiment tracking, and training loops.

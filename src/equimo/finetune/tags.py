@@ -246,6 +246,9 @@ def infer_role(tags: Iterable[str]) -> str:
         ("embedding.position", "embedding.position"),
         ("embedding.class_token", "embedding.class_token"),
         ("embedding.register_token", "embedding.register_token"),
+        ("embedding.distillation_token", "embedding.distillation_token"),
+        ("embedding.mask_token", "embedding.mask_token"),
+        ("embedding.token", "embedding.token"),
         ("block", "block"),
     ):
         if tag in tag_set:

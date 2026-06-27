@@ -34,5 +34,8 @@ def test_rollfast_metadata_exposes_structural_compiler_fields(tiny_vision_transf
             "lr_multiplier",
             "weight_decay",
             "tags",
+            "tags_all",
+            "roles",
+            "mixed_roles",
         }
         assert group["lr_multiplier"] > 0.0

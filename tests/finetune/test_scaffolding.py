@@ -157,6 +157,7 @@ def test_spec_config_fields_are_public():
     assert eqft.FisherMergeConfig().normalize_fisher
     assert eqft.RegMeanConfig().require_input_covariances
     assert eqft.SAMMetadata().external_only
+    assert eqft.LLRDConfig.uniform().decay == 1.0
     assert eqft.LLRDConfig.vit_base().decay == 0.65
     assert eqft.LLRDConfig.vit_large_or_huge().decay == 0.75
     assert eqft.LLRDConfig.audio_transformer().decay == 0.75

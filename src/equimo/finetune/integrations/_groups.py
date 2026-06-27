@@ -18,6 +18,9 @@ def group_metadata(plan: FineTunePlan) -> tuple[dict[str, Any], ...]:
             "lr_multiplier": group.lr_multiplier,
             "weight_decay": group.weight_decay,
             "tags": group.tags,
+            "tags_all": group.tags_all,
+            "roles": group.roles,
+            "mixed_roles": group.mixed_roles,
         }
         for label, group in sorted(plan.group_specs.items())
     )

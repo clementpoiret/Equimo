@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import equinox as eqx
 import equimo.finetune as eqft
+import jax
+import jax.numpy as jnp
 import jax.random as jr
 from equimo.finetune.audio import selectors as audio_selectors
 from equimo.finetune.language import selectors as language_selectors
@@ -14,6 +17,12 @@ from fixtures import TinyVisionTransformer
 
 def _infos_by_path(model):
     return {eqft.path_to_str(info.path): info for info in eqft.iter_param_infos(model)}
+
+
+class _SpecialTokenLeaves(eqx.Module):
+    mask_token: jax.Array
+    dist_token: jax.Array
+    token_embed: jax.Array
 
 
 def test_canonical_tags_include_selector_defaults():
@@ -150,6 +159,19 @@ def test_make_tag_tree_records_roles(tiny_vision_transformer):
 
     assert tag_tree.blocks[0].attn.qkv.weight.role == "attention.qkv"
     assert tag_tree.head.bias.role == "head"
+
+
+def test_special_token_roles_are_inferred():
+    model = _SpecialTokenLeaves(
+        mask_token=jnp.zeros((1, 4), dtype=jnp.float32),
+        dist_token=jnp.zeros((1, 4), dtype=jnp.float32),
+        token_embed=jnp.zeros((8, 4), dtype=jnp.float32),
+    )
+    infos = _infos_by_path(model)
+
+    assert infos["mask_token"].role == "embedding.mask_token"
+    assert infos["dist_token"].role == "embedding.distillation_token"
+    assert infos["token_embed"].role == "embedding.token"
 
 
 def test_model_family_tag_adapters(tiny_ast_like_encoder, tiny_text_encoder):
