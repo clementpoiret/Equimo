@@ -6,6 +6,7 @@ import pytest
 import jax.random as jr
 
 import equimo.finetune as eqft
+from equimo.vision.models.vit import VisionTransformer
 
 from fixtures import TinyConvNeXtLike, TinyVisionTransformer
 
@@ -46,6 +47,34 @@ def test_partial_llrd_keeps_original_depth_indices():
     assert "block_07_decay" not in plan.group_specs
     assert plan.group_specs["block_08_decay"].lr_multiplier == pytest.approx(0.75**3)
     assert plan.group_specs["block_11_decay"].lr_multiplier == pytest.approx(1.0)
+
+
+def test_llrd_uses_inner_block_depth_for_nested_vit():
+    model = VisionTransformer(
+        img_size=28,
+        in_channels=3,
+        dim=16,
+        patch_size=14,
+        num_heads=[2],
+        depths=[12],
+        num_classes=0,
+        key=jr.PRNGKey(0),
+    )
+    plan = eqft.prepare_finetune(
+        model,
+        trainable=eqft.TrainableSpec(
+            mode="partial",
+            depth_range=(11, 12),
+            train_head=False,
+            train_norm=False,
+        ),
+        labels=eqft.LLRDConfig(decay=0.75),
+    )
+
+    assert "block_11_decay" in plan.group_specs
+    assert "block_00_decay" not in plan.group_specs
+    assert plan.trainable.blocks[0].blocks[10].attn.qkv.weight is None
+    assert plan.trainable.blocks[0].blocks[11].attn.qkv.weight is not None
 
 
 def test_llrd_depth_axis_stage_uses_stage_indices():

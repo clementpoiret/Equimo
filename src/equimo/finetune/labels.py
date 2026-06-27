@@ -11,7 +11,7 @@ import jax.tree_util as jtu
 from ._typing import Path, PyTree
 from .config import GroupSpec, LLRDConfig, ParamInfo
 from .paths import key_path_to_path
-from .tags import Tagger, canonical_tags_for_path, make_param_info
+from .tags import Tagger, canonical_tags_for_path, infer_block_depth, make_param_info
 
 
 def make_param_labels(
@@ -234,7 +234,7 @@ def _selected_depths(
 def _depth_for_path(path: Path, config: LLRDConfig) -> int | None:
     parts = tuple(str(part) for part in path)
     if config.depth_axis == "block":
-        return _indexed_depth(parts, {"blocks", "block"})
+        return infer_block_depth(path)
     if config.depth_axis == "stage":
         return _indexed_depth(parts, {"stages", "stage"})
     if config.depth_axis == "module":

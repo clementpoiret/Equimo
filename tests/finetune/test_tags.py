@@ -67,6 +67,15 @@ def test_semantic_tags_for_tiny_vit(tiny_vision_transformer):
     assert "head" in infos["head.weight"].tags
 
 
+def test_nested_vit_paths_use_inner_block_depth():
+    path = ("blocks", 0, "blocks", 11, "attn", "qkv", "weight")
+    tags = eqft.canonical_tags_for_path(path)
+
+    assert eqft.infer_depth(path) == 11
+    assert "block.11" in tags
+    assert "block.0" not in tags
+
+
 def test_register_token_tags_and_labels():
     model = TinyVisionTransformer(num_reg_tokens=2)
     infos = _infos_by_path(model)

@@ -149,11 +149,9 @@ def infer_depth(path: Path) -> int | None:
     """Infer semantic block depth from common Equimo path shapes."""
 
     parts = tuple(str(part) for part in path)
-    for index, part in enumerate(parts[:-1]):
-        if part in {"blocks", "block"}:
-            depth = _maybe_int(parts[index + 1])
-            if depth is not None:
-                return depth
+    depth = infer_block_depth(path)
+    if depth is not None:
+        return depth
 
     for index, part in enumerate(parts[:-1]):
         if part == "stages":
@@ -162,6 +160,13 @@ def infer_depth(path: Path) -> int | None:
                 return stage
 
     return None
+
+
+def infer_block_depth(path: Path) -> int | None:
+    """Infer the innermost block index from a parameter path."""
+
+    parts = tuple(str(part) for part in path)
+    return _last_indexed_depth(parts, {"blocks", "block"})
 
 
 def make_tag_tree(
@@ -369,6 +374,16 @@ def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
 
 def _maybe_int(value: str) -> int | None:
     return int(value) if value.isdecimal() else None
+
+
+def _last_indexed_depth(parts: tuple[str, ...], names: set[str]) -> int | None:
+    depth = None
+    for index, part in enumerate(parts[:-1]):
+        if part in names:
+            value = _maybe_int(parts[index + 1])
+            if value is not None:
+                depth = value
+    return depth
 
 
 __all__ = (
