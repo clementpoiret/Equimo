@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import equimo.finetune as eqft
+import jax.random as jr
 from equimo.finetune.audio import selectors as audio_selectors
 from equimo.finetune.language import selectors as language_selectors
 from equimo.finetune.vision import selectors as vision_selectors
+from equimo.vision.models.vit import dinov2_vits14, dinov2_vits14_reg
 
 from fixtures import TinyVisionTransformer
 
@@ -74,6 +76,53 @@ def test_nested_vit_paths_use_inner_block_depth():
     assert eqft.infer_depth(path) == 11
     assert "block.11" in tags
     assert "block.0" not in tags
+
+
+def test_canonical_tags_cover_prefixed_position_and_plural_token_names():
+    assert "embedding.position" in eqft.canonical_tags_for_path(
+        ("global_pos_embed", "weight")
+    )
+    assert "embedding.position" in eqft.canonical_tags_for_path(
+        ("local_pos_embed", "patch_rope", "freqs")
+    )
+    assert "embedding.class_token" in eqft.canonical_tags_for_path(("cls_tokens",))
+    assert "embedding.register_token" in eqft.canonical_tags_for_path(
+        ("register_tokens",)
+    )
+
+
+def test_dinov2_global_pos_embed_is_no_decay_without_register_tokens():
+    model = dinov2_vits14(pretrained=False, key=jr.PRNGKey(0))
+
+    plan = eqft.prepare_finetune(
+        model,
+        trainable=eqft.TrainableSpec(mode="full"),
+        labels=eqft.LLRDConfig(),
+    )
+
+    info = plan.param_info.global_pos_embed.weight
+    assert "embedding.position" in info.tags
+    assert info.label == "embed_no_decay"
+    assert info.weight_decay is False
+
+
+def test_dinov2_global_pos_embed_and_register_tokens_are_no_decay():
+    model = dinov2_vits14_reg(pretrained=False, key=jr.PRNGKey(0))
+
+    plan = eqft.prepare_finetune(
+        model,
+        trainable=eqft.TrainableSpec(mode="full"),
+        labels=eqft.LLRDConfig(),
+    )
+
+    pos_info = plan.param_info.global_pos_embed.weight
+    reg_info = plan.param_info.reg_tokens
+    assert "embedding.position" in pos_info.tags
+    assert pos_info.label == "embed_no_decay"
+    assert pos_info.weight_decay is False
+    assert "embedding.register_token" in reg_info.tags
+    assert reg_info.label == "embed_no_decay"
+    assert reg_info.weight_decay is False
 
 
 def test_register_token_tags_and_labels():

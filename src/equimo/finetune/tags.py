@@ -14,6 +14,14 @@ from .paths import iter_param_leaves, key_path_to_path
 
 Tagger = Callable[[Path, Any], Iterable[str]]
 
+_POSITION_EMBED_PARTS = frozenset(
+    {"pos_embed", "position_embed", "position_embedding"}
+)
+_CLASS_TOKEN_PARTS = frozenset({"cls_token", "cls_tokens"})
+_REGISTER_TOKEN_PARTS = frozenset(
+    {"reg_token", "reg_tokens", "register_token", "register_tokens"}
+)
+
 CANONICAL_TAGS: tuple[str, ...] = (
     "embedding",
     "embedding.patch",
@@ -97,16 +105,11 @@ def canonical_tags_for_path(path: Path, leaf: Any | None = None) -> frozenset[st
 
     if "patch_embed" in parts:
         tags.update(("embedding", "embedding.patch"))
-    if any(
-        part in {"pos_embed", "position_embed", "position_embedding"} for part in parts
-    ):
+    if any(_is_position_embed_part(part) for part in parts):
         tags.update(("embedding", "embedding.position"))
-    if "cls_token" in parts:
+    if _CLASS_TOKEN_PARTS.intersection(parts):
         tags.update(("embedding", "embedding.class_token"))
-    if any(
-        part in {"reg_token", "reg_tokens", "register_token", "register_tokens"}
-        for part in parts
-    ):
+    if _REGISTER_TOKEN_PARTS.intersection(parts):
         tags.update(("embedding", "embedding.register_token"))
     if "dist_token" in parts:
         tags.update(("embedding", "embedding.distillation_token"))
@@ -374,6 +377,12 @@ def _add_peft_tags(parts: tuple[str, ...], tags: set[str]) -> None:
 
 def _maybe_int(value: str) -> int | None:
     return int(value) if value.isdecimal() else None
+
+
+def _is_position_embed_part(part: str) -> bool:
+    return part in _POSITION_EMBED_PARTS or any(
+        part.endswith(f"_{suffix}") for suffix in _POSITION_EMBED_PARTS
+    )
 
 
 def _last_indexed_depth(parts: tuple[str, ...], names: set[str]) -> int | None:
