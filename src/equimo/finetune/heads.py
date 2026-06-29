@@ -54,6 +54,27 @@ class LinearHead(eqx.Module):
         return _apply_last_axis(self.linear, x)
 
 
+class LayerNormReadoutHead(eqx.Module):
+    """LayerNorm followed by a task head."""
+
+    norm: eqx.nn.LayerNorm
+    head: eqx.Module
+
+    def __init__(self, in_features: int, head: eqx.Module):
+        self.norm = eqx.nn.LayerNorm(in_features)
+        self.head = head
+
+    def __call__(
+        self,
+        x: jax.Array,
+        *,
+        key: jax.Array | None = None,
+        inference: bool | None = True,
+    ) -> jax.Array:
+        x = _apply_last_axis(self.norm, x)
+        return _call_head(self.head, x, key=key, inference=inference)
+
+
 class MultiLabelHead(eqx.Module):
     """Linear multi-label head that returns raw logits."""
 
@@ -358,6 +379,17 @@ def _apply_last_axis(
     return y_flat.reshape((*leading_shape, y_flat.shape[-1]))
 
 
+def _call_head(
+    head: eqx.Module, x: jax.Array, *, key: jax.Array | None, inference: bool | None
+) -> jax.Array:
+    try:
+        return head(x, key=key, inference=inference)
+    except TypeError as error:
+        if "unexpected keyword argument" not in str(error):
+            raise
+        return head(x)
+
+
 def _activation(name: ActivationName) -> Callable[[jax.Array], jax.Array]:
     if name == "gelu":
         return jax.nn.gelu
@@ -389,6 +421,7 @@ __all__ = (
     "ContrastiveProjectionHead",
     "DenseFeatureAdapter",
     "IdentityHead",
+    "LayerNormReadoutHead",
     "LinearHead",
     "MLPHead",
     "MultiLabelHead",

@@ -33,3 +33,21 @@ probe = eqft.make_linear_probe(
     pool="cls_patch_mean",
 )
 ```
+
+If the transfer setup should train a fresh normalization layer for the
+concatenated readout, wrap the probe head with `LayerNormReadoutHead`:
+
+```python
+head = eqft.LayerNormReadoutHead(
+    2 * model.dim,
+    eqft.LinearHead(2 * model.dim, 10, key=key),
+)
+probe = eqft.make_linear_probe(
+    model,
+    in_features=2 * model.dim,
+    out_features=10,
+    key=key,
+    pool="cls_patch_mean",
+    head=head,
+)
+```

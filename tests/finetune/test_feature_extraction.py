@@ -164,6 +164,34 @@ def test_linear_probe_supports_cls_patch_mean(tiny_vision_transformer):
     assert probe.head.linear.in_features == 8
 
 
+def test_linear_probe_cls_patch_mean_layer_norm_readout_is_trainable(
+    tiny_vision_transformer,
+):
+    key = jr.PRNGKey(2)
+    head = eqft.LayerNormReadoutHead(8, eqft.LinearHead(8, 3, key=key))
+    probe = eqft.make_linear_probe(
+        tiny_vision_transformer,
+        in_features=8,
+        out_features=3,
+        key=key,
+        pool="cls_patch_mean",
+        head=head,
+    )
+    plan = eqft.prepare_finetune(
+        probe,
+        trainable=eqft.TrainableSpec(mode="head"),
+    )
+
+    y = probe(jnp.ones((2, 3)))
+
+    assert y.shape == (3,)
+    assert plan.trainable.head.norm.weight is not None
+    assert plan.trainable.head.norm.bias is not None
+    assert plan.trainable.head.head.linear.weight is not None
+    assert plan.trainable.backbone.patch_embed.proj.weight is None
+    assert plan.report.trainable_params == 43
+
+
 def test_feature_extractor_filter_jit(tiny_vision_transformer):
     extractor = eqft.FeatureExtractor(tiny_vision_transformer, pool="cls")
     x = jnp.ones((2, 3))

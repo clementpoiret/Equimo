@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 
 import equimo.finetune as eqft
+
+
+class KeyInferenceHead(eqx.Module):
+    def __call__(self, x, *, key, inference: bool | None = True):
+        inference_flag = 0.0 if inference else 1.0
+        return jnp.asarray([jnp.sum(x), inference_flag, jr.uniform(key, ())])
 
 
 def test_multilabel_head_raw_logits():
@@ -49,3 +56,27 @@ def test_dense_feature_adapter_projects_last_axis():
     y = adapter(x)
 
     assert y.shape == (3, 5, 2)
+
+
+def test_layer_norm_readout_head_shapes():
+    key = jr.PRNGKey(4)
+    head = eqft.LayerNormReadoutHead(4, eqft.LinearHead(4, 3, key=key))
+
+    y = head(jnp.arange(4, dtype=jnp.float32))
+    y_batched = head(jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4))
+
+    assert y.shape == (3,)
+    assert y_batched.shape == (2, 3, 3)
+
+
+def test_layer_norm_readout_head_forwards_key_and_inference():
+    head = eqft.LayerNormReadoutHead(4, KeyInferenceHead())
+
+    y = head(
+        jnp.arange(4, dtype=jnp.float32),
+        key=jr.PRNGKey(5),
+        inference=False,
+    )
+
+    assert y.shape == (3,)
+    assert y[1] == jnp.array(1.0)
