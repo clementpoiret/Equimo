@@ -1,6 +1,10 @@
 """Tests for serialization and vision IO."""
 
 import json
+import multiprocessing
+import queue
+import tarfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,10 +15,25 @@ import jax.random as jr
 import pytest
 
 from equimo.registry import _MODEL_REGISTRY, get_model_cls, register_model
-from equimo.serialization import _validate_identifier, load_weights, save_model
+from equimo.serialization import (
+    _decompress_archive,
+    _validate_identifier,
+    load_weights,
+    save_model,
+)
 from equimo.vision.io import _center_crop_square
 
 KEY = jr.PRNGKey(0)
+
+
+def _decompress_archive_worker(archive_path, start_barrier, result_queue):
+    try:
+        start_barrier.wait(timeout=10)
+        decompressed = _decompress_archive(Path(archive_path))
+    except BaseException as exc:
+        result_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+    else:
+        result_queue.put(("ok", str(decompressed)))
 
 
 # _validate_identifier
@@ -342,6 +361,86 @@ class TestSaveLoadRoundTrip:
         assert decompressed.exists()
         # Second load must not fail
         load_weights(self._make_model(), path=archive)
+
+    @pytest.mark.filterwarnings("ignore:os.fork\\(\\) was called.*:RuntimeWarning")
+    @pytest.mark.filterwarnings(
+        "ignore:This process .* is multi-threaded.*:DeprecationWarning"
+    )
+    def test_decompress_archive_concurrent_processes_extract_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Concurrent archive decompression must not race on the target directory."""
+        if "fork" not in multiprocessing.get_all_start_methods():
+            pytest.skip("requires multiprocessing fork start method")
+
+        model = self._make_model()
+        path = tmp_path / "model"
+        save_model(path, model, self._model_config())
+        archive = tmp_path / "model.tar.lz4"
+        decompressed = archive.with_suffix("").with_suffix("")
+
+        ctx = multiprocessing.get_context("fork")
+        start_barrier = ctx.Barrier(2)
+        result_queue = ctx.Queue()
+        extraction_queue = ctx.Queue()
+        original_tarfile_open = tarfile.open
+
+        def slow_tarfile_open(*args, **kwargs):
+            tar = original_tarfile_open(*args, **kwargs)
+            original_extractall = tar.extractall
+
+            def extractall(*extract_args, **extract_kwargs):
+                extraction_queue.put("extract")
+                time.sleep(0.2)
+                return original_extractall(*extract_args, **extract_kwargs)
+
+            tar.extractall = extractall
+            return tar
+
+        monkeypatch.setattr("equimo.serialization.tarfile.open", slow_tarfile_open)
+
+        processes = [
+            ctx.Process(
+                target=_decompress_archive_worker,
+                args=(str(archive), start_barrier, result_queue),
+            )
+            for _ in range(2)
+        ]
+        for process in processes:
+            process.start()
+
+        results = []
+        for _ in processes:
+            try:
+                results.append(result_queue.get(timeout=20))
+            except queue.Empty:
+                results.append(("error", "worker timed out"))
+
+        for process in processes:
+            process.join(timeout=10)
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join()
+
+        errors = [message for status, message in results if status == "error"]
+        assert errors == []
+        assert {path for status, path in results if status == "ok"} == {
+            str(decompressed)
+        }
+        assert all(process.exitcode == 0 for process in processes)
+
+        extraction_events = []
+        while True:
+            try:
+                extraction_events.append(extraction_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        assert extraction_events == ["extract"]
+        assert decompressed.exists()
+        assert (decompressed / ".complete").exists()
+        assert list(tmp_path.glob(".tmp_extract_*")) == []
 
 
 # download (identifier validation; no network calls)

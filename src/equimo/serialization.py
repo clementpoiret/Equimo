@@ -3,6 +3,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import equinox as eqx
@@ -17,6 +18,23 @@ from equimo.registry import _SAFE_IDENTIFIER_RE
 DEFAULT_REPOSITORY_URL = (
     "https://huggingface.co/poiretclement/equimo/resolve/main/models/default"
 )
+
+
+@contextmanager
+def _file_lock(path: Path):
+    """Hold an exclusive process lock for *path*."""
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover - fcntl is Unix-only.
+        raise RuntimeError("Archive extraction locking requires fcntl.") from exc
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def _validate_identifier(identifier: str) -> None:
@@ -41,8 +59,12 @@ def _decompress_archive(path: Path) -> Path:
     """
     decompressed_dir = path.with_suffix("").with_suffix("")
     sentinel = decompressed_dir / ".complete"
+    lock_path = decompressed_dir.with_name(f"{decompressed_dir.name}.lock")
 
-    if not sentinel.exists() or (sentinel.stat().st_mtime < path.stat().st_mtime):
+    with _file_lock(lock_path):
+        if sentinel.exists() and (sentinel.stat().st_mtime >= path.stat().st_mtime):
+            return decompressed_dir
+
         tmp_dir = Path(
             tempfile.mkdtemp(dir=decompressed_dir.parent, prefix=".tmp_extract_")
         )
